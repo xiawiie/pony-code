@@ -177,6 +177,13 @@ def test_product_docs_lock_current_execution_and_support_contract():
     assert "Windows 当前仍不在支持范围" in " ".join(readme.split())
     assert "当前发布仍只支持 macOS/Linux" in " ".join(architecture.split())
     assert "完整实机门禁前仍不受支持" in " ".join(verification.split())
+    assert "Windows Terminal Phase 5 实机验收" in verification
+    assert "TUI import、单元测试或截图不能替代本清单" in " ".join(
+        verification.split()
+    )
+    assert "40、80、120 列" in verification
+    assert "exact candidate SHA" in verification
+    assert "Phase 5 结论：PASS 或 FAIL" in verification
     assert "bounded synthetic" in readme
     assert "真实任务失败不 fallback" in readme
     assert "冻结的产品资产" in readme

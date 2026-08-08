@@ -247,6 +247,13 @@ class _AccessAllowedAce(ctypes.Structure):
     )
 
 
+class ReparsePointError(ValueError):
+    """A Windows path component redirects through a reparse point."""
+
+    def __init__(self):
+        super().__init__("refusing symlink component")
+
+
 @dataclass(frozen=True)
 class FileFacts:
     filesystem_id: int
@@ -891,7 +898,7 @@ def identity(handle):
 def require_kind(handle, *, directory, single_link=True):
     value = facts(handle)
     if value.reparse_tag:
-        raise ValueError("refusing reparse point component")
+        raise ReparsePointError()
     if value.directory != directory:
         raise ValueError("private path has unsafe component")
     if not directory and single_link and value.link_count != 1:

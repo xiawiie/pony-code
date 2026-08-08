@@ -319,6 +319,26 @@ def test_symlink_in_candidate_is_rejected(tmp_path):
         item.apply(unsafe)
 
 
+def test_windows_manifest_normalizes_reparse_error(monkeypatch):
+    from pony.security import windows_native
+    from pony.security import windows_private_directories
+
+    def reject_reparse(*_args, **_kwargs):
+        raise windows_native.ReparsePointError()
+
+    monkeypatch.setattr(windows_private_directories, "_open_tree", reject_reparse)
+
+    with pytest.raises(ValueError) as exc_info:
+        windows_private_directories.private_tree_manifest(
+            "candidate",
+            trusted_root="root",
+            trusted_root_identity=(1, 2),
+        )
+
+    assert type(exc_info.value) is ValueError
+    assert str(exc_info.value) == "unsafe migration tree"
+
+
 def test_identity_change_is_rejected(tmp_path):
     item = migration(tmp_path)
     original = item._advance

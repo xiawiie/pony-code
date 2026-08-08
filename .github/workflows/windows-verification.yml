@@ -1,0 +1,115 @@
+name: Windows verification
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-windows:
+    name: Windows full gate (Python ${{ matrix.python-version }})
+    runs-on: windows-2025
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+
+      - name: Install system test dependencies
+        run: choco install ripgrep --yes --no-progress
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Check lock and source
+        run: |
+          uv lock --check
+          uv run --frozen ruff check .
+
+      - name: Run complete Windows verification as a standard user
+        run: >-
+          scripts/windows/run_as_standard_user.ps1
+          -Script scripts/windows/verify_full_runtime.ps1
+
+      - name: Probe native Windows capabilities
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_capabilities.py --pretty
+
+      - name: Probe native Windows file semantics
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_file_semantics.py --pretty
+
+      - name: Probe native Windows DACL semantics
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_dacl_semantics.py --pretty
+
+      - name: Probe native Windows atomic-write semantics
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_atomic_write_semantics.py --pretty
+
+      - name: Probe Pony Windows private-file backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_private_files_backend.py
+
+      - name: Probe Pony Windows migration backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_migration_backend.py
+
+      - name: Probe Pony Windows Git metadata backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_git_metadata_backend.py
+
+      - name: Probe Pony Windows workspace-file backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_workspace_files_backend.py
+
+      - name: Probe Pony Windows memory backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_memory_backend.py
+
+      - name: Probe native Windows lock semantics
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_lock_semantics.py --pretty
+
+      - name: Probe Pony Windows file-lock backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_file_lock_backend.py
+
+      - name: Probe native Windows Job Object semantics
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_job_semantics.py --pretty
+
+      - name: Probe Pony Windows process backend
+        if: ${{ !cancelled() }}
+        run: python scripts/windows/probe_process_backend.py
+
+      - name: Prove elevated Windows shell trust fails closed
+        if: ${{ !cancelled() }}
+        run: >-
+          python scripts/windows/probe_shell_backend.py
+          --expect-elevated-rejection
+
+      - name: Probe Pony Windows shell backend as a standard user
+        if: ${{ !cancelled() }}
+        run: >-
+          scripts/windows/run_as_standard_user.ps1
+          -Script scripts/windows/probe_shell_backend.py

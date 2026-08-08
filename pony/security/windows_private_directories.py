@@ -115,6 +115,17 @@ def _open_relative_tree(root, relative, *, directory):
 
 
 def private_tree_manifest(path, *, trusted_root, trusted_root_identity):
+    try:
+        return _private_tree_manifest(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+    except native.ReparsePointError as exc:
+        raise ValueError("unsafe migration tree") from exc
+
+
+def _private_tree_manifest(path, *, trusted_root, trusted_root_identity):
     path, parent, root = _open_tree(
         path,
         trusted_root=trusted_root,

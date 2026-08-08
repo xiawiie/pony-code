@@ -83,6 +83,36 @@ def test_timeout_does_not_wait_for_detached_descendant_capture_pipe(tmp_path):
     assert time.monotonic() - started < 1
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object contract")
+def test_windows_root_exit_terminates_descendants_that_hold_capture_pipes(tmp_path):
+    marker = tmp_path / "descendant-survived"
+    child = (
+        "import pathlib,time\n"
+        "time.sleep(1.5)\n"
+        f"pathlib.Path({str(marker)!r}).write_text('alive', encoding='ascii')\n"
+    )
+    parent = (
+        "import subprocess,sys\n"
+        f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "print('done', flush=True)\n"
+    )
+    started = time.monotonic()
+
+    result = run_process_group(
+        [sys.executable, "-c", parent],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "done\n"
+    assert result.timed_out is False
+    assert time.monotonic() - started < 3
+    time.sleep(2)
+    assert not marker.exists()
+
+
 def _init_git_repo(path):
     git = _real_git()
     subprocess.run([git, "init", "-q"], cwd=path, check=True)
@@ -235,6 +265,25 @@ def test_discover_lexical_repo_root_rejects_git_symlink_without_raw_path(tmp_pat
 
     assert str(exc_info.value) == "unsafe .git symlink"
     assert str(tmp_path) not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    ((".git", "unsafe .git symlink"), ("config", "unsafe git repository")),
+)
+def test_windows_git_entry_mode_normalizes_reparse_errors(name, message, monkeypatch):
+    from pony.security import windows_native
+
+    def reject_reparse(*_args, **_kwargs):
+        raise windows_native.ReparsePointError()
+
+    monkeypatch.setattr(windows_native, "open_relative", reject_reparse)
+
+    with pytest.raises(ValueError) as exc_info:
+        safe_subprocess_module._git_entry_mode(object(), name)
+
+    assert type(exc_info.value) is ValueError
+    assert str(exc_info.value) == message
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable trust contract")

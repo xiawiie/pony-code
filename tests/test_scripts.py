@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -38,7 +39,13 @@ def test_project_version_is_locked():
 
 
 def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    workflow = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            ".github/workflows/ci.yml",
+            ".github/workflows/windows-verification.yml",
+        )
+    )
 
     pins = {
         "actions/checkout": (
@@ -70,6 +77,9 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "contents: write" in workflow
     assert "id-token: write" in workflow
     assert "environment: pypi" in workflow
+    assert "verify-windows:" in workflow
+    assert "uses: ./.github/workflows/windows-verification.yml" in workflow
+    assert "needs: verify-windows" in workflow
     assert "uv sync --frozen --dev" in workflow
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
@@ -111,11 +121,14 @@ def test_linux_ci_uses_the_single_exact_head_gate():
 
 
 def test_ci_probes_native_windows_capabilities_and_file_semantics():
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-    windows = workflow.split("windows-capabilities:", 1)[1].split(
-        "macos-focused:", 1
-    )[0]
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    windows = Path(".github/workflows/windows-verification.yml").read_text(
+        encoding="utf-8"
+    )
 
+    assert "windows-capabilities:" in ci
+    assert "uses: ./.github/workflows/windows-verification.yml" in ci
+    assert "workflow_call:" in windows
     assert "runs-on: windows-2025" in windows
     assert '          - "3.11"' in windows
     assert '          - "3.12"' in windows
@@ -133,6 +146,8 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
         encoding="utf-8"
     )
     assert '"run", "--frozen", "pytest", "-q"' in full_runtime
+    assert '"-ra", "--durations=50"' in full_runtime
+    assert '"-p", "scripts.windows.pytest_skip_policy"' in full_runtime
     assert '"tests", "benchmarks/live_e2e/tests/test_assertions.py"' in full_runtime
     assert "--expect-elevated-rejection" in windows
     assert "-Script scripts/windows/probe_shell_backend.py" in windows
@@ -153,6 +168,96 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "Select-Object -Skip $stdoutLines" in runner
     assert "Select-Object -Skip $stderrLines" in runner
     assert "continue-on-error" not in windows
+
+
+def _load_windows_skip_policy():
+    script = Path("scripts/windows/pytest_skip_policy.py")
+    spec = importlib.util.spec_from_file_location("pytest_skip_policy", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _skip_audit_payload(lines):
+    prefix = "windows_skip_audit="
+    encoded = next(line.removeprefix(prefix) for line in lines if line.startswith(prefix))
+    return json.loads(encoded)
+
+
+def test_windows_skip_policy_accepts_known_platform_reason():
+    module = _load_windows_skip_policy()
+    policy = module.WindowsSkipPolicy()
+    report = SimpleNamespace(
+        skipped=True,
+        longrepr=("test_file.py", 10, "Skipped: FIFO unavailable"),
+        nodeid="tests/test_file.py::test_fifo",
+    )
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    lines = []
+    reporter = SimpleNamespace(
+        write_sep=lambda separator, title: lines.append(f"{separator}{title}"),
+        write_line=lines.append,
+    )
+
+    policy.pytest_runtest_logreport(report)
+    policy.pytest_sessionfinish(session, pytest.ExitCode.OK)
+    policy.pytest_terminal_summary(reporter)
+
+    assert session.exitstatus == pytest.ExitCode.OK
+    assert policy.skip_counts == {"FIFO unavailable": 1}
+    assert _skip_audit_payload(lines) == {
+        "approved": True,
+        "counts": {"FIFO unavailable": 1},
+        "schema_version": 1,
+        "unknown_reasons": [],
+    }
+
+
+def test_windows_skip_policy_rejects_unknown_reason_and_reports_nodes():
+    module = _load_windows_skip_policy()
+    policy = module.WindowsSkipPolicy()
+    report = SimpleNamespace(
+        skipped=True,
+        longrepr=("test_file.py", 20, "Skipped: dependency missing"),
+        nodeid="tests/test_file.py::test_dependency",
+    )
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    lines = []
+    reporter = SimpleNamespace(
+        write_sep=lambda separator, title: lines.append(f"{separator}{title}"),
+        write_line=lines.append,
+    )
+
+    policy.pytest_runtest_logreport(report)
+    policy.pytest_sessionfinish(session, pytest.ExitCode.OK)
+    policy.pytest_terminal_summary(reporter)
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    assert "dependency missing" in "\n".join(lines)
+    assert "tests/test_file.py::test_dependency" in "\n".join(lines)
+    assert _skip_audit_payload(lines) == {
+        "approved": False,
+        "counts": {"dependency missing": 1},
+        "schema_version": 1,
+        "unknown_reasons": ["dependency missing"],
+    }
+
+
+def test_windows_skip_policy_rejects_non_strict_xpass():
+    module = _load_windows_skip_policy()
+    policy = module.WindowsSkipPolicy()
+    report = SimpleNamespace(
+        skipped=False,
+        wasxfail="not supported yet",
+        nodeid="tests/test_file.py::test_future_support",
+    )
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+
+    policy.pytest_runtest_logreport(report)
+    policy.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    assert policy.skip_counts == {"xfail: not supported yet": 1}
 
 
 def test_windows_capability_probe_checks_system_powershell_and_required_apis(
@@ -516,6 +621,10 @@ def test_windows_local_check_script_matches_the_full_exact_head_gate():
     assert 'Invoke-CheckedNative $uv @("lock", "--check")' in text
     assert 'Invoke-CheckedNative $uv @("run", "--frozen", "ruff", "check", ".")' in text
     assert '"tests", "benchmarks/live_e2e/tests/test_assertions.py"' in text
+    assert '"-ra", "--durations=50"' in text
+    assert '"-p", "scripts.windows.pytest_skip_policy"' in text
+    assert '[windows-check] tests' in text
+    assert '[windows-check] distribution' in text
     assert '"--suite", "core-functional", "--output-dir", $evaluationDir' in text
     assert '"build", "--offline", "--clear", "--no-create-gitignore"' in text
     assert '"--install-smoke", "--offline-bundle-smoke"' in text

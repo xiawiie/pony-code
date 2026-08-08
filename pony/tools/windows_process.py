@@ -463,7 +463,10 @@ def capture_process(
                 _terminate(native, job, process, assigned=assigned)
                 terminated = True
                 break
-            if process_done and all(not reader.is_alive() for reader in reader_threads):
+            if process_done:
+                if any(reader.is_alive() for reader in reader_threads):
+                    _terminate(native, job, process, assigned=assigned)
+                    terminated = True
                 break
             if time.monotonic() >= deadline:
                 timed_out = True

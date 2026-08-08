@@ -64,6 +64,31 @@ def probe():
         if result.stderr != "stderr\n" or result.timed_out:
             raise RuntimeError("Windows stderr capture result mismatch")
 
+        _stage("parent_exit")
+        parent_exit_marker = root / "parent-exit-survived"
+        parent_exit_child = _delayed_marker_code(parent_exit_marker)
+        result = run_process_group(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess,sys\n"
+                    f"subprocess.Popen([sys.executable, '-c', {parent_exit_child!r}])\n"
+                    "print('parent-exited', flush=True)\n"
+                ),
+            ],
+            cwd=root,
+            env=env,
+            timeout=5,
+        )
+        if result.returncode != 0 or result.timed_out:
+            raise RuntimeError("Windows parent exit did not complete normally")
+        if result.stdout != "parent-exited\n":
+            raise RuntimeError("Windows parent-exit capture result mismatch")
+        time.sleep(1)
+        if parent_exit_marker.exists():
+            raise RuntimeError("Windows parent exit left a descendant alive")
+
         _stage("timeout")
         timeout_pid = root / "timeout-pid"
         timeout_marker = root / "timeout-survived"
@@ -112,6 +137,7 @@ def probe():
         "schema_version": 1,
         "bounded_capture": True,
         "create_suspended_before_job_assignment": True,
+        "parent_exit_kills_descendants": True,
         "timeout_kills_descendants": True,
         "output_limit_kills_descendants": True,
     }

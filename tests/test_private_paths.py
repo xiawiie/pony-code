@@ -559,6 +559,18 @@ def test_windows_error_code_falls_back_when_winerror_is_none():
     assert error_code(error) == 2
 
 
+def test_windows_reparse_rejection_is_typed_and_platform_neutral(monkeypatch):
+    from pony.security import windows_native
+
+    reparse_facts = type("ReparseFacts", (), {"reparse_tag": 0xA000000C})()
+    monkeypatch.setattr(windows_native, "facts", lambda _handle: reparse_facts)
+
+    with pytest.raises(windows_native.ReparsePointError) as exc_info:
+        windows_native.require_kind(object(), directory=False)
+
+    assert str(exc_info.value) == "refusing symlink component"
+
+
 @pytest.mark.parametrize(
     ("absolute", "expected"),
     (

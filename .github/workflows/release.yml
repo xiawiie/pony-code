@@ -10,8 +10,12 @@ permissions:
   id-token: write
 
 jobs:
+  verify-windows:
+    uses: ./.github/workflows/windows-verification.yml
+
   publish:
     name: Verify and publish tagged release
+    needs: verify-windows
     runs-on: ubuntu-latest
     environment: pypi
 

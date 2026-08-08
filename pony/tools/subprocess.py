@@ -370,6 +370,11 @@ def _git_entry_mode(directory_handle, name):
                     share_access=native.FILE_SHARE_READ_WRITE,
                     single_link=False,
                 )
+            except native.ReparsePointError as exc:
+                message = (
+                    "unsafe .git symlink" if name == ".git" else "unsafe git repository"
+                )
+                raise ValueError(message) from exc
             except OSError as exc:
                 errors.append(exc)
                 continue
@@ -453,12 +458,16 @@ def _open_git_path(path, *, directory, single_link=True):
     if os.name == "nt":
         from pony.security import windows_native as native
 
-        return candidate, native.open_path(
-            candidate,
-            directory=directory,
-            share_access=native.FILE_SHARE_READ_WRITE,
-            single_link=single_link,
-        )
+        try:
+            handle = native.open_path(
+                candidate,
+                directory=directory,
+                share_access=native.FILE_SHARE_READ_WRITE,
+                single_link=single_link,
+            )
+        except native.ReparsePointError as exc:
+            raise ValueError("unsafe git repository") from exc
+        return candidate, handle
     descriptor = os.open(candidate.anchor, _git_open_flags(directory=True))
     try:
         components = candidate.parts[1:]
@@ -498,16 +507,19 @@ def _open_git_entry(directory_fd, name, *, directory, single_link=True):
     if os.name == "nt":
         from pony.security import windows_native as native
 
-        handle, _created = native.open_relative(
-            directory_fd,
-            raw_name,
-            directory=directory,
-            desired_access=(
-                native.FILE_DIRECTORY_ACCESS if directory else native.FILE_READ_ACCESS
-            ),
-            share_access=native.FILE_SHARE_READ_WRITE,
-            single_link=single_link,
-        )
+        try:
+            handle, _created = native.open_relative(
+                directory_fd,
+                raw_name,
+                directory=directory,
+                desired_access=(
+                    native.FILE_DIRECTORY_ACCESS if directory else native.FILE_READ_ACCESS
+                ),
+                share_access=native.FILE_SHARE_READ_WRITE,
+                single_link=single_link,
+            )
+        except native.ReparsePointError as exc:
+            raise ValueError("unsafe git repository") from exc
         return handle
     return os.open(
         raw_name,

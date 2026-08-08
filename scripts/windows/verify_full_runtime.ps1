@@ -55,24 +55,32 @@ try {
     $uv = if ($env:PONY_CI_UV) { $env:PONY_CI_UV } else { "uv" }
     $env:UV_OFFLINE = "1"
 
+    Write-Output "[windows-check] lock"
     Invoke-CheckedNative $uv @("lock", "--check")
+    Write-Output "[windows-check] static"
     Invoke-CheckedNative $uv @("run", "--frozen", "ruff", "check", ".")
+    Write-Output "[windows-check] tests"
     Invoke-CheckedNative $uv @(
-        "run", "--frozen", "pytest", "-q",
+        "run", "--frozen", "pytest", "-q", "-ra", "--durations=50",
+        "-p", "scripts.windows.pytest_skip_policy",
         "tests", "benchmarks/live_e2e/tests/test_assertions.py"
     )
+    Write-Output "[windows-check] evaluation"
     Invoke-CheckedNative $uv @(
         "run", "--frozen", "python", "scripts/evaluation/evaluate.py",
         "--suite", "core-functional", "--output-dir", $evaluationDir
     )
+    Write-Output "[windows-check] build"
     Invoke-CheckedNative $uv @(
         "build", "--offline", "--clear", "--no-create-gitignore",
         "--out-dir", $distDir
     )
+    Write-Output "[windows-check] distribution"
     Invoke-CheckedNative $uv @(
         "run", "--frozen", "python", "scripts/release/verify_distribution.py",
         "--dist-dir", $distDir, "--install-smoke", "--offline-bundle-smoke"
     )
+    Write-Output "[windows-check] cli"
     Invoke-CheckedNative $uv @("run", "--frozen", "pony", "--help")
     Invoke-CheckedNative $uv @("run", "--frozen", "pony", "status")
 

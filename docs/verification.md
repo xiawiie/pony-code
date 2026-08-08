@@ -58,7 +58,8 @@ restore handle 回滚，不依赖 `MoveFileExW`/`ReplaceFileW` 路径调用决�
 workspace-file probe 验证 root-handle-relative create/read/list、bounded I/O、CAS、hardlink/reparse 拒绝、完整 parent chain
 deny-delete、replace rollback、commit ambiguity rollback 与 long path；production `LockFileEx` probe 验证跨进程 timeout、
 释放后重获、同线程重入拒绝、hardlink 拒绝、`require_existing` 零写，以及持锁期间禁止删除 leaf/重命名 parent；Job Object
-probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在关闭 Job 后终止 child 与 descendant。
+probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在根进程正常退出、timeout、output-limit 与关闭
+Job 后终止完整 descendant tree。
 Session、migration、memory 与 Git metadata 已有 Windows production-backend probe；剩余门禁主要是 clean-host Python 3.11/3.12
 矩阵、受保护 machine-scope Git/Python 上的 shell/evaluation、Windows Terminal 交互式 TUI 宽度回归，以及 clean exact HEAD 的
 完整一键门禁。
@@ -70,6 +71,13 @@ Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 - `LockFileEx` 互斥/timeout/identity race 与 Job Object timeout/output-limit/完整进程树清理通过；
 - PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 40/80/120 列回归通过；
 - Windows 专项不是由 WSL、Git Bash 或大面积 `skipif Windows` 获得绿色结果。
+
+普通 CI 与 `v*` Tag 发布共用 `.github/workflows/windows-verification.yml` 的 Windows 3.11/3.12 标准用户矩阵；
+`publish` job 必须等待该矩阵完成。完整 Windows pytest 通过显式 skip policy 拒绝未知 skip/xfail，并以 `-ra` 和
+`--durations=50` 输出按原因统计与慢测试证据；末尾的 `windows_skip_audit=<JSON>` 是 schema v1 的机器可读汇总，包含
+每个原因的实际数量、未知原因和总审核结论。数量只用于比较同一 exact candidate SHA 的 3.11/3.12 clean-host 结果，
+不得把 dirty worktree 或不受信宿主的本地数量冻结成发布阈值。该门禁结构本身不构成通过证据；仍须由候选 exact tag
+的实际结果和 Windows Terminal 实机验收完成 Phase 5。
 
 #### 2026-08-08 Windows 11 x64 本地实施证据
 
@@ -96,6 +104,78 @@ Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 - PowerShell 与原生 `cmd.exe` 的 `pony --help` 均退出 0；`pony status` 退出 0 并在不可信 Git 环境下将 Git 状态标记为
   unavailable；`prompt_toolkit` 和 `pony.tui.app` 原生导入通过。Windows Terminal 的实际交互、40/80/120 列视觉回归仍待
   clean-host Phase 5 验收。
+
+在同日 `cde4029f9fb2f8fa8c989e0f7210c0f5589e3bdc` 的 dirty worktree 上，Python 3.12 全量测试被拆成四个互斥 shard，
+合计 `2709 passed, 152 skipped`（共收集 2861 项）。其中 151 个 skip 属于审核集合，另一个
+`trusted git is unavailable` 被 skip policy 正确拒绝；这与本机用户可写 Git 安装的 fail-closed 结果一致。最慢 shard
+耗时 29 分 19 秒，说明正式 workflow 还必须观察 hosted runner 的超时裕量。该诊断不是 clean exact HEAD、没有 Python
+3.11 对照，也未运行完整 `scripts/check.sh`，因此不是发布通过证据，不应据此增加 Windows classifier。
+
+同一 HEAD 的首次 clean-host CI 在 Python 3.11/3.12 上各暴露 18 个相同失败：reparse point 已正确 fail closed，但
+private-state、file-lock、Git 和 migration 收到了 Win32 底层文本，而不是既有稳定领域错误。随后的候选修复把该事实改为
+专用异常并在领域边界归一化；本机对应七个测试文件为 `271 passed, 55 skipped`，13 个非 shell Windows production probe
+全部通过，skip audit 为 `approved=true`、`unknown_reasons=[]`，其中 junction fixture 明确证明 reparse point 在遍历前被
+拒绝。这些结果只证明候选修复方向，仍须在提交后的
+Windows 3.11/3.12 capability-rich clean host 上确认原 18 项归零，并让完整门禁继续执行 evaluation、build、distribution、
+clean-install 和 CLI tail。
+
+同一 dirty 候选继续执行远端未到达的门禁后半段：wheel/sdist 构建、精确 distribution 校验、install smoke、offline bundle
+smoke、PowerShell/cmd `pony --help`、`pony status` 与 TUI import 均通过。core-functional 的 memory-quality fake 场景通过，
+fixed benchmark 因本机 PATH 中没有满足 executable trust 的 Python 而 fail closed；shell probe 同样因本机 Git 安装目录可写而
+拒绝，固定系统 PowerShell 本身可被信任。不得为消除这两个宿主阻断降低 executable trust；正式结论仍等待 standard-user CI
+wrapper 提供受保护的 machine-scope Python/Git 并在 clean exact HEAD 上从头执行。
+
+同一 dirty 候选的 TUI 与 CLI 自动合同组为 `273 passed, 6 skipped`，覆盖 responsive app、Markdown、安全 renderer、
+runtime hook、parser、commands、error envelope、output、diagnostics、migration、Session 与 memory CLI；它排除了当前实现的
+自动化交互回归，但仍不能替代下述真实 Windows Terminal Phase 5。
+
+#### Windows Terminal Phase 5 实机验收
+
+此项是候选版本的人工发布门禁。TUI import、单元测试或截图不能替代本清单；任何必做项未执行、证据缺失或结果不一致，
+Phase 5 均为 `FAIL`，Windows 继续保持未支持。验收必须使用与自动门禁相同的 clean exact candidate SHA，不得从 WSL、
+Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
+
+准备条件：
+
+- 使用 Windows 11 x64 标准用户，以及系统受保护目录中的 machine-scope Python、Git 和 `rg`；先确认同一 SHA 的 Windows
+  3.11/3.12 自动门禁均通过，并安装该 SHA 生成且已由 distribution verifier 验证的 wheel；
+- 在一次性、受信、已完成 `pony init` 的测试仓库中操作；记录 Windows build、Windows Terminal 版本、终端 profile、字体、
+  Python 版本、`pony --version`、exact candidate SHA 和显示缩放比例；
+- 动态 Assistant 渲染步骤会发出一次最小 Provider 请求，必须取得当轮费用/网络授权并记录 Provider、protocol、endpoint
+  类别与 model；未获授权时标记“未执行”，Phase 5 不得判为 `PASS`。
+
+按以下顺序执行并逐项记录 `PASS`/`FAIL`、观察值和证据文件：
+
+1. 分别从 Windows Terminal 的 PowerShell 与 Command Prompt profile 直接运行 `pony --help`、`pony` 和 `pony repl`；两种
+   交互入口必须进入同一 TUI，`/exit` 后终端输入、光标和按键处理恢复正常。不得只验证 CLI 帮助或 import。
+2. 在 PowerShell profile 中把可用内容区依次调整为 40、80、120 列，每次记录终端实际报告的列数并重新启动 `pony`。
+   三种宽度都必须保留马形 Logo、块状 `PONY CODE` 字标和既定视觉意图，无裁切、重叠、残留重绘或水平滚动；40 列使用
+   compact 布局。footer 按宽度降级，但始终不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
+3. 在 120 列会话中输入 `/`，确认 completion 菜单最多五项；输入七行文本，确认输入框最多增长六行且光标/滚动正常；
+   输入中文、英文和 emoji，确认用户消息为无角色标签的低对比块。使用已授权 Provider 发送固定最小请求，要求返回标题、
+   列表、行内代码、代码块和表格，确认 Markdown 降级可读、控制字符不可见且 `Working…` 在正式输出前清除。
+4. 会话空闲时按一次 `Ctrl+C` 清空非空输入，再按两次 `Ctrl+C` 验证退出提示与退出；重新进入后以 `Ctrl+D` 退出。
+   退出后键盘、光标和终端模式必须恢复，不能遗留输入 hook。
+5. 分别运行 `pony --no-color` 和设置 `NO_COLOR=1` 后运行 `pony`，确认布局与文本仍完整且没有 ANSI 颜色；清除环境变量后
+   重新启动，确认颜色能力恢复。再进行一次 120→40→80 的运行中缩放，确认没有旧 footer、菜单或消息残影。
+
+验收记录至少包含以下字段，并作为候选 tag 的发布附件或 CI 关联 artifact 保存；截图必须先检查不含 Key、完整 API Base、
+私有 prompt、绝对私有路径或 Session 标识：
+
+```text
+exact candidate SHA:
+Windows build / Windows Terminal version:
+Python / pony / profile / font / scaling:
+PowerShell launch: PASS 或 FAIL（证据）
+Command Prompt launch: PASS 或 FAIL（证据）
+40、80、120 列与运行中缩放: PASS 或 FAIL（证据）
+输入、completion、Markdown、中文与 emoji: PASS 或 FAIL（证据）
+Ctrl+C / Ctrl+D / hook 恢复: PASS 或 FAIL（证据）
+--no-color / NO_COLOR: PASS 或 FAIL（证据）
+Provider / protocol / endpoint 类别 / model / G8 授权与结果:
+Phase 5 结论：PASS 或 FAIL
+验收人 / 时间 / artifact 链接:
+```
 
 跨机器或跨 OS 复制 active Session 的支持声明还必须通过 [ADR-0050](adr/0050-windows-native-support.md) 定义的 logical identity/physical binding 格式迁移；
 否则只声明 Windows 本机新建与恢复 Session。
@@ -445,7 +525,8 @@ HEAD 从头重跑门禁。
 ## Tag 发布
 
 `.github/workflows/release.yml` 只响应 `v*` tag，并要求 tag 精确等于 `v<project.version>`。工作流在全新 runner 中重复
-静态、功能、评估、临时构建和 clean-install 门禁；随后有意重建固定 `dist/`、再次验证实际待发布归档，再使用
+静态、功能、评估、临时构建和 clean-install 门禁；同时复用与普通 CI 相同的 Windows 3.11/3.12 标准用户完整门禁与
+原生攻击 probe。只有 Windows 矩阵全部通过后，`publish` job 才有意重建固定 `dist/`、再次验证实际待发布归档，再使用
 GitHub OIDC / PyPI Trusted Publishing 上传 wheel 与 sdist，生成 SHA-256 文件并创建 GitHub Release。
 
 发布前外部一次性配置：
