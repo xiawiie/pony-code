@@ -5,12 +5,11 @@ import stat
 import pytest
 
 from pony.cli.app import main
+from pony.security.private_files import ensure_private_dir, ensure_private_file
 
 
 def _private_directory(path):
-    path.mkdir(parents=True, exist_ok=True)
-    path.chmod(0o700)
-    return path
+    return ensure_private_dir(path)
 
 
 def _legacy_checkpoint_root(root):
@@ -37,7 +36,7 @@ def _write_legacy_checkpoint(root, checkpoint_id):
         ),
         encoding="utf-8",
     )
-    path.chmod(0o600)
+    ensure_private_file(path)
     return path
 
 
@@ -60,7 +59,7 @@ def _write_legacy_tool_change(root, tool_change_id, *, status="pending"):
         ),
         encoding="utf-8",
     )
-    path.chmod(0o600)
+    ensure_private_file(path)
     return path
 
 
@@ -170,7 +169,7 @@ def test_checkpoints_pending_lists_tool_change_and_invalid_record(tmp_path, caps
     invalid.write_bytes(
         b"{private-invalid-evidence"
     )
-    invalid.chmod(0o600)
+    ensure_private_file(invalid)
     code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"])
     payload = json.loads(capsys.readouterr().out)
     assert code == 0

@@ -7,6 +7,7 @@ from pathlib import Path
 from pony.tools.subprocess import _minimal_env, run_hardened_command
 
 
+_WINDOWS = os.name == "nt"
 DEFAULT_RUN_SHELL_TIMEOUT = 60
 
 MAX_RUN_SHELL_TIMEOUT = 120
@@ -40,7 +41,7 @@ def _tool_run_shell(context, execution):
     elif execution.execution_mode == "shell":
         env = (
             _minimal_env(context.root, execution.executable)
-            if os.name == "nt"
+            if _WINDOWS
             else context.shell_env()
         )
         result = run_hardened_command(

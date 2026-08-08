@@ -1,4 +1,5 @@
 import json
+import os
 import pytest
 
 from pony import Pony
@@ -6,10 +7,28 @@ from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.tools import registry as toolkit
 from benchmarks.evaluation.benchmark_schema import validate_benchmark
+from benchmarks.evaluation import fixed_benchmark
 from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.runtime.options import RuntimeOptions
 
+
+
+@pytest.fixture(autouse=True)
+def windows_contract_python(monkeypatch, contract_python):
+    if os.name != "nt":
+        return
+    original = fixed_benchmark.build_trusted_executables
+
+    def trusted(workspace_root, *, env=None, names=()):
+        result = original(workspace_root, env=env, names=names)
+        if "python" in names:
+            result["python"] = contract_python
+        if "python3" in names:
+            result["python3"] = contract_python
+        return result
+
+    monkeypatch.setattr(fixed_benchmark, "build_trusted_executables", trusted)
 
 def build_agent(tmp_path, allowed_tools=None, *, executables=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")

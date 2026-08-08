@@ -54,6 +54,65 @@ def _jsonl(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _write_private(store, path, data):
+    private_files_module.ensure_private_dir(path.parent)
+    return private_files_module.write_private_bytes_atomic(
+        path,
+        data,
+        trusted_root=store.root,
+        trusted_root_identity=store._root_identity,
+    )
+
+
+def _patch_private_install(monkeypatch, target, callback, *, after=False):
+    target = Path(target)
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        original_install = windows_private_files.native.rename_handle
+
+        def install(source, destination_parent, destination_name, **kwargs):
+            if destination_name != target.name:
+                return original_install(
+                    source,
+                    destination_parent,
+                    destination_name,
+                    **kwargs,
+                )
+            if not after:
+                callback()
+            result = original_install(
+                source,
+                destination_parent,
+                destination_name,
+                **kwargs,
+            )
+            if after:
+                callback()
+            return result
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "rename_handle",
+            install,
+        )
+        return
+
+    original_install = private_files_module._install_private_temp
+
+    def install(state):
+        if state.path != target:
+            return original_install(state)
+        if not after:
+            callback()
+        result = original_install(state)
+        if after:
+            callback()
+        return result
+
+    monkeypatch.setattr(private_files_module, "_install_private_temp", install)
+
+
 def _provider_binding(**overrides):
     binding = {
         "protocol_family": "openai_responses",
@@ -64,6 +123,7 @@ def _provider_binding(**overrides):
     return binding
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owner-mode contract")
 def test_legacy_readonly_inspection_allows_owner_parent_mode_0755(tmp_path):
     root = tmp_path / "sessions"
     store = SessionStore(root)
@@ -386,7 +446,7 @@ def test_session_store_load_refuses_symlink_file(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     outside = tmp_path / "outside.jsonl"
     outside.write_bytes(b"{}\n")
-    store.lock_path.touch(mode=0o600)
+    _write_private(store, store.lock_path, b"")
     store.path("linked").symlink_to(outside)
 
     with pytest.raises(ValueError, match="symlink"):
@@ -397,9 +457,9 @@ def test_session_store_load_refuses_symlink_file(tmp_path):
 def test_session_store_load_rejects_oversized_record(tmp_path, monkeypatch):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", 8)
-    store.lock_path.touch(mode=0o600)
+    _write_private(store, store.lock_path, b"")
     path = store.path("oversized")
-    path.write_bytes(b"x" * 9)
+    _write_private(store, path, b"x" * 9)
     with pytest.raises(ValueError, match="too large"):
         store.load("oversized")
     assert path.read_bytes() == b"x" * 9
@@ -441,10 +501,11 @@ def test_session_entry_hard_cap_is_enforced_without_partial_append(
 def test_legacy_json_migrates_only_on_explicit_resume_with_backup(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "legacy", legacy=True)
-    store.lock_path.touch(mode=0o600)
-    store.legacy_path("legacy").write_text(
-        json.dumps(legacy),
-        encoding="utf-8",
+    _write_private(store, store.lock_path, b"")
+    _write_private(
+        store,
+        store.legacy_path("legacy"),
+        json.dumps(legacy).encode("utf-8"),
     )
 
     with pytest.raises(SessionMigrationRequired):
@@ -482,10 +543,11 @@ def test_legacy_migration_promotes_working_state_to_task_checkpoint(tmp_path):
             "src/stale.py": "must not migrate",
         }
     }
-    store.lock_path.touch(mode=0o600)
-    store.legacy_path("legacy-working").write_text(
-        json.dumps(legacy),
-        encoding="utf-8",
+    _write_private(store, store.lock_path, b"")
+    _write_private(
+        store,
+        store.legacy_path("legacy-working"),
+        json.dumps(legacy).encode("utf-8"),
     )
 
     loaded = store.load_for_resume("legacy-working")
@@ -538,10 +600,11 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
             }
         },
     }
-    store.lock_path.touch(mode=0o600)
-    store.legacy_path("legacy-checkpoint").write_text(
-        json.dumps(legacy),
-        encoding="utf-8",
+    _write_private(store, store.lock_path, b"")
+    _write_private(
+        store,
+        store.legacy_path("legacy-checkpoint"),
+        json.dumps(legacy).encode("utf-8"),
     )
 
     loaded = store.load_for_resume("legacy-checkpoint")
@@ -570,28 +633,56 @@ def test_failed_legacy_publish_keeps_old_session_and_is_retryable(
 ):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "retry", legacy=True)
-    store.lock_path.touch(mode=0o600)
-    store.legacy_path("retry").write_text(json.dumps(legacy), encoding="utf-8")
-    real_replace = session_store_module.os.replace
+    _write_private(store, store.lock_path, b"")
+    _write_private(
+        store,
+        store.legacy_path("retry"),
+        json.dumps(legacy).encode("utf-8"),
+    )
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    def fail_replace(*_args, **_kwargs):
-        raise OSError("candidate publish crash")
+        publish_owner = windows_private_files.native
+        publish_name = "rename_handle"
+        real_publish = publish_owner.rename_handle
 
-    monkeypatch.setattr(session_store_module.os, "replace", fail_replace)
+        def fail_publish(source, destination_parent, destination_name, **kwargs):
+            if destination_name == store.path("retry").name:
+                raise OSError("candidate publish crash")
+            return real_publish(
+                source,
+                destination_parent,
+                destination_name,
+                **kwargs,
+            )
+
+    else:
+        publish_owner = session_store_module.os
+        publish_name = "replace"
+        real_publish = publish_owner.replace
+
+        def fail_publish(*_args, **_kwargs):
+            raise OSError("candidate publish crash")
+
+    monkeypatch.setattr(publish_owner, publish_name, fail_publish)
     with pytest.raises(OSError, match="publish crash"):
         store.load_for_resume("retry")
     assert store.legacy_path("retry").exists()
     assert not store.path("retry").exists()
 
-    monkeypatch.setattr(session_store_module.os, "replace", real_replace)
+    monkeypatch.setattr(publish_owner, publish_name, real_publish)
     assert store.load_for_resume("retry")["messages"] == legacy["messages"]
 
 
 def test_invalid_legacy_session_is_never_rewritten(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    store.lock_path.touch(mode=0o600)
+    _write_private(store, store.lock_path, b"")
     path = store.legacy_path("invalid")
-    path.write_text('{"record_type":"session","format_version":1}', encoding="utf-8")
+    _write_private(
+        store,
+        path,
+        b'{"record_type":"session","format_version":1}',
+    )
     original = path.read_bytes()
 
     with pytest.raises(SessionFormatError):
@@ -606,8 +697,12 @@ def test_legacy_nested_duplicate_keys_are_rejected(tmp_path):
         '"runtime_identity": {}',
         '"runtime_identity": {"feature_flags": {}, "feature_flags": {}}',
     )
-    store.lock_path.touch(mode=0o600)
-    store.legacy_path("duplicate").write_text(payload, encoding="utf-8")
+    _write_private(store, store.lock_path, b"")
+    _write_private(
+        store,
+        store.legacy_path("duplicate"),
+        payload.encode("utf-8"),
+    )
     with pytest.raises(SessionFormatError, match="duplicate"):
         store.load_for_resume("duplicate")
 
@@ -780,17 +875,10 @@ def test_clone_publish_does_not_overwrite_concurrently_created_session(
     store = SessionStore(source / ".pony" / "sessions")
     store.save(_session(source, "source-session"))
     published = target / ".pony" / "sessions" / "target-session.jsonl"
-    original_install = private_files_module._install_private_temp
-
-    def create_target_after_final_check(state):
-        if state.path == published:
-            published.write_bytes(b"concurrent session\n")
-        return original_install(state)
-
-    monkeypatch.setattr(
-        private_files_module,
-        "_install_private_temp",
-        create_target_after_final_check,
+    _patch_private_install(
+        monkeypatch,
+        published,
+        lambda: published.write_bytes(b"concurrent session\n"),
     )
 
     with pytest.raises(ValueError, match="clone session id already exists"):
@@ -814,17 +902,11 @@ def test_clone_publish_rolls_back_when_worktree_identity_drifts(
     store = SessionStore(source / ".pony" / "sessions")
     store.save(_session(source, "source-session"))
     published = target / ".pony" / "sessions" / "target-session.jsonl"
-    original_install = private_files_module._install_private_temp
-
-    def drift_after_install(state):
-        original_install(state)
-        if state.path == published:
-            (target / ".git").mkdir()
-
-    monkeypatch.setattr(
-        private_files_module,
-        "_install_private_temp",
-        drift_after_install,
+    _patch_private_install(
+        monkeypatch,
+        published,
+        lambda: (target / ".git").mkdir(),
+        after=True,
     )
 
     with pytest.raises(SessionFormatError, match="clone target worktree changed"):
@@ -850,17 +932,11 @@ def test_clone_publish_rolls_back_when_legacy_session_appears(
     target_store = SessionStore(target / ".pony" / "sessions")
     published = target_store.path("target-session")
     legacy = target_store.legacy_path("target-session")
-    original_install = private_files_module._install_private_temp
-
-    def install_with_legacy_race(state):
-        original_install(state)
-        if state.path == published:
-            legacy.write_bytes(b"legacy session\n")
-
-    monkeypatch.setattr(
-        private_files_module,
-        "_install_private_temp",
-        install_with_legacy_race,
+    _patch_private_install(
+        monkeypatch,
+        published,
+        lambda: legacy.write_bytes(b"legacy session\n"),
+        after=True,
     )
 
     with pytest.raises(ValueError, match="clone session id already exists"):

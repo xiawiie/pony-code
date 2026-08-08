@@ -4,8 +4,10 @@ from pony.tools import subprocess as hardened_subprocess
 from pony.tools.subprocess import build_trusted_executables, run_process_group
 
 
-def test_approved_shell_runner_returns_structured_process_result(tmp_path):
-    python = build_trusted_executables(tmp_path, names=("python3",))["python3"]
+def test_approved_shell_runner_returns_structured_process_result(
+    tmp_path, contract_python
+):
+    python = contract_python
     result = run_process_group(
         [python, "-c", "print('ok')"],
         cwd=tmp_path,

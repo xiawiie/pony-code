@@ -14,6 +14,7 @@ from pony.security.private_files import (
     PrivateAtomicWriteError,
     ensure_private_dir,
     private_directory_identity,
+    private_file_signature,
     read_private_bytes,
     write_private_bytes_atomic,
 )
@@ -302,6 +303,24 @@ class Migration:
         self._fsync_dir(path.parent)
 
     def _remove_journal(self):
+        if os.name == "nt":
+            from pony.security.windows_private_files import remove_private_file
+
+            area_identity = self._trusted_area_identity()
+            signature = private_file_signature(
+                self.journal,
+                trusted_root=self.area,
+                trusted_root_identity=area_identity,
+            )
+            if not signature.is_private:
+                raise ValueError("private file permissions are unsafe")
+            remove_private_file(
+                self.journal,
+                trusted_root=self.area,
+                trusted_root_identity=area_identity,
+                expected_identity=(signature.filesystem_id, signature.file_id),
+            )
+            return
         self.journal.unlink()
         self._fsync_dir(self.journal.parent)
 

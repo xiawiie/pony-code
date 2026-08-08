@@ -51,19 +51,32 @@ def _seed_private_file(root, target, data):
     return root_identity
 
 
-def _swap_private_temp_with_symlink(monkeypatch, outside):
+def _atomic_rollback_files(root):
+    pattern = ".*.restore" if os.name == "nt" else ".*.bak"
+    return list(root.glob(pattern))
+
+
+def _swap_private_temp_with_unknown_entry(monkeypatch, outside):
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        original_move = windows_private_files.native.move_file
+        original_rename = windows_private_files.native.rename_handle
+        swapped = False
 
-        def swap_before_move(source, target):
-            if str(source).endswith(".tmp"):
-                Path(source).unlink()
-                Path(source).symlink_to(outside)
-            return original_move(source, target)
+        def swap_before_rename(handle, parent, name, *, replace=False):
+            nonlocal swapped
+            if not swapped:
+                temp = next(outside.parent.rglob(".*.tmp"))
+                temp.unlink()
+                os.link(outside, temp.parent / name)
+                swapped = True
+            return original_rename(handle, parent, name, replace=replace)
 
-        monkeypatch.setattr(windows_private_files.native, "move_file", swap_before_move)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "rename_handle",
+            swap_before_rename,
+        )
         return
 
     original_replace = security_module.os.replace
@@ -82,24 +95,16 @@ def _hardlink_private_temp_before_install(monkeypatch, install_alias):
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        original_move = windows_private_files.native.move_file
-        original_replace = windows_private_files.native.replace_file
+        original_rename = windows_private_files.native.rename_handle
 
-        def hardlink_before_move(source, target):
-            if str(source).endswith(".tmp"):
-                install_alias(source)
-            return original_move(source, target)
+        def hardlink_before_rename(handle, parent, name, *, replace=False):
+            install_alias(None)
+            return original_rename(handle, parent, name, replace=replace)
 
-        def hardlink_before_replace(target, replacement, backup=None):
-            if str(replacement).endswith(".tmp"):
-                install_alias(replacement)
-            return original_replace(target, replacement, backup)
-
-        monkeypatch.setattr(windows_private_files.native, "move_file", hardlink_before_move)
         monkeypatch.setattr(
             windows_private_files.native,
-            "replace_file",
-            hardlink_before_replace,
+            "rename_handle",
+            hardlink_before_rename,
         )
         return
 
@@ -651,14 +656,14 @@ def test_run_trace_rejects_hardlink_without_touching_external_inode(tmp_path):
     _assert_mode(outside, 0o644)
 
 
-def test_session_temp_swap_preserves_unknown_installed_symlink(
+def test_session_temp_swap_preserves_unknown_installed_entry(
     tmp_path,
     monkeypatch,
 ):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     outside = tmp_path / "outside-session.json"
     outside.write_text("outside\n", encoding="utf-8")
-    _swap_private_temp_with_symlink(monkeypatch, outside)
+    _swap_private_temp_with_unknown_entry(monkeypatch, outside)
 
     with pytest.raises(
         (ValueError, security_module.PrivateAtomicWriteError),
@@ -667,7 +672,10 @@ def test_session_temp_swap_preserves_unknown_installed_symlink(
         store.save(_session("swapped", tmp_path))
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
-    assert store.path("swapped").is_symlink()
+    if os.name == "nt":
+        assert store.path("swapped").samefile(outside)
+    else:
+        assert store.path("swapped").is_symlink()
 
 
 def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
@@ -783,6 +791,10 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     aliases = []
 
     def install_alias(source, *, src_dir_fd=None):
+        if os.name == "nt":
+            source = next(tmp_path.rglob(".*.tmp"), None)
+            if source is None:
+                return
         alias = tmp_path / f"temp-alias-{len(aliases)}"
         os.link(source, alias, src_dir_fd=src_dir_fd)
         aliases.append(alias)
@@ -832,6 +844,10 @@ def test_atomic_writer_hardlink_race_restores_previous_target(
 
     def install_alias(source, *, src_dir_fd=None):
         nonlocal linked
+        if os.name == "nt":
+            source = next(root.glob(".*.tmp"), None)
+            if source is None:
+                return
         os.link(source, alias, src_dir_fd=src_dir_fd)
         linked = True
 
@@ -847,9 +863,10 @@ def test_atomic_writer_hardlink_race_restores_previous_target(
 
     assert linked is True
     assert target.read_bytes() == original if existing else not target.exists()
-    assert alias.read_bytes() == b""
+    expected_alias = b"replacement\n" if os.name == "nt" and existing else b""
+    assert alias.read_bytes() == expected_alias
     assert not list(root.glob(".*.tmp"))
-    assert not list(root.glob(".*.bak"))
+    assert not _atomic_rollback_files(root)
 
 
 @pytest.mark.parametrize("existing", (False, True))
@@ -982,30 +999,27 @@ def test_atomic_writer_rolls_back_if_root_moves_after_replace(
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        real_move = windows_private_files.native.move_file
-        real_replace = windows_private_files.native.replace_file
+        replacement = security_module.ensure_private_dir(displaced)
+        replacement_identity = security_module.private_directory_identity(replacement)
+        real_open_parent = windows_private_files.native.open_parent
+        open_calls = 0
 
-        def swap_root_after_move(source, destination):
-            result = real_move(source, destination)
-            if str(source).endswith(".tmp"):
-                move_root()
-            return result
-
-        def swap_root_after_replace(destination, source, backup=None):
-            result = real_replace(destination, source, backup)
-            if str(source).endswith(".tmp"):
-                move_root()
-            return result
+        def resolve_replacement_parent(path, **kwargs):
+            nonlocal open_calls, swapped
+            open_calls += 1
+            if open_calls == 3:
+                swapped = True
+                return real_open_parent(
+                    replacement / Path(path).name,
+                    trusted_root=replacement,
+                    trusted_root_identity=replacement_identity,
+                )
+            return real_open_parent(path, **kwargs)
 
         monkeypatch.setattr(
             windows_private_files.native,
-            "move_file",
-            swap_root_after_move,
-        )
-        monkeypatch.setattr(
-            windows_private_files.native,
-            "replace_file",
-            swap_root_after_replace,
+            "open_parent",
+            resolve_replacement_parent,
         )
     else:
         real_replace = security_module.os.replace
@@ -1031,15 +1045,19 @@ def test_atomic_writer_rolls_back_if_root_moves_after_replace(
         )
 
     assert swapped is True
-    assert not target.exists()
-    displaced_target = displaced / target.name
-    assert (
-        displaced_target.read_bytes() == original
-        if existing
-        else not displaced_target.exists()
-    )
-    assert not list(displaced.glob(".*.tmp"))
-    assert not list(displaced.glob(".*.bak"))
+    if os.name == "nt":
+        assert target.read_bytes() == original if existing else not target.exists()
+        assert not list(displaced.iterdir())
+    else:
+        assert not target.exists()
+        displaced_target = displaced / target.name
+        assert (
+            displaced_target.read_bytes() == original
+            if existing
+            else not displaced_target.exists()
+        )
+        assert not list(displaced.glob(".*.tmp"))
+        assert not _atomic_rollback_files(displaced)
 
 
 @pytest.mark.parametrize("existing", (False, True))
@@ -1109,26 +1127,19 @@ def test_atomic_writer_never_rolls_back_over_unknown_canonical(
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        real_move = windows_private_files.native.move_file
-        real_replace = windows_private_files.native.replace_file
+        real_rename = windows_private_files.native.rename_handle
 
-        def fail_after_move(source, destination):
-            result = real_move(source, destination)
-            if str(source).endswith(".tmp"):
+        def fail_after_rename(handle, parent, name, *, replace=False):
+            publishing_temp = next(root.glob(".*.tmp"), None) is not None
+            result = real_rename(handle, parent, name, replace=replace)
+            if publishing_temp:
                 replace_with_concurrent()
             return result
 
-        def fail_after_replace(destination, source, backup=None):
-            result = real_replace(destination, source, backup)
-            if str(source).endswith(".tmp"):
-                replace_with_concurrent()
-            return result
-
-        monkeypatch.setattr(windows_private_files.native, "move_file", fail_after_move)
         monkeypatch.setattr(
             windows_private_files.native,
-            "replace_file",
-            fail_after_replace,
+            "rename_handle",
+            fail_after_rename,
         )
     else:
         real_replace = security_module.os.replace
@@ -1149,7 +1160,7 @@ def test_atomic_writer_never_rolls_back_over_unknown_canonical(
         )
 
     assert target.read_bytes() == concurrent
-    backups = list(root.glob(".*.bak"))
+    backups = _atomic_rollback_files(root)
     if existing:
         assert len(backups) == 1
         assert backups[0].read_bytes() == original
@@ -1179,9 +1190,23 @@ def test_atomic_writer_does_not_destroy_new_canonical_when_backup_is_untrusted(
         nonlocal calls
         calls += 1
         if calls == 1:
-            backup = next(root.glob(".*.bak"))
+            backup = _atomic_rollback_files(root)[0]
             if mutation == "tamper":
-                backup.write_bytes(b"tampered\n")
+                if os.name == "nt":
+                    from pony.security import windows_private_files
+
+                    with windows_private_files.native.open_path(
+                        backup,
+                        directory=False,
+                        desired_access=windows_private_files.native.FILE_WRITE_ACCESS,
+                        single_link=False,
+                    ) as backup_handle:
+                        windows_private_files.native.write_bytes(
+                            backup_handle,
+                            b"tampered\n",
+                        )
+                else:
+                    backup.write_bytes(b"tampered\n")
             else:
                 backup.unlink()
             if os.name == "nt":
@@ -1192,7 +1217,10 @@ def test_atomic_writer_does_not_destroy_new_canonical_when_backup_is_untrusted(
             raise OSError("commit fsync failed")
         os.fsync(descriptor)
 
-    with pytest.raises(ValueError, match="private temp changed"):
+    expected_error = (
+        security_module.PrivateAtomicWriteError if os.name == "nt" else ValueError
+    )
+    with pytest.raises(expected_error, match="rollback|private temp changed") as raised:
         security_module.write_private_bytes_atomic(
             target,
             replacement,
@@ -1201,8 +1229,10 @@ def test_atomic_writer_does_not_destroy_new_canonical_when_backup_is_untrusted(
             fsync_parent=mutate_backup_then_fail,
         )
 
+    if os.name == "nt":
+        assert raised.value.committed is True
     assert target.read_bytes() == replacement
-    backups = list(root.glob(".*.bak"))
+    backups = _atomic_rollback_files(root)
     if mutation == "tamper":
         assert len(backups) == 1
         assert backups[0].read_bytes() == b"tampered\n"
@@ -1277,19 +1307,23 @@ def test_atomic_writer_rolls_back_if_committed_backup_unlink_fails(
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        unlink_owner = windows_private_files.native
-        unlink_name = "delete_file"
-    else:
-        unlink_owner = security_module.os
-        unlink_name = "unlink"
-    real_unlink = getattr(unlink_owner, unlink_name)
-
-    def fail_backup_unlink(name, **kwargs):
-        if str(name).endswith(".bak"):
+        def fail_backup_unlink(_handle, **_kwargs):
             raise OSError("backup cleanup failed")
-        return real_unlink(name, **kwargs)
 
-    monkeypatch.setattr(unlink_owner, unlink_name, fail_backup_unlink)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "delete_handle",
+            fail_backup_unlink,
+        )
+    else:
+        real_unlink = security_module.os.unlink
+
+        def fail_backup_unlink(name, **kwargs):
+            if str(name).endswith(".bak"):
+                raise OSError("backup cleanup failed")
+            return real_unlink(name, **kwargs)
+
+        monkeypatch.setattr(security_module.os, "unlink", fail_backup_unlink)
 
     with pytest.raises(OSError, match="backup cleanup failed"):
         security_module.write_private_bytes_atomic(
@@ -1300,10 +1334,13 @@ def test_atomic_writer_rolls_back_if_committed_backup_unlink_fails(
         )
 
     assert target.read_bytes() == original
-    backups = list(root.glob(".*.bak"))
-    assert len(backups) == 1
-    assert backups[0].read_bytes() == original
-    _assert_mode(backups[0], 0o600)
+    backups = _atomic_rollback_files(root)
+    if os.name == "nt":
+        assert backups == []
+    else:
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
+        _assert_mode(backups[0], 0o600)
 
 
 def test_atomic_writer_rebuilds_backup_if_cleanup_parent_fsync_fails(tmp_path):
@@ -1348,20 +1385,34 @@ def test_atomic_writer_marks_committed_when_cleanup_and_rollback_are_untrusted(
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        unlink_owner = windows_private_files.native
-        unlink_name = "delete_file"
-    else:
-        unlink_owner = security_module.os
-        unlink_name = "unlink"
-    real_unlink = getattr(unlink_owner, unlink_name)
-
-    def tamper_and_fail_backup_unlink(name, **kwargs):
-        if str(name).endswith(".bak"):
-            next(root.glob(".*.bak")).write_bytes(b"tampered-old-bytes!\n")
+        def tamper_and_fail_backup_unlink(handle, **_kwargs):
+            windows_private_files.native.write_bytes(
+                handle,
+                b"tampered-old-bytes!\n",
+            )
             raise OSError("backup cleanup failed")
-        return real_unlink(name, **kwargs)
 
-    monkeypatch.setattr(unlink_owner, unlink_name, tamper_and_fail_backup_unlink)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "delete_handle",
+            tamper_and_fail_backup_unlink,
+        )
+    else:
+        real_unlink = security_module.os.unlink
+
+        def tamper_and_fail_backup_unlink(name, **kwargs):
+            if str(name).endswith(".bak"):
+                _atomic_rollback_files(root)[0].write_bytes(
+                    b"tampered-old-bytes!\n"
+                )
+                raise OSError("backup cleanup failed")
+            return real_unlink(name, **kwargs)
+
+        monkeypatch.setattr(
+            security_module.os,
+            "unlink",
+            tamper_and_fail_backup_unlink,
+        )
 
     with pytest.raises(security_module.PrivateAtomicWriteError) as raised:
         security_module.write_private_bytes_atomic(
@@ -1461,7 +1512,7 @@ def test_block_store_ignores_obsolete_agent_files_and_preserves_user_notes(tmp_p
     _assert_mode(nested_user_note, 0o644)
 
 
-def test_block_store_temp_swap_preserves_unknown_installed_symlink(
+def test_block_store_temp_swap_preserves_unknown_installed_entry(
     tmp_path,
     monkeypatch,
 ):
@@ -1472,7 +1523,7 @@ def test_block_store_temp_swap_preserves_unknown_installed_symlink(
     outside = tmp_path / "outside-memory.md"
     outside.write_text("outside\n", encoding="utf-8")
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
-    _swap_private_temp_with_symlink(monkeypatch, outside)
+    _swap_private_temp_with_unknown_entry(monkeypatch, outside)
 
     with pytest.raises(
         (ValueError, security_module.PrivateAtomicWriteError),
@@ -1481,4 +1532,7 @@ def test_block_store_temp_swap_preserves_unknown_installed_symlink(
         store.append_agent_note("workspace", "safe note")
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
-    assert (workspace / "agent_notes.md").is_symlink()
+    if os.name == "nt":
+        assert (workspace / "agent_notes.md").samefile(outside)
+    else:
+        assert (workspace / "agent_notes.md").is_symlink()

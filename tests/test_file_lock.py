@@ -12,6 +12,16 @@ import pytest
 from pony.state import file_lock
 
 
+def _assert_private_lock(path):
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        return
+    from pony.security import windows_native
+
+    with windows_native.open_path(path, directory=False) as handle:
+        windows_native.require_private(handle)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_lock_authority(tmp_path, monkeypatch):
     monkeypatch.setattr(
@@ -22,9 +32,6 @@ def _isolated_lock_authority(tmp_path, monkeypatch):
 
 
 def test_locked_file_serializes_overlapping_threads(tmp_path):
-    if file_lock.fcntl is None:
-        pytest.skip("platform does not expose fcntl locks")
-
     lock_path = tmp_path / "store.lock"
     events = []
     first_entered = threading.Event()
@@ -110,6 +117,18 @@ def test_locked_file_serializes_after_locked_path_is_replaced(tmp_path):
         for thread in (first, second):
             if thread.ident is not None:
                 thread.join(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle sharing contract")
+def test_windows_locked_file_prevents_path_replacement_while_held(tmp_path):
+    lock_path = tmp_path / "store.lock"
+
+    with file_lock.locked_file(lock_path, require_lock=True):
+        with pytest.raises(PermissionError):
+            lock_path.unlink()
+
+    lock_path.unlink()
+    assert not lock_path.exists()
 
 
 def test_locked_file_authority_is_reentrant_for_distinct_paths(tmp_path):
@@ -366,6 +385,7 @@ def test_locked_file_rejects_hardlink_without_chmod(tmp_path):
         assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX fcntl availability contract")
 def test_locked_file_required_lock_fails_closed_without_fcntl(tmp_path, monkeypatch):
     monkeypatch.setattr(file_lock, "fcntl", None)
 
@@ -409,8 +429,6 @@ def test_locked_file_timeout_fails_without_yielding(tmp_path, monkeypatch):
 
 
 def test_locked_file_real_process_contention_times_out_then_releases(tmp_path):
-    if file_lock.fcntl is None:
-        pytest.skip("fcntl unavailable")
     lock_path = tmp_path / "process.lock"
     script = (
         "import sys\n"
@@ -473,6 +491,7 @@ def test_locked_file_rejects_fifo_without_blocking(tmp_path):
             raise AssertionError("FIFO lock yielded")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir_fd inode race contract")
 def test_locked_file_detects_inode_replacement_before_open(tmp_path, monkeypatch):
     lock_path = tmp_path / "store.lock"
     lock_path.write_text("original", encoding="utf-8")
@@ -500,7 +519,7 @@ def test_locked_file_hardens_existing_regular_file(tmp_path):
     lock_path.write_text("", encoding="utf-8")
     lock_path.chmod(0o644)
     with file_lock.locked_file(lock_path, require_lock=True):
-        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+        _assert_private_lock(lock_path)
 
 
 def test_require_existing_missing_parent_is_zero_write(tmp_path):
@@ -526,10 +545,18 @@ def test_require_existing_rejects_insecure_lock_without_hardening(tmp_path):
             raise AssertionError("insecure lock yielded")
 
     assert lock_path.read_bytes() == b"sentinel"
-    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
+    if os.name == "posix":
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
+    else:
+        from pony.security import windows_native
+
+        with windows_native.open_path(lock_path, directory=False) as handle:
+            with pytest.raises(ValueError, match="unsafe"):
+                windows_native.require_private(handle)
     assert not file_lock._authority_root().exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent mode contract")
 @pytest.mark.parametrize("parent_mode", (0o770, 0o777))
 def test_require_existing_rejects_writable_parent_without_writing(
     tmp_path, parent_mode
@@ -551,13 +578,39 @@ def test_require_existing_rejects_writable_parent_without_writing(
     assert not file_lock._authority_root().exists()
 
 
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
+def test_require_existing_rejects_non_private_parent_without_writing(tmp_path):
+    from pony.security import windows_native
+
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    lock_path = parent / "store.lock"
+    lock_path.write_bytes(b"sentinel")
+    before = lock_path.read_bytes(), lock_path.stat().st_mtime_ns
+
+    with pytest.raises(ValueError, match="unsafe"):
+        with file_lock.locked_file(lock_path, require_existing=True):
+            raise AssertionError("non-private parent lock yielded")
+
+    assert (lock_path.read_bytes(), lock_path.stat().st_mtime_ns) == before
+    with windows_native.open_path(parent, directory=True) as handle:
+        with pytest.raises(ValueError, match="unsafe"):
+            windows_native.require_private(handle)
+
+
 def test_locked_file_parent_swap_cannot_redirect_lock(tmp_path, monkeypatch):
     parent = tmp_path / "parent"
     parent.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
     moved = tmp_path / "parent-original"
-    real_ensure = file_lock.ensure_private_dir
+    if os.name == "nt":
+        from pony.state import windows_file_lock as lock_backend
+    else:
+        lock_backend = file_lock
+    real_ensure = lock_backend.ensure_private_dir
     swapped = False
 
     def ensure_then_swap(path):
@@ -569,7 +622,7 @@ def test_locked_file_parent_swap_cannot_redirect_lock(tmp_path, monkeypatch):
             swapped = True
         return result
 
-    monkeypatch.setattr(file_lock, "ensure_private_dir", ensure_then_swap)
+    monkeypatch.setattr(lock_backend, "ensure_private_dir", ensure_then_swap)
 
     with pytest.raises((OSError, ValueError)):
         with file_lock.locked_file(parent / "store.lock", require_lock=True):

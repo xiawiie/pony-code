@@ -14,6 +14,8 @@ from pathlib import Path
 _FILE_READ_DATA = 0x0001
 _FILE_WRITE_DATA = 0x0002
 _FILE_APPEND_DATA = 0x0004
+_FILE_READ_EA = 0x0008
+_FILE_WRITE_EA = 0x0010
 _FILE_TRAVERSE = 0x0020
 _FILE_DELETE_CHILD = 0x0040
 _FILE_READ_ATTRIBUTES = 0x0080
@@ -23,7 +25,20 @@ _READ_CONTROL = 0x00020000
 _WRITE_DAC = 0x00040000
 _WRITE_OWNER = 0x00080000
 _SYNCHRONIZE = 0x00100000
+_MAXIMUM_ALLOWED = 0x02000000
 _FILE_ALL_ACCESS = 0x001F01FF
+_FILE_GENERIC_READ = (
+    _READ_CONTROL | _FILE_READ_DATA | _FILE_READ_EA | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+)
+_FILE_GENERIC_WRITE = (
+    _READ_CONTROL
+    | _FILE_WRITE_DATA
+    | _FILE_APPEND_DATA
+    | _FILE_WRITE_EA
+    | _FILE_WRITE_ATTRIBUTES
+    | _SYNCHRONIZE
+)
+_FILE_GENERIC_EXECUTE = _READ_CONTROL | _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
 _FILE_SHARE_READ = 0x00000001
 _FILE_SHARE_READ_WRITE = 0x00000003
 _FILE_SHARE_ALL = 0x00000007
@@ -52,11 +67,17 @@ _FILE_BASIC_INFO_CLASS = 0
 _FILE_STANDARD_INFO_CLASS = 1
 _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 _FILE_ID_INFO_CLASS = 18
+_TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 _TOKEN_USER = 1
+_SECURITY_IMPERSONATION = 2
+_ERROR_FILE_EXISTS = 80
 _ERROR_INSUFFICIENT_BUFFER = 122
+_ERROR_ALREADY_EXISTS = 183
+_ERROR_DIRECTORY = 267
 _SE_FILE_OBJECT = 1
 _OWNER_SECURITY_INFORMATION = 0x00000001
+_GROUP_SECURITY_INFORMATION = 0x00000002
 _DACL_SECURITY_INFORMATION = 0x00000004
 _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
 _SE_DACL_PROTECTED = 0x1000
@@ -172,6 +193,15 @@ class _SecurityDescriptor(ctypes.Structure):
 
 class _TokenUser(ctypes.Structure):
     _fields_ = (("User", _SidAndAttributes),)
+
+
+class _GenericMapping(ctypes.Structure):
+    _fields_ = (
+        ("GenericRead", wintypes.DWORD),
+        ("GenericWrite", wintypes.DWORD),
+        ("GenericExecute", wintypes.DWORD),
+        ("GenericAll", wintypes.DWORD),
+    )
 
 
 class _TrusteeW(ctypes.Structure):
@@ -342,6 +372,23 @@ class _Api:
             ctypes.POINTER(wintypes.HANDLE),
         )
         advapi32.OpenProcessToken.restype = wintypes.BOOL
+        advapi32.DuplicateToken.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.POINTER(wintypes.HANDLE),
+        )
+        advapi32.DuplicateToken.restype = wintypes.BOOL
+        advapi32.AccessCheck.argtypes = (
+            wintypes.LPVOID,
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(_GenericMapping),
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.BOOL),
+        )
+        advapi32.AccessCheck.restype = wintypes.BOOL
         advapi32.GetTokenInformation.argtypes = (
             wintypes.HANDLE,
             ctypes.c_int,
@@ -378,16 +425,12 @@ class _Api:
             wintypes.WORD,
         )
         advapi32.SetSecurityDescriptorControl.restype = wintypes.BOOL
-        advapi32.SetSecurityInfo.argtypes = (
+        advapi32.SetKernelObjectSecurity.argtypes = (
             wintypes.HANDLE,
-            ctypes.c_int,
             wintypes.DWORD,
             wintypes.LPVOID,
-            wintypes.LPVOID,
-            wintypes.LPVOID,
-            wintypes.LPVOID,
         )
-        advapi32.SetSecurityInfo.restype = wintypes.DWORD
+        advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
         outputs = (
             ctypes.POINTER(wintypes.LPVOID),
             ctypes.POINTER(wintypes.LPVOID),
@@ -711,7 +754,11 @@ def ensure_directory(path):
         for index, component in enumerate(components):
             final = index == len(components) - 1
             access = (
-                _FILE_ALL_ACCESS
+                _FILE_TRAVERSE
+                | _FILE_READ_ATTRIBUTES
+                | _READ_CONTROL
+                | _WRITE_DAC
+                | _WRITE_OWNER
                 if final
                 else _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL
             )
@@ -723,17 +770,44 @@ def ensure_directory(path):
                     desired_access=access,
                 )
             except OSError as exc:
-                if error_code(exc) not in {2, 3}:
+                code = error_code(exc)
+                if code == _ERROR_DIRECTORY:
+                    raise ValueError(
+                        "private directory has unsafe component"
+                    ) from None
+                if code not in {2, 3}:
                     raise
-                with private_security_descriptor() as descriptor:
-                    child, _created = open_relative(
-                        current,
-                        component,
-                        directory=True,
-                        desired_access=_FILE_ALL_ACCESS,
-                        disposition=_FILE_CREATE,
-                        security_descriptor=descriptor,
-                    )
+                try:
+                    with private_security_descriptor() as descriptor:
+                        child, _created = open_relative(
+                            current,
+                            component,
+                            directory=True,
+                            desired_access=access,
+                            disposition=_FILE_CREATE,
+                            security_descriptor=descriptor,
+                        )
+                except OSError as create_exc:
+                    code = error_code(create_exc)
+                    if code not in {_ERROR_FILE_EXISTS, _ERROR_ALREADY_EXISTS}:
+                        if code == _ERROR_DIRECTORY:
+                            raise ValueError(
+                                "private directory has unsafe component"
+                            ) from None
+                        raise
+                    try:
+                        child, _created = open_relative(
+                            current,
+                            component,
+                            directory=True,
+                            desired_access=access,
+                        )
+                    except OSError as reopen_exc:
+                        if error_code(reopen_exc) == _ERROR_DIRECTORY:
+                            raise ValueError(
+                                "private directory has unsafe component"
+                            ) from None
+                        raise
             current.close()
             current = child
         require_current_owner(current)
@@ -838,48 +912,124 @@ def windows_directory():
         size = length + 1
 
 
+def _effective_access_mask(handle):
+    native, descriptor, _owner, _dacl = _security_snapshot(handle)
+    primary_token = wintypes.HANDLE()
+    impersonation_token = wintypes.HANDLE()
+    try:
+        if not native.advapi32.OpenProcessToken(
+            native.kernel32.GetCurrentProcess(),
+            _TOKEN_QUERY | _TOKEN_DUPLICATE,
+            ctypes.byref(primary_token),
+        ):
+            _winerror("OpenProcessToken failed")
+        if not native.advapi32.DuplicateToken(
+            primary_token,
+            _SECURITY_IMPERSONATION,
+            ctypes.byref(impersonation_token),
+        ):
+            _winerror("DuplicateToken failed")
+        mapping = _GenericMapping(
+            _FILE_GENERIC_READ,
+            _FILE_GENERIC_WRITE,
+            _FILE_GENERIC_EXECUTE,
+            _FILE_ALL_ACCESS,
+        )
+        privilege_size = wintypes.DWORD(1024)
+        privileges = ctypes.create_string_buffer(privilege_size.value)
+        granted = wintypes.DWORD()
+        allowed = wintypes.BOOL()
+        if not native.advapi32.AccessCheck(
+            descriptor,
+            impersonation_token,
+            _MAXIMUM_ALLOWED,
+            ctypes.byref(mapping),
+            privileges,
+            ctypes.byref(privilege_size),
+            ctypes.byref(granted),
+            ctypes.byref(allowed),
+        ):
+            if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER:
+                _winerror("AccessCheck failed")
+            privileges = ctypes.create_string_buffer(privilege_size.value)
+            if not native.advapi32.AccessCheck(
+                descriptor,
+                impersonation_token,
+                _MAXIMUM_ALLOWED,
+                ctypes.byref(mapping),
+                privileges,
+                ctypes.byref(privilege_size),
+                ctypes.byref(granted),
+                ctypes.byref(allowed),
+            ):
+                _winerror("AccessCheck failed")
+        return granted.value if allowed.value else 0
+    finally:
+        if impersonation_token.value:
+            native.kernel32.CloseHandle(impersonation_token)
+        if primary_token.value:
+            native.kernel32.CloseHandle(primary_token)
+        native.kernel32.LocalFree(descriptor)
+
+
+def handle_is_mutable_by_current_user(
+    handle,
+    *,
+    directory,
+    contents=True,
+    include_delete=True,
+):
+    accesses = [_WRITE_DAC, _WRITE_OWNER]
+    if include_delete:
+        accesses.append(_DELETE)
+    if not directory:
+        accesses.append(_FILE_WRITE_ATTRIBUTES)
+    if directory:
+        accesses.append(_FILE_DELETE_CHILD)
+        if contents:
+            accesses.extend((_FILE_WRITE_DATA, _FILE_APPEND_DATA))
+    else:
+        accesses.extend((_FILE_WRITE_DATA, _FILE_APPEND_DATA))
+    granted = _effective_access_mask(handle)
+    return any(granted & access == access for access in accesses)
+
+
 def path_is_mutable_by_current_user(path, *, directory, contents=True):
     path = Path(path)
-    accesses = (_WRITE_DAC, _WRITE_OWNER)
-    if not directory or path.parent != path:
-        accesses = (_DELETE, *accesses)
-    if not directory:
-        accesses = (_FILE_WRITE_ATTRIBUTES, *accesses)
-    if directory:
-        accesses += (_FILE_DELETE_CHILD,)
-        if contents:
-            accesses += (_FILE_WRITE_DATA, _FILE_APPEND_DATA)
-    else:
-        accesses += (_FILE_WRITE_DATA, _FILE_APPEND_DATA)
-    for access in accesses:
-        try:
-            handle = open_path(
-                path,
-                directory=directory,
-                desired_access=access,
-                single_link=False,
-            )
-        except OSError as exc:
-            if error_code(exc) in {5, 1314}:
-                continue
-            raise
-        else:
-            handle.close()
+    handle = open_path(path, directory=directory, single_link=False)
+    try:
+        if handle_is_mutable_by_current_user(
+            handle,
+            directory=directory,
+            contents=contents,
+            include_delete=not directory or path.parent != path,
+        ):
             return True
-    return False
+    finally:
+        handle.close()
+    if path.parent == path:
+        return False
+    parent = open_path(path.parent, directory=True, single_link=False)
+    try:
+        return bool(_effective_access_mask(parent) & _FILE_DELETE_CHILD)
+    finally:
+        parent.close()
 
 
 def _security_snapshot(handle):
     native = api()
     owner = wintypes.LPVOID()
+    group = wintypes.LPVOID()
     dacl = wintypes.LPVOID()
     descriptor = wintypes.LPVOID()
     status = native.advapi32.GetSecurityInfo(
         handle.value,
         _SE_FILE_OBJECT,
-        _OWNER_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
+        _OWNER_SECURITY_INFORMATION
+        | _GROUP_SECURITY_INFORMATION
+        | _DACL_SECURITY_INFORMATION,
         ctypes.byref(owner),
-        None,
+        ctypes.byref(group),
         ctypes.byref(dacl),
         None,
         ctypes.byref(descriptor),
@@ -963,7 +1113,7 @@ def require_private(handle):
         native.kernel32.LocalFree(descriptor)
 
 
-def make_private(handle):
+def make_private(handle, *, set_owner=True):
     native = api()
     with private_security_descriptor() as descriptor:
         absolute = ctypes.cast(descriptor, wintypes.LPVOID)
@@ -977,20 +1127,17 @@ def make_private(handle):
             _winerror("GetSecurityDescriptorDacl failed")
         if not dacl_present or not dacl:
             raise RuntimeError("private DACL construction failed")
-        _status_error(
-            native.advapi32.SetSecurityInfo(
-                handle.value,
-                _SE_FILE_OBJECT,
-                _OWNER_SECURITY_INFORMATION
-                | _DACL_SECURITY_INFORMATION
-                | _PROTECTED_DACL_SECURITY_INFORMATION,
-                native.current_sid,
-                None,
-                dacl,
-                None,
-            ),
-            "SetSecurityInfo failed",
+        security_information = (
+            _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION
         )
+        if set_owner:
+            security_information |= _OWNER_SECURITY_INFORMATION
+        if not native.advapi32.SetKernelObjectSecurity(
+            handle.value,
+            security_information,
+            absolute,
+        ):
+            _winerror("SetKernelObjectSecurity failed")
 
 
 def read_chunks(handle):
@@ -1053,12 +1200,12 @@ def truncate(handle, size):
         _winerror("FlushFileBuffers failed")
 
 
-def rename_handle(handle, destination_parent, destination_name):
+def rename_handle(handle, destination_parent, destination_name, *, replace=False):
     name = lexical_component(destination_name).encode("utf-16-le")
     size = ctypes.sizeof(_FileRenameInfo) + len(name)
     buffer = ctypes.create_string_buffer(size)
     info = _FileRenameInfo.from_buffer(buffer)
-    info.ReplaceIfExists = False
+    info.ReplaceIfExists = bool(replace)
     info.RootDirectory = destination_parent.value
     info.FileNameLength = len(name)
     ctypes.memmove(
@@ -1152,7 +1299,7 @@ FILE_WRITE_ACCESS = (
     | _WRITE_OWNER
     | _DELETE
 )
-FILE_LOCK_ACCESS = FILE_WRITE_ACCESS & ~_DELETE
+FILE_LOCK_ACCESS = FILE_WRITE_ACCESS & ~(_DELETE | _WRITE_OWNER)
 FILE_OPEN = _FILE_OPEN
 FILE_CREATE = _FILE_CREATE
 FILE_OPEN_IF = _FILE_OPEN_IF

@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -15,11 +16,41 @@ from benchmarks.coding_quality.run_benchmark import (
 )
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.security.private_files import private_file_signature
+from pony.workspace import context as workspace_context
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TASKS = ROOT / "benchmarks" / "coding_quality" / "tasks.json"
 
+
+
+@pytest.fixture(autouse=True)
+def windows_contract_executables(monkeypatch, contract_git, contract_python):
+    if os.name != "nt":
+        return
+    def contract_builder(original):
+        def trusted(workspace_root, *, env=None, names=()):
+            result = original(workspace_root, env=env, names=names)
+            if not names or "python" in names:
+                result["python"] = contract_python
+            if not names or "python3" in names:
+                result["python3"] = contract_python
+            if not names or "git" in names:
+                result["git"] = contract_git
+            return result
+
+        return trusted
+
+    monkeypatch.setattr(
+        run_benchmark,
+        "build_trusted_executables",
+        contract_builder(run_benchmark.build_trusted_executables),
+    )
+    monkeypatch.setattr(
+        workspace_context,
+        "build_trusted_executables",
+        contract_builder(workspace_context.build_trusted_executables),
+    )
 
 def _head():
     return run_benchmark._git(["rev-parse", "HEAD"], cwd=ROOT)

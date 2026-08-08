@@ -7,8 +7,13 @@ import pytest
 import pony.security.command_policy as recovery_policy
 
 
-def assess_command(*args, **kwargs):
-    return recovery_policy.assess_command(*args, **kwargs)
+def assess_command(command, workspace_root, executables=None):
+    return recovery_policy._assess_command(
+        command,
+        workspace_root,
+        executables,
+        _depth=0,
+    )
 
 
 def _scan_shell_syntax(command):
@@ -322,6 +327,7 @@ def test_unquoted_line_separators_require_shell_approval(workspace, command):
     assert result["execution_mode"] == "shell"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 @pytest.mark.parametrize("quote", ["'", '"'])
 def test_quoted_newline_remains_literal_argv_text(workspace, quote):
     result = assess_command(f"ls {quote}literal\nname{quote}", workspace)
@@ -363,6 +369,7 @@ def test_line_continuation_cannot_hide_sensitive_path(workspace, command):
     assert result["execution_mode"] == "shell"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 def test_single_quoted_line_continuation_is_literal(workspace):
     command = "ls '.e\\\nnv'"
 
@@ -442,6 +449,7 @@ def test_command_substitution_is_scanned_as_longest_token():
     assert scan["has_expansion"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 def test_quotes_and_escapes_keep_literal_argv_text(workspace):
     literal_commands = {
         "ls 'literal|$HOME*?[~'": ["ls", "literal|$HOME*?[~"],
@@ -634,7 +642,14 @@ def test_path_grammar_rejects_internal_parent_components_before_collapse(
     ("name", "command", "kind"),
     [
         (".env.example", "ls .env.example", "directory"),
-        (".env.sample", "wc .env.sample", "fifo"),
+        pytest.param(
+            ".env.sample",
+            "wc .env.sample",
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
         (".env.template", "ls .env.template", "missing"),
     ],
 )
@@ -892,6 +907,7 @@ def test_command_substitution_cannot_hide_sensitive_path(workspace, command):
         "ls '$" + "\\\n" + "(cat .env)'",
     ],
 )
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 def test_literal_command_substitution_text_remains_literal(workspace, command):
     result = assess_command(command, workspace)
 
@@ -989,6 +1005,7 @@ def test_leading_assignment_cannot_hide_sensitive_path(workspace, command):
     assert result["reason"] == "sensitive_path"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 @pytest.mark.parametrize("quote", ["'", '"'])
 def test_quoted_newline_assignment_text_remains_literal(workspace, quote):
     command = f"ls {quote}foo\nBASH_ENV=.env{quote}"
@@ -1020,7 +1037,18 @@ def test_control_words_do_not_promote_later_assignment_like_arguments(
     assert result["decision"] != "reject"
 
 
-@pytest.mark.parametrize("kind", ["directory", "fifo"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "directory",
+        pytest.param(
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
+    ],
+)
 def test_wc_rejects_existing_non_regular_operand(workspace, kind):
     target = workspace / kind
     if kind == "directory":

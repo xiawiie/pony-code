@@ -7,6 +7,7 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -118,6 +119,8 @@ def _configure_api(loader):
         wintypes.DWORD,
     )
     kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.GetSystemDirectoryW.argtypes = (wintypes.LPWSTR, wintypes.UINT)
+    kernel32.GetSystemDirectoryW.restype = wintypes.UINT
     ntdll.NtCreateFile.argtypes = (
         ctypes.POINTER(wintypes.HANDLE),
         wintypes.DWORD,
@@ -139,6 +142,37 @@ def _configure_api(loader):
 
 def _winerror(message):
     raise OSError(ctypes.get_last_error(), message)
+
+
+def _system_cmd(kernel32):
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if not length or length >= len(buffer):
+        _winerror("GetSystemDirectoryW failed")
+    return str(Path(buffer.value) / "cmd.exe")
+
+
+def _create_directory_reparse(kernel32, target, link):
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return "directory_symlink"
+    except OSError as exc:
+        if getattr(exc, "winerror", None) not in {5, 1314}:
+            raise
+    command = subprocess.list2cmdline(
+        ["mklink", "/J", str(link), str(Path(target).resolve(strict=True))]
+    )
+    completed = subprocess.run(
+        [_system_cmd(kernel32), "/d", "/s", "/c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0 or not link.exists():
+        raise RuntimeError("failed to create directory reparse fixture")
+    return "junction"
 
 
 def _open_absolute(kernel32, path, *, directory):
@@ -255,7 +289,7 @@ def probe(*, loader):
         hardlink = nested / "hardlink.txt"
         os.link(target, hardlink)
         link = root / "nested-link"
-        os.symlink(nested, link, target_is_directory=True)
+        reparse_fixture = _create_directory_reparse(kernel32, nested, link)
 
         root_handle = nested_handle = relative_handle = absolute_handle = link_handle = None
         try:
@@ -300,6 +334,7 @@ def probe(*, loader):
         },
         "hard_link_count": links,
         "reparse_point_rejected_before_traversal": True,
+        "reparse_fixture": reparse_fixture,
         "reparse_tag": f"0x{reparse_tag:08x}",
     }
 

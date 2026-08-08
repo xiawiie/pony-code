@@ -6,12 +6,16 @@ import pytest
 
 from pony.state.file_lock import locked_file
 from pony.state.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
-from pony.security.private_files import PrivateAtomicWriteError
+from pony.security.private_files import (
+    PrivateAtomicWriteError,
+    ensure_private_dir,
+    ensure_private_file,
+    private_directory_identity,
+)
 
 
 def migration(tmp_path, validate=lambda path: True):
-    root = tmp_path / ".pony"
-    root.mkdir(mode=0o700)
+    root = ensure_private_dir(tmp_path / ".pony")
     live = root / "runs"
     live.mkdir()
     (live / "value").write_text("old")
@@ -35,7 +39,13 @@ def test_apply_commits_and_uses_owner_only_area(tmp_path):
     item = migration(tmp_path)
     assert item.apply(builder) == ABSENT
     assert (item.live / "value").read_text() == "new"
-    assert item.area.stat().st_mode & 0o777 == 0o700
+    if os.name == "nt":
+        from pony.security import windows_native
+
+        with windows_native.open_path(item.area, directory=True) as handle:
+            windows_native.require_private(handle)
+    else:
+        assert item.area.stat().st_mode & 0o777 == 0o700
 
 
 def test_manifest_hashes_files_without_unbounded_path_read(tmp_path, monkeypatch):
@@ -50,43 +60,96 @@ def test_manifest_hashes_files_without_unbounded_path_read(tmp_path, monkeypatch
     assert item.apply(builder) == ABSENT
 
 
-def test_apply_fsyncs_removed_rollback_and_journal_parents(tmp_path, monkeypatch):
+def test_apply_uses_platform_cleanup_contracts(tmp_path, monkeypatch):
     item = migration(tmp_path)
-    fsyncs = []
-    monkeypatch.setattr(item, "_fsync_dir", lambda path: fsyncs.append(path))
+    calls = []
+    if os.name == "nt":
+        remove_tree = item._remove_tree
+        remove_journal = item._remove_journal
+
+        def track_tree(path):
+            result = remove_tree(path)
+            calls.append(("tree", path))
+            return result
+
+        def track_journal():
+            result = remove_journal()
+            calls.append(("journal", item.journal))
+            return result
+
+        monkeypatch.setattr(item, "_remove_tree", track_tree)
+        monkeypatch.setattr(item, "_remove_journal", track_journal)
+    else:
+        monkeypatch.setattr(
+            item, "_fsync_dir", lambda path: calls.append(("fsync", path))
+        )
 
     assert item.apply(builder) == ABSENT
 
-    assert item.rollback.parent in fsyncs
-    assert item.journal.parent in fsyncs
+    if os.name == "nt":
+        assert ("tree", item.rollback) in calls
+        assert ("journal", item.journal) in calls
+    else:
+        assert ("fsync", item.rollback.parent) in calls
+        assert ("fsync", item.journal.parent) in calls
+    assert not item.rollback.exists()
+    assert not item.journal.exists()
 
 
 @pytest.mark.parametrize("failure", ("rollback_parent", "journal_parent"))
 def test_recover_after_cleanup_fsync_failure(tmp_path, monkeypatch, failure):
     item = migration(tmp_path)
-    fsync_dir = item._fsync_dir
     failed = False
+    if os.name == "nt":
+        remove_tree = item._remove_tree
+        remove_journal = item._remove_journal
 
-    def fail_once(path):
-        nonlocal failed
-        rollback_removed = path == item.rollback.parent and not item.rollback.exists()
-        journal_removed = path == item.journal.parent and not item.journal.exists()
-        should_fail = (
-            failure == "rollback_parent"
-            and rollback_removed
-            or failure == "journal_parent"
-            and journal_removed
-        )
-        if should_fail and not failed:
-            failed = True
-            raise OSError("injected cleanup fsync failure")
-        fsync_dir(path)
+        def fail_tree(path):
+            nonlocal failed
+            result = remove_tree(path)
+            if failure == "rollback_parent" and path == item.rollback and not failed:
+                failed = True
+                raise OSError("injected cleanup durability failure")
+            return result
 
-    monkeypatch.setattr(item, "_fsync_dir", fail_once)
-    with pytest.raises(OSError, match="cleanup fsync failure"):
+        def fail_journal():
+            nonlocal failed
+            result = remove_journal()
+            if failure == "journal_parent" and not failed:
+                failed = True
+                raise OSError("injected cleanup durability failure")
+            return result
+
+        monkeypatch.setattr(item, "_remove_tree", fail_tree)
+        monkeypatch.setattr(item, "_remove_journal", fail_journal)
+    else:
+        fsync_dir = item._fsync_dir
+
+        def fail_once(path):
+            nonlocal failed
+            rollback_removed = path == item.rollback.parent and not item.rollback.exists()
+            journal_removed = path == item.journal.parent and not item.journal.exists()
+            should_fail = (
+                failure == "rollback_parent"
+                and rollback_removed
+                or failure == "journal_parent"
+                and journal_removed
+            )
+            if should_fail and not failed:
+                failed = True
+                raise OSError("injected cleanup durability failure")
+            fsync_dir(path)
+
+        monkeypatch.setattr(item, "_fsync_dir", fail_once)
+
+    with pytest.raises(OSError, match="cleanup durability failure"):
         item.apply(builder)
 
-    monkeypatch.setattr(item, "_fsync_dir", fsync_dir)
+    if os.name == "nt":
+        monkeypatch.setattr(item, "_remove_tree", remove_tree)
+        monkeypatch.setattr(item, "_remove_journal", remove_journal)
+    else:
+        monkeypatch.setattr(item, "_fsync_dir", fsync_dir)
     assert item.recover() == ABSENT
     assert (item.live / "value").read_text() == "new"
 
@@ -161,16 +224,39 @@ def test_recover_cleans_completed_rollback(tmp_path):
     assert item.status()["state"] == ABSENT
 
 
-def test_abort_fsyncs_removed_candidate_and_journal_parents(tmp_path, monkeypatch):
+def test_abort_uses_platform_cleanup_contracts(tmp_path, monkeypatch):
     item = migration(tmp_path)
     _leave_candidate_ready(item, monkeypatch)
-    fsyncs = []
-    monkeypatch.setattr(item, "_fsync_dir", lambda path: fsyncs.append(path))
+    calls = []
+    if os.name == "nt":
+        remove_tree = item._remove_tree
+        remove_journal = item._remove_journal
+
+        def track_tree(path):
+            result = remove_tree(path)
+            calls.append(("tree", path))
+            return result
+
+        def track_journal():
+            result = remove_journal()
+            calls.append(("journal", item.journal))
+            return result
+
+        monkeypatch.setattr(item, "_remove_tree", track_tree)
+        monkeypatch.setattr(item, "_remove_journal", track_journal)
+    else:
+        monkeypatch.setattr(
+            item, "_fsync_dir", lambda path: calls.append(("fsync", path))
+        )
 
     assert item.abort() == ABSENT
 
-    assert item.candidate.parent in fsyncs
-    assert item.journal.parent in fsyncs
+    if os.name == "nt":
+        assert ("tree", item.candidate) in calls
+        assert ("journal", item.journal) in calls
+    else:
+        assert ("fsync", item.candidate.parent) in calls
+        assert ("fsync", item.journal.parent) in calls
 
 
 def test_recover_finishes_abort_after_candidate_cleanup_fsync_failure(
@@ -178,21 +264,38 @@ def test_recover_finishes_abort_after_candidate_cleanup_fsync_failure(
 ):
     item = migration(tmp_path)
     _leave_candidate_ready(item, monkeypatch)
-    fsync_dir = item._fsync_dir
     failed = False
+    if os.name == "nt":
+        remove_tree = item._remove_tree
 
-    def fail_once(path):
-        nonlocal failed
-        if path == item.candidate.parent and not item.candidate.exists() and not failed:
-            failed = True
-            raise OSError("injected candidate cleanup fsync failure")
-        fsync_dir(path)
+        def fail_once(path):
+            nonlocal failed
+            result = remove_tree(path)
+            if path == item.candidate and not failed:
+                failed = True
+                raise OSError("injected candidate cleanup durability failure")
+            return result
 
-    monkeypatch.setattr(item, "_fsync_dir", fail_once)
-    with pytest.raises(OSError, match="candidate cleanup fsync failure"):
+        monkeypatch.setattr(item, "_remove_tree", fail_once)
+    else:
+        fsync_dir = item._fsync_dir
+
+        def fail_once(path):
+            nonlocal failed
+            if path == item.candidate.parent and not item.candidate.exists() and not failed:
+                failed = True
+                raise OSError("injected candidate cleanup durability failure")
+            fsync_dir(path)
+
+        monkeypatch.setattr(item, "_fsync_dir", fail_once)
+
+    with pytest.raises(OSError, match="candidate cleanup durability failure"):
         item.abort()
 
-    monkeypatch.setattr(item, "_fsync_dir", fsync_dir)
+    if os.name == "nt":
+        monkeypatch.setattr(item, "_remove_tree", remove_tree)
+    else:
+        monkeypatch.setattr(item, "_fsync_dir", fsync_dir)
     assert item.recover() == ABSENT
     assert (item.live / "value").read_text() == "old"
 
@@ -297,6 +400,11 @@ def test_journal_rejects_oversized_existing_artifact_before_backup(tmp_path):
     }
     oversized = b"x" * (_MAX_JOURNAL_BYTES + 1)
     item.journal.write_bytes(oversized)
+    ensure_private_file(
+        item.journal,
+        trusted_root=item.area,
+        trusted_root_identity=private_directory_identity(item.area),
+    )
 
     with pytest.raises(ValueError, match="private file too large"):
         item._write(value, value["state"])

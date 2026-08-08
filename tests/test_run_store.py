@@ -12,6 +12,16 @@ from pony.state.run_store import RunStore
 from pony.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
 
+def _write_private(store, path, data):
+    security_module.ensure_private_dir(path.parent)
+    return security_module.write_private_bytes_atomic(
+        path,
+        data,
+        trusted_root=store.root,
+        trusted_root_identity=store._root_identity,
+    )
+
+
 def test_run_store_creates_run_directory_and_state_file(tmp_path):
     store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
@@ -263,9 +273,8 @@ def test_run_store_write_bounds_existing_artifact_before_backup(
     )
     monkeypatch.setattr(run_store_module, "MAX_RUN_ARTIFACT_BYTES", len(rendered))
     path = store.task_state_path(state)
-    path.parent.mkdir(mode=0o700)
     original = b"x" * (len(rendered) + 1)
-    path.write_bytes(original)
+    _write_private(store, path, original)
 
     with pytest.raises(ValueError, match="private file too large"):
         store.write_task_state(state)
@@ -374,18 +383,34 @@ def test_trace_append_rolls_back_if_hardlinked_during_write(tmp_path, monkeypatc
     state = TaskState.create(run_id="raced", task_id="task", user_request="safe")
     store.start_run(state)
     alias = tmp_path / "trace-alias.jsonl"
-    real_fsync = security_module.os.fsync
     linked = False
 
-    def link_after_write(descriptor):
-        nonlocal linked
-        real_fsync(descriptor)
-        trace = store.trace_path(state)
-        if not linked and trace.exists():
-            os.link(trace, alias)
-            linked = True
+    if os.name == "nt":
+        from pony.security import windows_native as native
 
-    monkeypatch.setattr(security_module.os, "fsync", link_after_write)
+        real_write = native.write_bytes
+
+        def link_after_write(handle, data, **kwargs):
+            nonlocal linked
+            real_write(handle, data, **kwargs)
+            trace = store.trace_path(state)
+            if not linked and trace.exists():
+                os.link(trace, alias)
+                linked = True
+
+        monkeypatch.setattr(native, "write_bytes", link_after_write)
+    else:
+        real_fsync = security_module.os.fsync
+
+        def link_after_write(descriptor):
+            nonlocal linked
+            real_fsync(descriptor)
+            trace = store.trace_path(state)
+            if not linked and trace.exists():
+                os.link(trace, alias)
+                linked = True
+
+        monkeypatch.setattr(security_module.os, "fsync", link_after_write)
 
     with pytest.raises(ValueError, match="changed"):
         store.append_trace(state, {"secret": "must-not-persist"})

@@ -201,13 +201,18 @@ def probe():
         if rollback.read_bytes() != b"stable":
             raise RuntimeError("workspace replacement rollback content mismatch")
 
-        real_move = native.move_file
+        real_rename = native.rename_handle
+        failed_rename = False
 
-        def ambiguous_move(source, destination):
-            real_move(source, destination)
-            raise OSError(5, "simulated MoveFileEx result ambiguity")
+        def ambiguous_rename(handle, parent, name, **kwargs):
+            nonlocal failed_rename
+            result = real_rename(handle, parent, name, **kwargs)
+            if not failed_rename and name == "ambiguous.txt":
+                failed_rename = True
+                raise OSError(5, "simulated handle rename result ambiguity")
+            return result
 
-        native.move_file = ambiguous_move
+        native.rename_handle = ambiguous_rename
         try:
             try:
                 write_regular_bytes_anchored_atomic(
@@ -222,7 +227,7 @@ def probe():
             else:
                 raise RuntimeError("ambiguous workspace create did not fail")
         finally:
-            native.move_file = real_move
+            native.rename_handle = real_rename
         if (root / "ambiguous.txt").exists():
             raise RuntimeError("ambiguous workspace create was not rolled back")
 

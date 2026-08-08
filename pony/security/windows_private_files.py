@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path
 import secrets
 
 from . import windows_native as native
@@ -196,13 +195,16 @@ def _same_target(parent, name, expected):
             name,
             directory=False,
             desired_access=native.FILE_READ_ACCESS,
+            single_link=False,
         )
     except FileNotFoundError:
         if expected is None:
             return
         raise ValueError("private file changed") from None
     try:
-        if expected is None or native.identity(current) != expected:
+        value = native.facts(current)
+        current_identity = value.filesystem_id, value.file_id
+        if expected is None or current_identity != expected or value.link_count != 1:
             raise ValueError("private file changed")
         native.require_private(current)
     finally:
@@ -231,19 +233,31 @@ def _create_temp(parent, name, data):
         raise
 
 
-def _installed_target(parent, name, expected_identity):
-    handle, _created = native.open_relative(
-        parent,
-        name,
-        directory=False,
-        desired_access=native.FILE_READ_ACCESS,
-    )
+def _installed_target(parent, name, expected_identity, size, digest, error):
     try:
-        if native.identity(handle) != expected_identity:
-            raise ValueError("private temp changed")
-        native.require_private(handle)
-    finally:
-        handle.close()
+        handle, _created = native.open_relative(
+            parent,
+            name,
+            directory=False,
+            desired_access=native.FILE_READ_ACCESS,
+        )
+        try:
+            if native.identity(handle) != expected_identity:
+                raise ValueError(error)
+            native.require_private(handle)
+            if descriptor_digest(handle, size, error) != digest:
+                raise ValueError(error)
+        finally:
+            handle.close()
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(error) from exc
+
+
+def _require_temp_binding(parent, name, expected_identity, error):
+    try:
+        _same_target(parent, name, expected_identity)
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(error) from exc
 
 
 def _open_owned_target(parent, name, expected_identity):
@@ -278,7 +292,7 @@ def _copy_restore(parent, canonical_name, source, size, digest, error):
                 desired_access=native.FILE_WRITE_ACCESS,
                 disposition=native.FILE_CREATE,
                 security_descriptor=descriptor,
-                share_access=native.FILE_SHARE_READ,
+                share_access=native.FILE_SHARE_ALL,
             )
         if not created:
             raise ValueError(error)
@@ -310,92 +324,50 @@ def _rollback(
     path,
     parent,
     installed_identity,
-    backup,
+    backup_handle,
+    backup_identity,
     *,
     existing_identity,
     existing_size,
     existing_digest,
     error,
-    preserve_backup=False,
 ):
-    restored = None
-    protected_backup = None
-    restore_name = None
-    restore_identity = None
-    restored_identity = existing_identity
-    if existing_identity is not None:
-        try:
-            restored = _open_owned_target(parent, backup.name, existing_identity)
-            if descriptor_digest(restored, existing_size, error) != existing_digest:
-                raise ValueError(error)
-            if preserve_backup:
-                protected_backup = restored
-                restored = None
-                restore_name, restore, restore_identity = _copy_restore(
-                    parent,
-                    path.name,
-                    protected_backup,
-                    existing_size,
-                    existing_digest,
-                    error,
-                )
-                restored = restore
-                restored_identity = restore_identity
-        except (FileNotFoundError, ValueError):
-            if restored is not None:
-                restored.close()
-            if protected_backup is not None:
-                protected_backup.close()
-            raise ValueError(error) from None
-        except OSError as exc:
-            if restored is not None:
-                restored.close()
-            if protected_backup is not None:
-                protected_backup.close()
-            raise AtomicWriteAmbiguous(
-                "private atomic write rollback failed"
-            ) from exc
     installed = None
     try:
-        installed = _open_owned_target(parent, path.name, installed_identity)
-        native.truncate(installed, 0)
+        installed, _created = native.open_relative(
+            parent,
+            path.name,
+            directory=False,
+            desired_access=native.FILE_WRITE_ACCESS,
+            share_access=native.FILE_SHARE_ALL,
+            single_link=False,
+        )
+        if native.identity(installed) != installed_identity:
+            raise ValueError(error)
+        native.require_private(installed)
         if existing_identity is None:
+            native.truncate(installed, 0)
             native.delete_handle(installed)
             installed.close()
             installed = None
             _same_target(parent, path.name, None)
-        else:
-            native.delete_handle(installed, posix=True)
-            installed.close()
-            installed = None
-            native.rename_handle(restored, parent, path.name)
-            restored.close()
-            restored = None
-            _same_target(parent, path.name, restored_identity)
+            return False
+
+        if backup_handle is None or native.identity(backup_handle) != backup_identity:
+            raise ValueError(error)
+        native.require_private(backup_handle)
+        if descriptor_digest(backup_handle, existing_size, error) != existing_digest:
+            raise ValueError(error)
+        installed.close()
+        installed = None
+        native.rename_handle(backup_handle, parent, path.name, replace=True)
+        _same_target(parent, path.name, backup_identity)
+        return True
     except Exception as exc:
         raise AtomicWriteAmbiguous("private atomic write rollback failed") from exc
     finally:
         if installed is not None:
             installed.close()
-        if restored is not None:
-            restored.close()
-        if protected_backup is not None:
-            protected_backup.close()
-        if restore_name is not None:
-            _cleanup_owned_target(
-                parent,
-                restore_name,
-                restore_identity,
-                primary=error,
-            )
-
-
-def _cleanup_file(path, *, primary):
-    try:
-        native.delete_file(path, missing_ok=True)
-    except Exception:
-        if primary is None:
-            raise
 
 
 def _cleanup_owned_target(parent, name, expected_identity, *, primary):
@@ -420,20 +392,93 @@ def _rollback_promotion(
     source,
     destination,
     parent,
+    source_handle,
     source_identity,
+    source_size,
+    source_digest,
     destination_identity,
-    backup,
+    restore_name,
+    restore_handle,
+    restore_identity,
+    destination_size,
+    destination_digest,
 ):
+    error = "private file promotion rollback failed"
     try:
         _same_target(parent, destination.name, source_identity)
-        if destination_identity is None:
-            native.move_file(destination, source)
+        _same_target(parent, source.name, None)
+        if native.identity(source_handle) != source_identity:
+            raise ValueError(error)
+        native.require_private(source_handle)
+        if descriptor_digest(source_handle, source_size, error) != source_digest:
+            raise ValueError(error)
+        try:
+            native.rename_handle(source_handle, parent, source.name, replace=False)
+        except OSError:
+            _installed_target(
+                parent,
+                source.name,
+                source_identity,
+                source_size,
+                source_digest,
+                error,
+            )
         else:
-            native.replace_file(destination, backup, source)
-        _same_target(parent, source.name, source_identity)
-        _same_target(parent, destination.name, destination_identity)
+            _installed_target(
+                parent,
+                source.name,
+                source_identity,
+                source_size,
+                source_digest,
+                error,
+            )
+        _same_target(parent, destination.name, None)
+
+        if destination_identity is None:
+            return False
+        if restore_handle is None or native.identity(restore_handle) != restore_identity:
+            raise ValueError(error)
+        native.require_private(restore_handle)
+        if (
+            descriptor_digest(restore_handle, destination_size, error)
+            != destination_digest
+        ):
+            raise ValueError(error)
+        _require_temp_binding(
+            parent,
+            restore_name,
+            restore_identity,
+            error,
+        )
+        try:
+            native.rename_handle(
+                restore_handle,
+                parent,
+                destination.name,
+                replace=False,
+            )
+        except OSError:
+            _installed_target(
+                parent,
+                destination.name,
+                restore_identity,
+                destination_size,
+                destination_digest,
+                error,
+            )
+        else:
+            _installed_target(
+                parent,
+                destination.name,
+                restore_identity,
+                destination_size,
+                destination_digest,
+                error,
+            )
+        _require_temp_binding(parent, restore_name, None, error)
+        return True
     except Exception as exc:
-        raise AtomicWriteAmbiguous("private file promotion rollback failed") from exc
+        raise AtomicWriteAmbiguous(error) from exc
 
 
 def promote_private_file(
@@ -455,83 +500,223 @@ def promote_private_file(
         parent.close()
         raise ValueError("private promotion requires distinct sibling files")
     source_handle = None
-    backup = destination.with_name(
-        f".{destination.name}.{secrets.token_hex(12)}.bak"
-    )
+    destination_handle = None
+    restore_name = None
+    restore_handle = None
+    restore_identity = None
+    source_size = None
+    source_digest = None
+    destination_size = None
+    destination_digest = None
     installed = False
     committed = False
+    restore_installed = False
     primary = None
     try:
         source_handle, _created = native.open_relative(
             parent,
             source.name,
             directory=False,
-            desired_access=native.FILE_READ_ACCESS,
+            desired_access=native.FILE_WRITE_ACCESS,
+            share_access=native.FILE_SHARE_ALL,
         )
         native.require_private(source_handle)
-        if native.identity(source_handle) != tuple(expected_source_identity):
+        source_identity = tuple(expected_source_identity)
+        if native.identity(source_handle) != source_identity:
             raise ValueError("private file changed")
-        _same_target(parent, destination.name, expected_destination_identity)
-        _same_target(parent, backup.name, None)
+        source_size = native.facts(source_handle).size
+        source_digest = descriptor_digest(
+            source_handle,
+            source_size,
+            "private file changed",
+        )
+
+        destination_identity = (
+            None
+            if expected_destination_identity is None
+            else tuple(expected_destination_identity)
+        )
+        destination_handle = _existing(parent, destination.name)
+        if destination_handle is None:
+            if destination_identity is not None:
+                raise ValueError("private file changed")
+        else:
+            if destination_identity is None:
+                raise ValueError("private file changed")
+            if native.identity(destination_handle) != destination_identity:
+                raise ValueError("private file changed")
+            destination_size = native.facts(destination_handle).size
+            destination_digest = descriptor_digest(
+                destination_handle,
+                destination_size,
+                "private file changed",
+            )
+            restore_name, restore_handle, restore_identity = _copy_restore(
+                parent,
+                destination.name,
+                destination_handle,
+                destination_size,
+                destination_digest,
+                "private file changed",
+            )
+
         _same_parent(
             source,
             parent,
             trusted_root=trusted_root,
             trusted_root_identity=trusted_root_identity,
         )
-        source_handle.close()
-        source_handle = None
+        _require_temp_binding(
+            parent,
+            source.name,
+            source_identity,
+            "private file changed",
+        )
+        _same_target(parent, destination.name, destination_identity)
+        if restore_handle is not None:
+            _require_temp_binding(
+                parent,
+                restore_name,
+                restore_identity,
+                "private file changed",
+            )
+            if (
+                descriptor_digest(
+                    restore_handle,
+                    destination_size,
+                    "private file changed",
+                )
+                != destination_digest
+            ):
+                raise ValueError("private file changed")
+        if destination_handle is not None:
+            destination_handle.close()
+            destination_handle = None
         try:
-            if expected_destination_identity is None:
-                native.move_file(source, destination)
-            else:
-                native.replace_file(destination, source, backup)
+            native.rename_handle(
+                source_handle,
+                parent,
+                destination.name,
+                replace=destination_identity is not None,
+            )
         except OSError:
             try:
-                _same_target(parent, destination.name, tuple(expected_source_identity))
+                _installed_target(
+                    parent,
+                    destination.name,
+                    source_identity,
+                    source_size,
+                    source_digest,
+                    "private file changed",
+                )
             except (OSError, ValueError):
-                pass
+                _require_temp_binding(
+                    parent,
+                    source.name,
+                    source_identity,
+                    "private file changed",
+                )
+                _same_target(parent, destination.name, destination_identity)
             else:
                 installed = True
             raise
         installed = True
-        _same_target(parent, destination.name, tuple(expected_source_identity))
-        _same_target(parent, source.name, None)
+        _installed_target(
+            parent,
+            destination.name,
+            source_identity,
+            source_size,
+            source_digest,
+            "private file changed",
+        )
+        _require_temp_binding(
+            parent,
+            source.name,
+            None,
+            "private file changed",
+        )
         _same_parent(
             source,
             parent,
             trusted_root=trusted_root,
             trusted_root_identity=trusted_root_identity,
         )
-        if expected_destination_identity is not None:
-            _same_target(
-                parent, backup.name, tuple(expected_destination_identity)
+        if restore_handle is not None:
+            _require_temp_binding(
+                parent,
+                restore_name,
+                restore_identity,
+                "private file changed",
             )
-            native.delete_file(backup)
+            try:
+                native.delete_handle(restore_handle)
+            except BaseException as cleanup_error:
+                restore_handle.close()
+                restore_handle = None
+                try:
+                    _require_temp_binding(
+                        parent,
+                        restore_name,
+                        None,
+                        "private file changed",
+                    )
+                except (OSError, ValueError):
+                    try:
+                        restore_handle = _open_owned_target(
+                            parent,
+                            restore_name,
+                            restore_identity,
+                        )
+                    except Exception as reopen_error:
+                        raise AtomicWriteAmbiguous(
+                            "private file promotion cleanup failed"
+                        ) from reopen_error
+                    raise cleanup_error
+            else:
+                restore_handle.close()
+                restore_handle = None
+                _require_temp_binding(
+                    parent,
+                    restore_name,
+                    None,
+                    "private file changed",
+                )
         committed = True
         return destination
     except BaseException as exc:
         primary = exc
         if installed and not committed:
-            _rollback_promotion(
+            restore_installed = _rollback_promotion(
                 source,
                 destination,
                 parent,
-                tuple(expected_source_identity),
-                (
-                    None
-                    if expected_destination_identity is None
-                    else tuple(expected_destination_identity)
-                ),
-                backup,
+                source_handle,
+                source_identity,
+                source_size,
+                source_digest,
+                destination_identity,
+                restore_name,
+                restore_handle,
+                restore_identity,
+                destination_size,
+                destination_digest,
             )
             installed = False
         raise
     finally:
+        if destination_handle is not None:
+            destination_handle.close()
         if source_handle is not None:
             source_handle.close()
-        if not installed:
-            _cleanup_file(backup, primary=primary)
+        if restore_handle is not None:
+            if not committed and not restore_installed:
+                try:
+                    native.truncate(restore_handle, 0)
+                    native.delete_handle(restore_handle)
+                except Exception:
+                    if primary is None:
+                        raise
+            restore_handle.close()
         parent.close()
 
 
@@ -595,6 +780,8 @@ def write_private_bytes_atomic(
 ):
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("private atomic write requires bytes")
+    rendered = bytes(data)
+    rendered_digest = hashlib.sha256(rendered).hexdigest()
     path, parent = native.open_parent(
         path,
         trusted_root=trusted_root,
@@ -606,8 +793,11 @@ def write_private_bytes_atomic(
     existing_identity = None
     existing_size = None
     existing_digest = None
+    _backup_name = None
+    backup_handle = None
+    backup_identity = None
+    backup_installed = False
     temp_path = path.with_name(f".{path.name}.{secrets.token_hex(12)}.tmp")
-    backup = path.with_name(f".{path.name}.{secrets.token_hex(12)}.bak")
     installed = False
     committed = False
     preserve_backup = False
@@ -626,10 +816,24 @@ def write_private_bytes_atomic(
             raise ValueError("private file too large")
         if existing is not None:
             existing_digest = descriptor_digest(existing, existing_size, error)
-        temp = _create_temp(parent, temp_path.name, bytes(data))
+
+        temp = _create_temp(parent, temp_path.name, rendered)
         temp_identity = native.identity(temp)
         if fsync_file is not None:
             fsync_file(temp.value)
+        if descriptor_digest(temp, len(rendered), error) != rendered_digest:
+            raise ValueError(error)
+
+        if existing is not None:
+            _backup_name, backup_handle, backup_identity = _copy_restore(
+                parent,
+                path.name,
+                existing,
+                existing_size,
+                existing_digest,
+                error,
+            )
+
         _same_parent(
             path,
             parent,
@@ -637,17 +841,20 @@ def write_private_bytes_atomic(
             trusted_root_identity=trusted_root_identity,
         )
         _same_target(parent, path.name, existing_identity)
+        _require_temp_binding(parent, temp_path.name, temp_identity, error)
         if validate_commit is not None:
             validate_commit()
-        temp.close()
-        temp = None
+
+        if existing is not None:
+            existing.close()
+            existing = None
         try:
-            if existing is None:
-                native.move_file(temp_path, path)
-            else:
-                existing.close()
-                existing = None
-                native.replace_file(path, temp_path, backup)
+            native.rename_handle(
+                temp,
+                parent,
+                path.name,
+                replace=existing_identity is not None,
+            )
         except OSError:
             try:
                 _same_target(parent, path.name, temp_identity)
@@ -657,11 +864,22 @@ def write_private_bytes_atomic(
                 except (OSError, ValueError):
                     preserve_backup = True
                     raise ValueError(error) from None
+                _require_temp_binding(parent, temp_path.name, temp_identity, error)
             else:
                 installed = True
             raise
         installed = True
-        _installed_target(parent, path.name, temp_identity)
+        _installed_target(
+            parent,
+            path.name,
+            temp_identity,
+            len(rendered),
+            rendered_digest,
+            error,
+        )
+        _require_temp_binding(parent, temp_path.name, None, error)
+        temp.close()
+        temp = None
         _same_parent(
             path,
             parent,
@@ -672,70 +890,79 @@ def write_private_bytes_atomic(
             fsync_parent(parent.value)
         if validate_commit is not None:
             validate_commit()
-        if existing_identity is not None:
+
+        if backup_handle is not None:
             try:
-                native.delete_file(backup)
+                native.delete_handle(backup_handle)
             except BaseException as cleanup_error:
-                preserve_backup = True
+                if temp is not None:
+                    temp.close()
+                    temp = None
                 try:
-                    _rollback(
+                    backup_installed = _rollback(
                         path,
                         parent,
                         temp_identity,
-                        backup,
+                        backup_handle,
+                        backup_identity,
                         existing_identity=existing_identity,
                         existing_size=existing_size,
                         existing_digest=existing_digest,
                         error=error,
-                        preserve_backup=True,
                     )
                 except BaseException as rollback_error:
-                    committed = True
+                    preserve_backup = True
                     raise AtomicWriteAmbiguous(error) from rollback_error
                 installed = False
                 raise cleanup_error
+            backup_handle.close()
+            backup_handle = None
         committed = True
         return path
     except BaseException as exc:
         primary = exc
         if installed and not committed:
-            _rollback(
-                path,
-                parent,
-                temp_identity,
-                backup,
-                existing_identity=existing_identity,
-                existing_size=existing_size,
-                existing_digest=existing_digest,
-                error=error,
-            )
+            if temp is not None:
+                temp.close()
+                temp = None
+            try:
+                backup_installed = _rollback(
+                    path,
+                    parent,
+                    temp_identity,
+                    backup_handle,
+                    backup_identity,
+                    existing_identity=existing_identity,
+                    existing_size=existing_size,
+                    existing_digest=existing_digest,
+                    error=error,
+                )
+            except BaseException:
+                preserve_backup = True
+                raise
             installed = False
         raise
     finally:
-        if temp is not None:
-            _cleanup_owned_target(
-                parent,
-                temp_path.name,
-                temp_identity,
-                primary=primary,
-            )
-            temp.close()
         if existing is not None:
             existing.close()
-        if not installed:
-            _cleanup_owned_target(
-                parent,
-                temp_path.name,
-                temp_identity,
-                primary=primary,
-            )
-            if not preserve_backup:
-                _cleanup_owned_target(
-                    parent,
-                    backup.name,
-                    existing_identity,
-                    primary=primary,
-                )
+        if temp is not None:
+            if not committed:
+                try:
+                    native.truncate(temp, 0)
+                    native.delete_handle(temp)
+                except Exception:
+                    if primary is None:
+                        raise
+            temp.close()
+        if backup_handle is not None:
+            if not preserve_backup and not backup_installed:
+                try:
+                    native.truncate(backup_handle, 0)
+                    native.delete_handle(backup_handle)
+                except Exception:
+                    if primary is None:
+                        raise
+            backup_handle.close()
         parent.close()
 
 
@@ -811,9 +1038,9 @@ def harden_private_tree(path):
     pending = [root]
     while pending:
         directory = pending.pop()
-        with os.scandir(directory) as entries:
+        with os.scandir(native.win32_path(directory)) as entries:
             for entry in entries:
-                child = Path(entry.path)
+                child = directory / entry.name
                 if entry.is_dir(follow_symlinks=False):
                     with native.open_path(
                         child,
