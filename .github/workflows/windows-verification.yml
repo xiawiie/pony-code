@@ -40,6 +40,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
+      - name: Prime locked runtime cache for offline install smoke
+        shell: pwsh
+        run: |
+          $requirements = Join-Path $env:RUNNER_TEMP "pony-runtime-requirements.txt"
+          $primer = Join-Path $env:RUNNER_TEMP "pony-cache-primer"
+          $primerPython = Join-Path $primer "Scripts\python.exe"
+          uv export --frozen --no-dev --no-emit-project --output-file $requirements
+          uv venv --python .venv\Scripts\python.exe $primer
+          uv pip install --refresh --python $primerPython --requirement $requirements
+
       - name: Check lock and source
         run: |
           uv lock --check

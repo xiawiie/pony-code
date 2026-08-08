@@ -79,6 +79,10 @@ Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 不得把 dirty worktree 或不受信宿主的本地数量冻结成发布阈值。该门禁结构本身不构成通过证据；仍须由候选 exact tag
 的实际结果和 Windows Terminal 实机验收完成 Phase 5。
 
+Windows workflow 在切换到受控标准用户前，先从 `uv.lock` 导出仅运行时依赖，并通过隔离 primer 环境把对应归档写入共享
+uv cache；标准用户只在取得该 cache 的显式 ACL 后以 `UV_OFFLINE=1` 执行 distribution clean-install smoke。普通
+`uv sync` 只证明开发环境可安装，不能替代“锁定依赖已预热且离线隔离安装成功”的发布证据。
+
 #### 2026-08-08 Windows 11 x64 本地实施证据
 
 以下结果来自 `467dc7bd1df91b528050e0013fb708b234f8a0da` 上的未提交实现工作区，只用于说明当前分支进度；由于 worktree

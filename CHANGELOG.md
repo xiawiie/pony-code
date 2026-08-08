@@ -40,7 +40,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 - Windows 原生一等平台进入分阶段实施：私有文件 identity/signature 上层合同已改为平台中立命名字段，并接入基于 `NtCreateFile`、当前用户 protected DACL、File ID、`ReplaceFileW` 与 `MoveFileExW` 的 production private-state/workspace-file backend 和 `LockFileEx` file-lock backend；Windows 3.11/3.12 CI 增加 private-state 的 create/read/append/replace/rollback/tree-hardening、workspace 的 anchored create/read/list/CAS/rollback/long-path，以及 file-lock 的 timeout/reentry/identity/share-mode probe，并保留 PowerShell、Win32/NT API surface 与 Job Object 语义 probe。无 `TERM` 的 Windows TUI gate、Git `os.devnull` 与无 `/bin/sh` 的 distribution smoke 已适配；完整 Windows 实机门禁前仍不声明支持。
 - Windows 普通 CI 与 `v*` Tag 发布共用同一 3.11/3.12 标准用户验证 workflow；发布 job 必须等待 Windows 完整门禁与原生
   probe，完整 pytest 会拒绝未知 skip/xfail，并输出 schema v1 的机器可读 skip 原因、数量和慢测试审计；Windows Terminal
-  Phase 5 另以 exact candidate SHA 的 40/80/120 列实机清单留证，不能由 import、单元测试或截图替代。
+  Phase 5 另以 exact candidate SHA 的 40/80/120 列实机清单留证，不能由 import、单元测试或截图替代。该 workflow 还会
+  在标准用户离线门禁前预热 `uv.lock` 的运行时依赖 cache，确保 clean-install smoke 验证包本身而非偶然命中宿主缓存。
 - Windows reparse-point 拒绝改为可识别的专用异常；private-state 与 file-lock 保持平台中立的 symlink 错误，Git marker、
   Git metadata 和 migration manifest 分别恢复既有领域错误，不再把 Win32 底层文本泄漏到稳定错误合同。
 - Coding-quality task 现在把 scope hard gate 显式写入 Agent 可见 prompt；condition artifact format v3 记录并校验

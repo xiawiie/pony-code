@@ -133,6 +133,10 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert '          - "3.11"' in windows
     assert '          - "3.12"' in windows
     assert "architecture: x64" in windows
+    assert "Prime locked runtime cache for offline install smoke" in windows
+    assert "uv export --frozen --no-dev --no-emit-project" in windows
+    assert 'uv venv --python .venv\\Scripts\\python.exe $primer' in windows
+    assert "uv pip install --refresh --python $primerPython" in windows
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
     assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
     assert "python scripts/windows/probe_private_files_backend.py" in windows
