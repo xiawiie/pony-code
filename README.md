@@ -199,7 +199,8 @@ stateDiagram-v2
 | Skills | `/<skill-name> [prompt]` | 仅受信 `.claude/skills`、只读、当前 turn、不会执行脚本 |
 | Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
 
-完整 TUI 始终保留响应式马形 Logo、`PONY CODE` 字标和欢迎页布局；它们是冻结的产品资产，除非用户明确要求，维护和重构
+完整 TUI 只保留截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标；112 列及以上显示完整大版，低于 112 列时省略整个
+Logo/字标区域，不显示缩小、micro 或单行替代版。完整大版和欢迎页布局是冻结的产品资产，除非用户明确要求，维护和重构
 不得修改。
 
 ## 并行 Worktree Agent

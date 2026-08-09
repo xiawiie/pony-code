@@ -10,7 +10,7 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   事实保留和 Provider failure 证据的 compaction 净 token/break-even 与非流式 Provider latency 测量。
 - 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
 - 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pony init`。
-- 参考 Pi 消息层级的行内 TUI：响应式马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
+- 参考 Pi 消息层级的行内 TUI：完整尺寸马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
   可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
 - `pony --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
 - PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
@@ -54,7 +54,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 - 裸 `pony` 现在直接进入交互 TUI；`pony repl` 保留为显式同义入口，`pony run <prompt...>` 与管理子命令继续使用
   生产分支的显式 CLI 合同。
-- 恢复并冻结响应式马形 `PONY CODE` 欢迎页；纯文本 fallback 不显示 banner，`pony run` 只输出执行结果。
+- 恢复并冻结完整尺寸马形 `PONY CODE` 欢迎页；112 列以下省略整个 Logo/字标区域，不显示缩小变体。纯文本 fallback
+  不显示 banner，`pony run` 只输出执行结果。
 - TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
   smoke 在隔离环境中离线验证锁定依赖和 TUI import。
 - TUI 运行事件收束为瞬态 `Working…`、单行 Tool 摘要、一次性 permission prompt 和明确的失败/中断；自动 checkpoint

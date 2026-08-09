@@ -26,7 +26,7 @@ _PROTOCOL_PROVIDERS = {
 
 _FAILURE_STATUSES = frozenset({"error", "partial_success", "rejected"})
 
-# Terminal-scale adaptations of Pony's protected horse-and-wordmark welcome asset.
+# Full-size Pony horse-and-wordmark welcome asset.
 _HORSE_LINES = (
     "  ⣶⡄⣷⡄⣄",
     " ⢀⣼⣿⣿⣿⣿⣻⣦⣀",
@@ -41,24 +41,6 @@ _HORSE_LINES = (
     "    ⠙⠛ ⣼⣿⠃   ⢠⣿⡟  ⣴⣿⠛",
 )
 
-_MEDIUM_HORSE_LINES = (
-    "   ⣶⡄⣷⣄",
-    "  ⣼⣿⣿⣿⣻⣦⣀",
-    " ⣾⠿⣿⣿⣿⣷⣿⣤⣤⣄",
-    "⠛⠃ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦",
-    "   ⣿⣿⣿⠿⠛⣿⣿⣿⡇",
-    "  ⣼⣿⠃    ⢸⣿⣆",
-    "  ⠛⠁     ⠛⠃",
-)
-
-_MICRO_HORSE_LINES = (
-    "  ⣶⡄⣷⣄",
-    " ⣼⣿⣿⣿⣻⣦⣀",
-    "⠛⠃⣿⣿⣿⣿⣿⣿⣿⣿⣦",
-    "  ⣿⠛⣿⣿⡇ ⣿",
-    " ⠛  ⠛  ⠛",
-)
-
 _PIXEL_GLYPHS = {
     "P": ("### ", "#  #", "### ", "#   ", "#   "),
     "O": (" ## ", "#  #", "#  #", "#  #", " ## "),
@@ -69,9 +51,8 @@ _PIXEL_GLYPHS = {
     "E": ("####", "#   ", "### ", "#   ", "####"),
 }
 
-_HALF_BLOCKS = {"  ": " ", "# ": "▌", " #": "▐", "##": "█"}
 _LARGE_BANNER_COLUMNS = 112
-_MEDIUM_BANNER_COLUMNS = 64
+_COMPACT_STATUS_COLUMNS = 64
 _PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
 
 _COLOR_STYLE = Style.from_dict(
@@ -127,40 +108,31 @@ _PLAIN_STYLE = Style.from_dict(
 )
 
 
-def _pixel_row(pattern, scale):
-    if scale == 2:
-        return "".join("██" if pixel == "#" else "  " for pixel in pattern)
-    if scale == 1:
-        return pattern.replace("#", "█")
-    return "".join(_HALF_BLOCKS[pattern[index : index + 2]] for index in (0, 2))
+def _pixel_row(pattern):
+    return "".join("██" if pixel == "#" else "  " for pixel in pattern)
 
 
-def _wordmark_lines(scale, repeats, letter_gap, word_gap):
+def _wordmark_lines():
     lines = []
-    for row, repeat in enumerate(repeats):
+    for row, repeat in enumerate((2, 2, 3, 2, 2)):
         words = []
         for word in ("PONY", "CODE"):
             words.append(
-                (" " * letter_gap).join(
-                    _pixel_row(_PIXEL_GLYPHS[letter][row], scale)
+                "  ".join(
+                    _pixel_row(_PIXEL_GLYPHS[letter][row])
                     for letter in word
                 )
             )
-        lines.extend([(words[0] + " " * word_gap + words[1]).rstrip()] * repeat)
+        lines.extend([(words[0] + "    " + words[1]).rstrip()] * repeat)
     return tuple(lines)
 
 
-def _banner_variant(columns):
-    if columns >= _LARGE_BANNER_COLUMNS:
-        return _HORSE_LINES, _wordmark_lines(2, (2, 2, 3, 2, 2), 2, 4)
-    if columns >= _MEDIUM_BANNER_COLUMNS:
-        return _MEDIUM_HORSE_LINES, _wordmark_lines(1, (2, 1, 1, 1, 2), 1, 2)
-    return _MICRO_HORSE_LINES, _wordmark_lines(0, (1, 1, 1, 1, 1), 1, 2)
-
-
 def _banner_lines(columns):
+    if columns < _LARGE_BANNER_COLUMNS:
+        return ()
     width = max(1, int(columns) - 1)
-    horse_lines, wordmark_lines = _banner_variant(columns)
+    horse_lines = _HORSE_LINES
+    wordmark_lines = _wordmark_lines()
     horse_width = max(get_cwidth(line) for line in horse_lines)
     wordmark_width = max(get_cwidth(line) for line in wordmark_lines)
     gap = min(3, max(1, width - horse_width - wordmark_width))
@@ -177,8 +149,8 @@ def _banner_lines(columns):
     )
 
 
-def logo_text(columns=80):
-    """Return the responsive, color-independent protected terminal logo."""
+def logo_text(columns=120):
+    """Return the full-size logo when the terminal can display it safely."""
     return "\n".join(_banner_lines(columns))
 
 
@@ -336,7 +308,7 @@ class TuiRenderer:
     def welcome(self, agent, *, model, columns=None):
         columns = columns or shutil.get_terminal_size((80, 24)).columns
         width = max(1, columns - 1)
-        compact = columns < _MEDIUM_BANNER_COLUMNS
+        compact = columns < _COMPACT_STATUS_COLUMNS
         description = (
             "Repository-grounded coding agent" if compact else _PRODUCT_DESCRIPTION
         )

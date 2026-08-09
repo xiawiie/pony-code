@@ -184,8 +184,9 @@ Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
 1. 分别从 Windows Terminal 的 PowerShell 与 Command Prompt profile 直接运行 `pony --help`、`pony` 和 `pony repl`；两种
    交互入口必须进入同一 TUI，`/exit` 后终端输入、光标和按键处理恢复正常。不得只验证 CLI 帮助或 import。
 2. 在 PowerShell profile 中把可用内容区依次调整为 40、80、120 列，每次记录终端实际报告的列数并重新启动 `pony`。
-   三种宽度都必须保留马形 Logo、块状 `PONY CODE` 字标和既定视觉意图，无裁切、重叠、残留重绘或水平滚动；40 列使用
-   compact 布局。footer 按宽度降级，但始终不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
+   120 列必须显示完整尺寸的马形 Logo 与块状 `PONY CODE` 字标；40/80 列必须省略整个 Logo/字标区域，不能显示已删除的
+   medium、micro、缩放或单行版。三种宽度均不得裁切、重叠、残留重绘或水平滚动；footer 按宽度降级，但始终不得显示
+   绝对路径、Session ID、API Base 或 checkpoint ID。
 3. 在 120 列会话中输入 `/`，确认 completion 菜单最多五项；输入七行文本，确认输入框最多增长六行且光标/滚动正常；
    输入中文、英文和 emoji，确认用户消息为无角色标签的低对比块。使用已授权 Provider 发送固定最小请求，要求返回标题、
    列表、行内代码、代码块和表格，确认 Markdown 降级可读、控制字符不可见且 `Working…` 在正式输出前清除。
@@ -277,10 +278,10 @@ uv run pytest -q \
 ```
 
 必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
-fallback、`NO_COLOR`、40/80/120 列响应式马形 `PONY CODE` 欢迎页与精简 footer、五项 slash completion、
+fallback、`NO_COLOR`、40/80 列零缩小 Logo、120 列完整尺寸马形 `PONY CODE` 欢迎页与精简 footer、五项 slash completion、
 六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
-欢迎页测试必须同时锁定马形 Logo、块状字标、版本、模型/permission 摘要、宽度上限和 compact 变体；只有用户明确要求
-修改设计时才可更新这些断言，不能把门禁弱化为“包含任意 PONY 文本”。
+欢迎页测试必须同时锁定 112 列阈值、完整尺寸马形 Logo、块状字标、版本、模型/permission 摘要和宽度上限，并证明窄宽度
+不会恢复任何小版；只有用户明确要求修改设计时才可更新这些断言，不能把门禁弱化为“包含任意 PONY 文本”。
 
 Input queue 测试必须同时覆盖 plain/TUI：单 worker FIFO、五条 pending 上限、满队列拒绝、`/queue clear` 零 Session
 写、queued prompt 只在 dequeue 后按序进入 Canonical Messages、approval answer 由 UI 接收且不入队，以及 `/exit` 等待

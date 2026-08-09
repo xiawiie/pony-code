@@ -143,16 +143,24 @@ def test_tui_routes_normalized_non_bmp_text_to_the_turn(monkeypatch):
     assert received == ["中文 \U0001f434 English"]
 
 
-@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
-def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
+@pytest.mark.parametrize(
+    ("columns", "visible"),
+    ((40, False), (80, False), (111, False), (112, True), (120, True)),
+)
+def test_terminal_logo_only_exposes_the_full_size_asset(columns, visible):
     rendered = logo_text(columns)
-    lines = rendered.splitlines()
 
-    assert "⣿" in rendered
-    assert "█" in rendered
-    assert "PONY" not in rendered
-    assert len(lines) == height
+    if not visible:
+        assert rendered == ""
+        return
+    lines = rendered.splitlines()
+    assert "⣿" in rendered and "█" in rendered
+    assert len(lines) == 11
     assert max(get_cwidth(line) for line in lines) < columns
+
+
+def test_terminal_logo_default_is_the_full_size_asset():
+    assert logo_text() == logo_text(120)
 
 
 @pytest.mark.parametrize("columns", (40, 80, 120))
@@ -172,8 +180,10 @@ def test_terminal_welcome_preserves_logo_and_status(columns, monkeypatch):
     renderer.header(agent, model="gpt-test", columns=columns)
 
     rendered = "".join(fragment[1] for fragment in output[0])
-    assert "⣿" in rendered
-    assert "█" in rendered
+    if columns >= 112:
+        assert "⣿" in rendered and "█" in rendered
+    else:
+        assert "⣿" not in rendered and "█" not in rendered
     assert "v1.2.3" in rendered
     assert "openai/gpt-test" in rendered
     if columns >= 64:
@@ -432,8 +442,10 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
     assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
     assert [columns for columns, _text in samples] == [120, 40, 80]
     for columns, rendered in samples:
-        assert "⣿" in rendered
-        assert "█" in rendered
+        if columns >= 112:
+            assert "⣿" in rendered and "█" in rendered
+        else:
+            assert "⣿" not in rendered and "█" not in rendered
         assert all(get_cwidth(line) < columns for line in rendered.splitlines())
     assert not any("⣿" in "".join(fragment[1] for fragment in value) for value in written)
 
@@ -550,6 +562,10 @@ def test_tui_restores_runtime_hooks(monkeypatch):
             return "/exit"
 
     monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr(
+        "pony.tui.render.shutil.get_terminal_size",
+        lambda _fallback: SimpleNamespace(columns=120),
+    )
     monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
         lambda value, **_kwargs: output.append(value),
