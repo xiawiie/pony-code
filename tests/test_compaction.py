@@ -37,7 +37,13 @@ def _plain(role, text):
     return {"role": role, "content": text, "_pony_meta": {"created_at": now()}}
 
 
-def _agent(tmp_path, outputs):
+def _agent(
+    tmp_path,
+    outputs,
+    *,
+    output_tokens=16_384,
+    compaction_summary_tokens=13_107,
+):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path)
     store.save(session)
@@ -47,7 +53,8 @@ def _agent(tmp_path, outputs):
         token_accounting=TokenAccounting(),
         model_budget=SimpleNamespace(
             keep_recent_tokens=200,
-            compaction_summary_tokens=13_107,
+            output_tokens=output_tokens,
+            compaction_summary_tokens=compaction_summary_tokens,
             split_turn_summary_tokens=8_192,
             branch_summary_tokens=2_048,
         ),
@@ -116,6 +123,29 @@ def test_compaction_preserves_disk_history_and_reduces_active_view(tmp_path):
     assert len(view.messages) < len(after.projection["messages"])
     assert result.tokens_after < result.tokens_before
     assert view.first_kept_entry_id == result.entry["data"]["first_kept_entry_id"]
+
+
+def test_compaction_separates_provider_output_budget_from_summary_cap(tmp_path):
+    agent = _agent(
+        tmp_path,
+        ["preserved fact " * 4_000],
+        output_tokens=4_096,
+        compaction_summary_tokens=3_276,
+    )
+    for index in range(40):
+        role = "user" if index % 2 == 0 else "assistant"
+        agent.session["messages"].append(
+            _plain(role, f"message-{index} " + ("x" * 1_000))
+        )
+    agent.session_store.save(agent.session)
+
+    result = compact_session(agent, keep_recent_tokens=600, reason="test")
+
+    request = agent.model_client.requests[0]
+    assert request["max_tokens"] == 4_096
+    assert "3276 tokens" in request["system"][0]["text"]
+    assert result.summary_tokens <= 3_276
+    assert result.tokens_after < result.tokens_before
 
 
 def test_compaction_summary_cannot_forge_pony_context_tags(tmp_path):
@@ -214,7 +244,7 @@ def test_oversized_turn_gets_separate_split_prefix_summary(tmp_path):
     assert data["summary"] == ""
     assert data["split_turn_summary"].startswith("# Current Turn Goal")
     assert data["split_turn_summary_tokens"] > 0
-    assert agent.model_client.requests[0]["max_tokens"] == 8_192
+    assert agent.model_client.requests[0]["max_tokens"] == 16_384
     assert view.messages[0]["_pony_meta"]["origin"] == "split_turn_summary"
     assert view.split_turn_summary == data["split_turn_summary"]
     assert result.tokens_after < result.tokens_before
@@ -261,7 +291,7 @@ def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path, monkeypa
     assert any(entry["id"] == before.leaf_id for entry in after.entries)
     assert view.branch_summary.startswith("# Abandoned Approach")
     assert view.messages[-1]["_pony_meta"]["origin"] == "branch_summary"
-    assert agent.model_client.requests[0]["max_tokens"] == 2_048
+    assert agent.model_client.requests[0]["max_tokens"] == 16_384
     assert append_batches == [("rewind", "branch_summary")]
 
 

@@ -37,6 +37,9 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
+  model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
+  绕过用户配置的 output limit。
 - Windows 11 x64 晋级为与 macOS/Linux 平级的一等发布平台：私有文件 identity/signature 上层合同使用平台中立字段，原生 backend 覆盖 `NtCreateFile` root-handle traversal、protected DACL、File ID、原子替换、`LockFileEx`、Job Object 与 PowerShell policy；3.11/3.12 CI、攻击 probe、完整发布门禁、clean-install 与 Windows Terminal Phase 5 共同约束每个 exact candidate。跨机器或跨 OS 复制 active Session 仍不在支持声明内。
 - Windows 普通 CI 与 `v*` Tag 发布共用同一 3.11/3.12 标准用户验证 workflow；发布 job 必须等待 Windows 完整门禁与原生
   probe，完整 pytest 会拒绝未知 skip/xfail，并输出 schema v1 的机器可读 skip 原因、数量和慢测试审计；Windows Terminal
