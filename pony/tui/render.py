@@ -333,7 +333,7 @@ class TuiRenderer:
     def _write(self, value, **kwargs):
         print_formatted_text(value, style=self.style, **kwargs)
 
-    def header(self, agent, *, model, columns=None):
+    def welcome(self, agent, *, model, columns=None):
         columns = columns or shutil.get_terminal_size((80, 24)).columns
         width = max(1, columns - 1)
         compact = columns < _MEDIUM_BANNER_COLUMNS
@@ -354,20 +354,21 @@ class TuiRenderer:
             if compact
             else "/ commands · esc+enter newline · ctrl+c twice exit"
         )
-        self._write(
-            FormattedText(
-                [
-                    *_logo_fragments(columns),
-                    (
-                        "class:meta",
-                        f"\n{_centered(f'v{_product_version()}', width)}\n",
-                    ),
-                    ("class:meta", f"{_centered(description, width)}\n"),
-                    ("class:meta", f"{_centered(model_summary, width)}\n"),
-                    ("class:meta", f"{_centered(shortcuts, width)}\n"),
-                ]
-            )
+        return FormattedText(
+            [
+                *_logo_fragments(columns),
+                (
+                    "class:meta",
+                    f"\n{_centered(f'v{_product_version()}', width)}\n",
+                ),
+                ("class:meta", f"{_centered(description, width)}\n"),
+                ("class:meta", f"{_centered(model_summary, width)}\n"),
+                ("class:meta", f"{_centered(shortcuts, width)}\n"),
+            ]
         )
+
+    def header(self, agent, *, model, columns=None):
+        self._write(self.welcome(agent, model=model, columns=columns))
 
     def toolbar(self, agent, *, model, columns=None):
         width = _terminal_width(columns)
@@ -404,7 +405,7 @@ class TuiRenderer:
             ]
         )
 
-    def resume(self, projection):
+    def resume_card(self, projection):
         goal = projection["goal"]
         lines = [
             "Resume",
@@ -433,7 +434,12 @@ class TuiRenderer:
                 if value
             )
             lines.append(f"model [provider_binding]: {label}")
-        self.notice("\n".join(lines))
+        safe_text = sanitize_terminal_text("\n".join(lines)).strip()
+        return FormattedText([("class:activity", f"\n{safe_text}\n")])
+
+    def resume(self, projection):
+        self._clear_working()
+        self._write(self.resume_card(projection))
 
     def user(self, text, *, columns=None):
         self._clear_working()

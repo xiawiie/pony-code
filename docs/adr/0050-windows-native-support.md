@@ -64,8 +64,14 @@ requirements 再补证明。
   canonical shell，避免生成 POSIX 命令后隐式转译。
 - Git 使用原生 Git for Windows `git.exe`，不调用其 Bash。`git.exe` 与 `rg.exe` 必须通过文件身份、签名/ACL、父目录写权限和
   创建进程前复验；用户可写 shim 不能仅因位于 `PATH` 就受信。
-- Windows 安装路径必须提供可复现的 Git/rg 可用方案，并通过 clean-install smoke；最终选择受保护系统安装、受控工具包或
-  Windows 平台 wheel，由 Phase 0 的体积、许可、离线安装与供应链证据决定。
+- Windows 安装路径使用受保护的 machine-scope Python 与 Git for Windows；不接受 WindowsApps alias、用户态安装或用户可写
+  shim。`rg` 由 WinGet 的 `BurntSushi.ripgrep.MSVC` 固定版本/manifest 获取，再由
+  `scripts/windows/install_host_tools.ps1` 校验实际 executable SHA-256、类型和大小，复制许可文件与 executable 到
+  `C:\Program Files\Pony Host Tools`，设置 protected DACL（Administrators/SYSTEM FullControl、Users
+  ReadAndExecute）并加入 machine PATH。
+- 不直接信任 WinGet stable alias 或 package root：前者实测是 reparse/symbolic link，后者向安装用户授予写权限。安装脚本的
+  受控复制必须拒绝 reparse point、意外条目和哈希漂移，替换旧条目前先解除其目录项，避免沿既有 hardlink 覆盖外部文件；
+  CI 可继续使用同一“包管理器校验来源后复制到受保护工具根”的 Chocolatey wrapper。
 
 ### Session 与跨平台切换
 

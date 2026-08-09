@@ -133,6 +133,37 @@ wrapper 提供受保护的 machine-scope Python/Git 并在 clean exact HEAD 上�
 runtime hook、parser、commands、error envelope、output、diagnostics、migration、Session 与 memory CLI；它排除了当前实现的
 自动化交互回归，但仍不能替代下述真实 Windows Terminal Phase 5。
 
+#### 2026-08-09 Windows Terminal 阻断项修复证据
+
+以下结果以 `6898d7762ccc0a4a5fed95a6cfd52466f133cc28` 为修改前基线、在 dirty release worktree 和仓库外 disposable
+wheel 环境中取得，只证明阻断项已复现并修复；它不是 clean exact candidate SHA，也不改变 Windows“尚未支持”的状态：
+
+- 根因不是 DeepSeek 或网络：Windows Console 可把非 BMP 字符的高、低 surrogate 分到两个 input batch；
+  prompt-toolkit 3.0.52/3.0.53 会把它们作为两个字符放入 Buffer。旧实现随后在首次 Session 严格 UTF-8 append 时失败，
+  因而呈现为输入框 `??`、空 Session、无 Run、无 HTTP 和通用 `agent runtime failed`。
+- TUI 现于实时 Buffer insertion 边界合并跨事件 surrogate pair，孤立 surrogate 在提交前变为 `U+FFFD`，并在
+  `session.prompt()` 返回边界保留第二层规范化。原生 `WriteConsoleInputW(KEY_EVENT_RECORD)` 把高、低 surrogate 作为两个
+  独立记录注入后，输入框、用户块、Provider request 与 durable Session 均保留一个真实马 emoji。
+- 启动欢迎页改由首个 PromptSession live render 持有；startup 期间列数变化会使用 prompt-toolkit 原生 clear/invalidate
+  清理 Windows Terminal 旧宽行重排，首条输入后关闭该机制。实机同一会话 120→约40→80 无 Logo/footer 碎片、裁切或重叠，
+  退出后的 Windows PowerShell 报告 `ACTUAL_COLS=80`。
+- 从最新 dirty wheel 完成一次 loopback Ollama-contract E2E：低对比用户块、瞬态 `Working…`、标题、列表、行内代码、代码块和
+  表格均可读；HTTP 为 `/api/chat`，Run 为 `completed/final_answer_returned`，trace 为 1 model request、0 retry。
+- 在用户明确授权后，以显式 `openai-chat`、标准 HTTPS endpoint 和 `deepseek-v4-flash` 完成一次收费 G8；resolution 为
+  explicit、probe 为 0、transport attempt 为 1、retry 为 0，返回指定 Markdown、中文与真实马 emoji。该结果只适用于本次
+  账号/endpoint/model 组合，不能外推 Anthropic-compatible endpoint 或其他 model。
+- 最新 dirty worktree 在 Python 3.12 的 `tests` 加 live-E2E assertion 全量为 `2754 passed, 152 skipped`，耗时
+  `0:49:52`；仓库外官方 Python 3.11.9 用户态解释器的同范围重跑也是 `2754 passed, 152 skipped`，耗时 `1:01:18`；
+  CLI 边界与 TUI 专项为 `267 passed, 4 skipped`。最新 sdist/wheel 的精确归档、clean-install 与 offline-bundle smoke 通过；
+  core-functional 仍只在 `core.fixed-benchmark` 以 `trusted verifier executable unavailable` 失败。这些数字仍须在最终 clean
+  exact HEAD 由 `scripts/check.sh` 从头复现；当前本机缺受保护 machine-scope Git/Python，不得为通过该宿主前置而放宽
+  executable trust。
+- 随后在用户授权的可见 UAC 下安装了厂商签名的 machine-scope Git 2.55.0.3、Python 3.11.9/3.12.10，并通过新增的
+  `scripts/windows/install_host_tools.ps1` 把 WinGet ripgrep 15.2.0 固定哈希复制到 protected Program Files 工具根。
+  独立审计确认 `rg.exe` 是非 reparse 的 single-link 普通文件、SHA-256 匹配、owner 为 Administrators、DACL 仅允许
+  SYSTEM/Administrators 写和 Users 读执行；标准用户 production discovery 与 `probe_shell_backend.py` 全项通过。该结果仍来自
+  dirty candidate，只关闭宿主前置，不替代提交后的 clean exact-SHA 完整门禁。
+
 #### Windows Terminal Phase 5 实机验收
 
 此项是候选版本的人工发布门禁。TUI import、单元测试或截图不能替代本清单；任何必做项未执行、证据缺失或结果不一致，

@@ -4,9 +4,11 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 from prompt_toolkit.utils import get_cwidth
 
+import pony.tui.app as tui_app
 from pony.cli.start import run_repl
 from pony.providers.transport import ProviderTransportError
 from pony.tui.app import (
@@ -69,6 +71,76 @@ def test_windows_tui_does_not_require_term(monkeypatch):
         environ={},
         columns=80,
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        ("plain", "plain"),
+        ("\ud83d\udc34", "\U0001f434"),
+        ("left \ud83d\udc34 right", "left \U0001f434 right"),
+        ("\ud83d middle \udc34", "\ufffd middle \ufffd"),
+    ),
+)
+def test_prompt_text_normalizes_windows_surrogate_input(value, expected):
+    assert tui_app._normalize_prompt_text(value) == expected
+
+
+def test_prompt_buffer_merges_surrogates_before_rendering():
+    buffer = tui_app._install_surrogate_safe_buffer(Buffer())
+
+    buffer.insert_text("\ud83d")
+    assert buffer.text == ""
+
+    buffer.insert_text("\udc34")
+    assert buffer.text == "\U0001f434"
+    assert buffer.cursor_position == 1
+
+    buffer.insert_text(" left \ud83d")
+    assert buffer.text == "\U0001f434 left "
+    tui_app._flush_pending_prompt_text(buffer)
+    assert buffer.text == "\U0001f434 left \ufffd"
+
+    reset_buffer = tui_app._install_surrogate_safe_buffer(Buffer())
+    reset_buffer.insert_text("\ud83d")
+    reset_buffer.reset()
+    reset_buffer.insert_text("\udc34")
+    assert reset_buffer.text == "\ufffd"
+
+
+def test_tui_routes_normalized_non_bmp_text_to_the_turn(monkeypatch):
+    received = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            return "中文 \ud83d\udc34 English"
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+
+    def route_input(_agent, _input_queue, text, **_kwargs):
+        received.append(text)
+        return 0
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.cli.start._route_repl_input", route_input)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
+    assert received == ["中文 \U0001f434 English"]
 
 
 @pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
@@ -317,6 +389,110 @@ def test_tui_editor_grows_without_filling_the_terminal():
     assert _CompactPromptSession._get_default_buffer_control_height(session).max == 6
 
 
+def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
+    current_columns = {"value": 120}
+    samples = []
+    written = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, message, *_args, **_kwargs):
+            assert callable(message)
+            for columns in (120, 40, 80):
+                current_columns["value"] = columns
+                samples.append(
+                    (
+                        columns,
+                        "".join(fragment[1] for fragment in message()),
+                    )
+                )
+            return "/exit"
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr(
+        "pony.tui.render.shutil.get_terminal_size",
+        lambda _fallback: SimpleNamespace(columns=current_columns["value"]),
+    )
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: written.append(value),
+    )
+
+    assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
+    assert [columns for columns, _text in samples] == [120, 40, 80]
+    for columns, rendered in samples:
+        assert "⣿" in rendered
+        assert "█" in rendered
+        assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+    assert not any("⣿" in "".join(fragment[1] for fragment in value) for value in written)
+
+
+def test_startup_resize_repaint_clears_only_live_welcome(monkeypatch):
+    handlers = []
+    columns = {"value": 120}
+    startup = {"visible": True}
+    clears = []
+    invalidations = []
+
+    class Event:
+        def __iadd__(self, handler):
+            handlers.append(handler)
+            return self
+
+    app = SimpleNamespace(
+        after_render=Event(),
+        output=SimpleNamespace(
+            get_size=lambda: SimpleNamespace(columns=columns["value"])
+        ),
+        renderer=SimpleNamespace(clear=lambda: clears.append(columns["value"])),
+        invalidate=lambda: invalidations.append(columns["value"]),
+    )
+    session = SimpleNamespace(app=app)
+    monkeypatch.setattr(tui_app, "_WINDOWS", True)
+
+    tui_app._install_startup_resize_repaint(
+        session,
+        lambda: startup["visible"],
+    )
+
+    handlers[0](app)
+    columns["value"] = 40
+    handlers[0](app)
+    handlers[0](app)
+    startup["visible"] = False
+    columns["value"] = 80
+    handlers[0](app)
+
+    assert clears == [40]
+    assert invalidations == [40]
+
+
+def test_startup_resize_repaint_does_not_clear_other_platforms(monkeypatch):
+    handlers = []
+
+    class Event:
+        def __iadd__(self, handler):
+            handlers.append(handler)
+            return self
+
+    session = SimpleNamespace(app=SimpleNamespace(after_render=Event()))
+    monkeypatch.setattr(tui_app, "_WINDOWS", False)
+
+    assert tui_app._install_startup_resize_repaint(session, lambda: True) is None
+    assert handlers == []
+
+
 def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
     calls = []
     agent = SimpleNamespace()
@@ -368,7 +544,9 @@ def test_tui_restores_runtime_hooks(monkeypatch):
         def __init__(self, **_kwargs):
             pass
 
-        def prompt(self, *_args, **_kwargs):
+        def prompt(self, message, *_args, **_kwargs):
+            if callable(message):
+                output.append(message())
             return "/exit"
 
     monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)

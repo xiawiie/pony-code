@@ -32,8 +32,114 @@ _MAX_EDITOR_LINES = 6
 _COMPLETION_ROWS = 5
 
 
+def _normalize_prompt_text(value):
+    text = str(value)
+    if not any("\ud800" <= character <= "\udfff" for character in text):
+        return text
+    return text.encode("utf-16-le", "surrogatepass").decode(
+        "utf-16-le",
+        "replace",
+    )
+
+
+class _PromptTextAssembler:
+    """Merge UTF-16 surrogate records that arrive in separate input batches."""
+
+    def __init__(self):
+        self._pending_high_surrogate = ""
+
+    def feed(self, value):
+        text = self._pending_high_surrogate + str(value)
+        self._pending_high_surrogate = ""
+        if text and "\ud800" <= text[-1] <= "\udbff":
+            self._pending_high_surrogate = text[-1]
+            text = text[:-1]
+        return _normalize_prompt_text(text)
+
+    def flush(self):
+        if not self._pending_high_surrogate:
+            return ""
+        self._pending_high_surrogate = ""
+        return "\ufffd"
+
+    def reset(self):
+        self._pending_high_surrogate = ""
+
+
+def _install_surrogate_safe_buffer(buffer):
+    if getattr(buffer, "_pony_surrogate_safe", False):
+        return buffer
+    assembler = _PromptTextAssembler()
+    # PromptSession owns Buffer construction; wrap its two mutation boundaries
+    # instead of copying prompt-toolkit's private Buffer factory.
+    original_insert = buffer.insert_text
+    original_reset = buffer.reset
+
+    def insert_text(
+        data,
+        overwrite=False,
+        move_cursor=True,
+        fire_event=True,
+    ):
+        text = assembler.feed(data)
+        if text:
+            original_insert(
+                text,
+                overwrite=overwrite,
+                move_cursor=move_cursor,
+                fire_event=fire_event,
+            )
+
+    def reset(*args, **kwargs):
+        assembler.reset()
+        return original_reset(*args, **kwargs)
+
+    def flush_pending_text():
+        text = assembler.flush()
+        if text:
+            original_insert(text)
+
+    buffer.insert_text = insert_text
+    buffer.reset = reset
+    buffer._pony_flush_pending_text = flush_pending_text
+    buffer._pony_surrogate_safe = True
+    return buffer
+
+
+def _flush_pending_prompt_text(buffer):
+    flush = getattr(buffer, "_pony_flush_pending_text", None)
+    if flush is not None:
+        flush()
+
+
+def _install_startup_resize_repaint(session, startup_is_visible):
+    # Windows Terminal reflows old wide rows before prompt-toolkit can redraw.
+    if not _WINDOWS:
+        return None
+    app = getattr(session, "app", None)
+    after_render = getattr(app, "after_render", None)
+    if after_render is None:
+        return None
+    previous_columns = None
+
+    def repaint(resized_app):
+        nonlocal previous_columns
+        columns = resized_app.output.get_size().columns
+        changed = previous_columns is not None and columns != previous_columns
+        previous_columns = columns
+        if changed and startup_is_visible():
+            resized_app.renderer.clear()
+            resized_app.invalidate()
+
+    after_render += repaint
+    return repaint
+
+
 class _CompactPromptSession(PromptSession):
     """Keep the multiline editor inline with native terminal scrollback."""
+
+    def _create_default_buffer(self):
+        return _install_surrogate_safe_buffer(super()._create_default_buffer())
 
     def _get_default_buffer_control_height(self):
         if self.default_buffer.complete_state is not None:
@@ -105,6 +211,7 @@ def _key_bindings():
     @bindings.add("enter")
     def submit(event):
         buffer = event.current_buffer
+        _flush_pending_prompt_text(buffer)
         if buffer.document.text_before_cursor.endswith("\\"):
             buffer.delete_before_cursor(1)
             buffer.insert_text("\n")
@@ -113,6 +220,7 @@ def _key_bindings():
 
     @bindings.add("escape", "enter")
     def insert_newline(event):
+        _flush_pending_prompt_text(event.current_buffer)
         event.current_buffer.insert_text("\n")
 
     return bindings
@@ -218,10 +326,7 @@ def run_tui(
     renderer = TuiRenderer(
         no_color=no_color or os.environ.get("NO_COLOR") is not None,
     )
-    if show_header:
-        renderer.header(agent, model=model)
-    if resume_projection is not None:
-        renderer.resume(resume_projection)
+    startup_visible = show_header or resume_projection is not None
     session = _CompactPromptSession(
         history=_history(prompt_history),
         completer=SlashCommandCompleter(agent),
@@ -234,6 +339,7 @@ def run_tui(
         reserve_space_for_menu=_COMPLETION_ROWS,
         style=renderer.style,
     )
+    _install_startup_resize_repaint(session, lambda: startup_visible)
     ui_thread = threading.current_thread()
     ui_lock = threading.RLock()
 
@@ -273,10 +379,12 @@ def run_tui(
         app.loop.call_soon_threadsafe(wake)
 
     def confirm(message):
-        answer = session.prompt(
-            FormattedText([("class:warning", message)]),
-            multiline=False,
-            bottom_toolbar=None,
+        answer = _normalize_prompt_text(
+            session.prompt(
+                FormattedText([("class:warning", message)]),
+                multiline=False,
+                bottom_toolbar=None,
+            )
         )
         return answer.strip().casefold() in {"y", "yes"}
 
@@ -293,6 +401,17 @@ def run_tui(
         session.history = history
         if hasattr(session, "default_buffer"):
             session.default_buffer.history = history
+
+    def prompt_message():
+        if not startup_visible:
+            return renderer.prompt()
+        fragments = []
+        if show_header:
+            fragments.extend(renderer.welcome(agent, model=model))
+        if resume_projection is not None:
+            fragments.extend(renderer.resume_card(resume_projection))
+        fragments.extend(renderer.prompt())
+        return FormattedText(fragments)
 
     input_queue = None
 
@@ -359,15 +478,16 @@ def run_tui(
             refresh_history()
             confirmation = input_queue.confirmation()
             try:
-                user_input = session.prompt(
-                    (
+                user_input = _normalize_prompt_text(
+                    session.prompt(
                         FormattedText([("class:warning", confirmation)])
                         if confirmation is not None
-                        else renderer.prompt()
-                    ),
-                    prompt_continuation=_continuation,
-                    bottom_toolbar=lambda: renderer.toolbar(agent, model=model),
+                        else prompt_message,
+                        prompt_continuation=_continuation,
+                        bottom_toolbar=lambda: renderer.toolbar(agent, model=model),
+                    )
                 )
+                startup_visible = False
             except EOFError:
                 input_queue.close()
                 terminal_result = _raise_or_return_terminal(input_queue)

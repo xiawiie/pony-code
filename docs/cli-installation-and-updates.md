@@ -33,6 +33,34 @@ uv run pony --version
 
 `uv.lock` 是开发和 CI 的锁定真源。日常验证使用 `uv run ...`，不要向 runtime dependency 添加仅供测试或构建使用的包。
 
+### Windows 候选宿主准备
+
+Windows 晋级验收只接受 Windows 11 x64 的原生工具链，不以 WSL、Git Bash、MSYS2 或用户可写 shim 代替。先用厂商签名的
+64 位安装程序把所需的 Python 3.11 或 3.12 与 Git for Windows 安装到 `%ProgramFiles%`，并选择
+all-users/machine-scope 安装；发布门禁会分别验证两个 Python minor。
+Python 用户态安装、WindowsApps alias 和用户可写 Git 目录不会被 Pony 当作受信 executable。
+
+`rg` 使用 WinGet 的 `BurntSushi.ripgrep.MSVC` 固定包，再复制到 protected DACL 的稳定机器目录。请从准备验收的 exact
+release tag 检出源码，并在管理员 Windows PowerShell 中运行：
+
+```powershell
+& .\scripts\windows\install_host_tools.ps1
+```
+
+脚本固定 ripgrep 版本与实际 executable SHA-256，不使用 `--ignore-security-hash`，拒绝 reparse point、异常文件和意外目录内容；
+最终只允许 Administrators/SYSTEM 写入 `C:\Program Files\Pony Host Tools`，普通 Users 只有读取/执行权限。它不信任
+WinGet 的符号链接或安装用户可写的 package root。完成后新开一个标准用户终端并检查：
+
+```powershell
+python --version
+git --version
+rg --version
+pony doctor
+```
+
+脚本只准备宿主工具，不安装 Pony、不修改仓库配置，也不把 Host 描述成 OS sandbox。当前公开支持状态仍以本页开头的支持
+范围和[验证文档](verification.md#windows-支持晋级门禁)为准。
+
 ## 项目初始化
 
 进入需要 Pony 操作的仓库根目录：

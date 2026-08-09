@@ -60,6 +60,11 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 - TUI 运行事件收束为瞬态 `Working…`、单行 Tool 摘要、一次性 permission prompt 和明确的失败/中断；自动 checkpoint
   不再进入对话区，footer 不再显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 与
   streaming 不属于 1.0 展示面。
+- Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
+  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中 120→40→80 缩放会清除旧宽行残影，首条输入后仍保留原生 inline
+  scrollback。
+- Windows 候选宿主增加固定版本/哈希的 ripgrep 安装脚本；它把 WinGet 来源复制到 protected Program Files 工具根，拒绝
+  reparse point、意外内容和 ACL 漂移，不把用户可写 package root 或符号链接加入受信 executable 集合。
 - 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`runtime`、`security`、`state`、
   `tui`、`tools`、`workspace` 等领域包归位；`pony/` 顶层只保留 `__init__.py` 与
   `__main__.py`。

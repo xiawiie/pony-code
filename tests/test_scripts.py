@@ -646,6 +646,58 @@ def test_windows_local_check_script_matches_the_full_exact_head_gate():
     assert "safe.directory" not in text
 
 
+def test_windows_host_tools_installer_is_pinned_and_fail_closed():
+    script = Path("scripts/windows/install_host_tools.ps1")
+
+    assert script.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert '$ripgrepVersion = "15.2.0"' in text
+    assert "14231169855EC5205CF5A1B6F1DB358FF4AED4247C86B69CE8AAE647C77F6680" in text
+    assert '"--scope", "machine"' in text
+    assert '"--location", $packageRoot' in text
+    assert "--ignore-security-hash" not in text
+    assert "$noApplicableUpgrade = -1978335189  # 0x8A15002B" in text
+    assert "Assert-NoReparsePoint" in text
+    assert "SetAccessRuleProtection($true, $false)" in text
+    assert "S-1-5-32-544" in text
+    assert "S-1-5-18" in text
+    assert "S-1-5-32-545" in text
+    assert "$maximumNoticeBytes = 65536" in text
+    assert "Assert-TrustedAcl -Path $toolRoot -Directory $true" in text
+    assert "Remove-Item -LiteralPath $destination -Force" in text
+    assert "Assert-TrustedAcl -Path $destination -Directory $false" in text
+    assert '[Environment]::SetEnvironmentVariable("Path", $updatedPath, "Machine")' in text
+    assert '$args.Count -ne 0' in text
+
+    if sys.platform == "win32":
+        windows_powershell = (
+            Path(os.environ["SystemRoot"])
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        escaped_path = str(script.resolve()).replace("'", "''")
+        result = subprocess.run(
+            [
+                windows_powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$ErrorActionPreference = 'Stop'; "
+                    "[void][scriptblock]::Create((Get-Content -LiteralPath "
+                    f"'{escaped_path}' -Raw -Encoding UTF8))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+
 def _windows_check_fixture(tmp_path):
     repo = tmp_path / "repo"
     scripts = repo / "scripts" / "windows"
