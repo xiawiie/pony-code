@@ -211,6 +211,7 @@ def test_packaging_declares_unreleased_platforms_license_and_urls():
     classifiers = set(project["classifiers"])
     assert "Development Status :: 4 - Beta" in classifiers
     assert "Operating System :: MacOS" in classifiers
+    assert "Operating System :: Microsoft :: Windows :: Windows 11" in classifiers
     assert "Operating System :: POSIX :: Linux" in classifiers
     assert "Development Status :: 5 - Production/Stable" not in classifiers
     assert "Operating System :: OS Independent" not in classifiers

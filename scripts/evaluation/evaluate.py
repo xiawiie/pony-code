@@ -12,7 +12,6 @@ from pathlib import Path, PureWindowsPath
 import re
 import subprocess
 import sys
-import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +20,10 @@ if str(ROOT) not in sys.path:
 
 from pony.config.environment import read_project_env  # noqa: E402
 from pony.config.model import resolve_model_config  # noqa: E402
+from pony.security.private_files import (  # noqa: E402
+    private_directory_identity,
+    write_private_bytes_atomic,
+)
 from pony.security.redaction import redact_text  # noqa: E402
 
 
@@ -1025,28 +1028,13 @@ def _validate_low_sensitivity(payload, markdown, root):
 
 
 def _write_atomic(path, text):
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        dir=path.parent,
+    write_private_bytes_atomic(
+        path,
+        text.encode(),
+        trusted_root=path.parent,
+        trusted_root_identity=private_directory_identity(path.parent),
+        require_absent=True,
     )
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            descriptor = -1
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.link(temporary, path)
-        parent = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        temporary.unlink(missing_ok=True)
 
 
 def _failure_message(row):

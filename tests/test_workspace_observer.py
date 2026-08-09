@@ -1,3 +1,4 @@
+import pytest
 import subprocess
 
 from pony.workspace.observer import WorkspaceObserver
@@ -114,3 +115,22 @@ def test_git_observer_preserves_tracked_deletion_marker(tmp_path, monkeypatch):
 
     assert snapshot["paths"] == {"deleted.txt": "D"}
     assert snapshot["detail"] == {}
+
+
+def test_workspace_observer_rejects_root_replacement_before_git(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    detached = tmp_path / "detached"
+    root.mkdir()
+    observer = WorkspaceObserver(root, executables={"git": "/frozen/git"})
+    root.rename(detached)
+    root.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        "pony.workspace.observer.run_hardened_git",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="workspace_entry_unsafe"):
+        observer.capture()
+
+    assert calls == []

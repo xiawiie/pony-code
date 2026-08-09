@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from contextlib import contextmanager
 import locale
+import ntpath
 import os
 import re
 import selectors
@@ -13,6 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
+_WINDOWS = os.name == "nt"
 AUTO_TRUSTED_EXECUTABLES = ("git", "pwd", "ls", "stat", "file", "wc")
 INTERNAL_TRUSTED_EXECUTABLES = ("rg",)
 APPROVAL_TRUSTED_EXECUTABLES = (
@@ -44,15 +46,38 @@ DEFAULT_TRUSTED_EXECUTABLES = (
     *INTERNAL_TRUSTED_EXECUTABLES,
     *APPROVAL_TRUSTED_EXECUTABLES,
 )
+WINDOWS_DEFAULT_TRUSTED_EXECUTABLES = tuple(
+    name
+    for name in DEFAULT_TRUSTED_EXECUTABLES
+    if name
+    not in {
+        "pwd",
+        "ls",
+        "stat",
+        "file",
+        "wc",
+        "sudo",
+        "doas",
+        "pkexec",
+        "sh",
+        "bash",
+        "zsh",
+    }
+)
 _GIT_CONFIG_OVERRIDES = (
     "commit.gpgSign=false",
     "core.fsmonitor=false",
-    "core.hooksPath=/dev/null",
+    f"core.hooksPath={os.devnull}",
     "core.askPass=",
     "diff.external=",
     "credential.helper=",
     "protocol.ext.allow=never",
     "pager.status=false",
+)
+_WINDOWS_GIT_TEXT_CONFIG_KEYS = (
+    "core.autocrlf",
+    "core.eol",
+    "core.safecrlf",
 )
 _GIT_DIFF_RENDERING_SUBCOMMANDS = {
     "annotate",
@@ -81,14 +106,30 @@ _GIT_CONFIG_KEY_RE = re.compile(
 _MAX_GIT_METADATA_BYTES = 64 * 1024
 MAX_CAPTURED_PROCESS_BYTES = 4 * 1024 * 1024
 # Regular gitfiles fail closed without race-safe component traversal.
-_HAS_GIT_DIR_FD_TRAVERSAL = (
+_HAS_GIT_DIR_FD_TRAVERSAL = os.name == "nt" or (
     os.name == "posix"
     and bool(getattr(os, "O_DIRECTORY", 0))
     and bool(getattr(os, "O_NOFOLLOW", 0))
     and os.open in getattr(os, "supports_dir_fd", ())
     and os.stat in getattr(os, "supports_dir_fd", ())
 )
-_ENV_ALLOWLIST = ("HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+_ENV_ALLOWLIST = (
+    "APPDATA",
+    "HOME",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOCALAPPDATA",
+    "PATHEXT",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "TZ",
+    "USERPROFILE",
+    "WINDIR",
+)
 
 
 class _TrustedExecutable(str):
@@ -200,7 +241,61 @@ def _open_verified_executable(path, *, expected=None):
         raise
 
 
+def _require_immutable_windows_directory(path):
+    from pony.security import windows_native as native
+
+    path = native.lexical_absolute(path)
+    current = Path(path.anchor)
+    components = path.parts[1:]
+    for index, component in enumerate((None, *components)):
+        if component is not None:
+            current /= component
+        with native.open_path(current, directory=True, single_link=False):
+            pass
+        if native.path_is_mutable_by_current_user(
+            current,
+            directory=True,
+            contents=index == len(components),
+        ):
+            raise ValueError("mutable trusted executable directory")
+    return path
+
+
+def _open_windows_verified_executable(path, *, expected=None):
+    from pony.security import windows_native as native
+
+    path = native.lexical_absolute(path)
+    if path.suffix.casefold() != ".exe":
+        raise ValueError("unsafe trusted executable")
+    _require_immutable_windows_directory(path.parent)
+    handle = native.open_path(path, directory=False, single_link=False)
+    try:
+        facts = native.facts(handle)
+        identity = (
+            facts.filesystem_id,
+            facts.file_id,
+            facts.size,
+            facts.modified_ns,
+            facts.changed_ns,
+            native.protection_identity(handle),
+        )
+        if expected is not None and identity != expected:
+            raise ValueError("unsafe trusted executable")
+        if native.path_is_mutable_by_current_user(path, directory=False):
+            raise ValueError("mutable trusted executable")
+        return handle, identity, True
+    except Exception:
+        handle.close()
+        raise
+
+
 def _verified_executable_identity(path, *, expected=None):
+    if os.name == "nt":
+        handle, identity, _immutable_path = _open_windows_verified_executable(
+            path, expected=expected
+        )
+        handle.close()
+        return identity
     descriptor, identity, immutable_path = _open_verified_executable(
         path, expected=expected
     )
@@ -218,6 +313,16 @@ def _prepared_executable(executable):
     if not argv0.is_absolute():
         raise ValueError("trusted executable must be absolute")
     expected = getattr(executable, "_identity", None)
+    if os.name == "nt":
+        path = argv0 if expected is not None else Path(os.path.abspath(argv0))
+        handle, _, _immutable_path = _open_windows_verified_executable(
+            path, expected=expected
+        )
+        try:
+            yield _PreparedExecutable(str(argv0), str(path))
+        finally:
+            handle.close()
+        return
     path = argv0 if expected is not None else argv0.resolve(strict=True)
     descriptor, _, immutable_path = _open_verified_executable(
         path,
@@ -231,28 +336,77 @@ def _prepared_executable(executable):
         os.close(descriptor)
 
 
+def _git_absolute(path):
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        return native.lexical_absolute(path)
+    return Path(path).resolve()
+
+
+def _close_git_handle(handle):
+    if os.name == "nt":
+        handle.close()
+    else:
+        os.close(handle)
+
+
+def _git_entry_mode(directory_handle, name):
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        errors = []
+        for directory in (True, False):
+            try:
+                handle, _created = native.open_relative(
+                    directory_handle,
+                    name,
+                    directory=directory,
+                    desired_access=(
+                        native.FILE_DIRECTORY_ACCESS
+                        if directory
+                        else native.FILE_READ_ACCESS
+                    ),
+                    share_access=native.FILE_SHARE_READ_WRITE,
+                    single_link=False,
+                )
+            except native.ReparsePointError as exc:
+                message = (
+                    "unsafe .git symlink" if name == ".git" else "unsafe git repository"
+                )
+                raise ValueError(message) from exc
+            except OSError as exc:
+                errors.append(exc)
+                continue
+            handle.close()
+            return stat.S_IFDIR if directory else stat.S_IFREG
+        for exc in errors:
+            if native.error_code(exc) in {2, 3}:
+                continue
+            if native.error_code(exc) != 267:
+                raise exc
+        raise FileNotFoundError(2, "git entry missing")
+    return os.stat(name, dir_fd=directory_handle, follow_symlinks=False).st_mode
+
+
 def _open_lexical_repo_root(cwd):
-    current = Path(cwd).resolve()
+    current = _git_absolute(cwd)
     for candidate in (current, *current.parents):
         _, candidate_fd = _open_git_path(candidate, directory=True)
         try:
-            mode = os.stat(
-                ".git",
-                dir_fd=candidate_fd,
-                follow_symlinks=False,
-            ).st_mode
+            mode = _git_entry_mode(candidate_fd, ".git")
         except FileNotFoundError:
-            os.close(candidate_fd)
+            _close_git_handle(candidate_fd)
             continue
         except Exception:
-            os.close(candidate_fd)
+            _close_git_handle(candidate_fd)
             raise
         if stat.S_ISLNK(mode):
-            os.close(candidate_fd)
+            _close_git_handle(candidate_fd)
             raise ValueError("unsafe .git symlink")
         if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
             return candidate, candidate_fd, mode
-        os.close(candidate_fd)
+        _close_git_handle(candidate_fd)
         raise ValueError("unsafe git repository")
     _, current_fd = _open_git_path(current, directory=True)
     return current, current_fd, None
@@ -261,10 +415,10 @@ def _open_lexical_repo_root(cwd):
 def discover_lexical_repo_root(cwd):
     if _HAS_GIT_DIR_FD_TRAVERSAL:
         root, root_fd, _ = _open_lexical_repo_root(cwd)
-        os.close(root_fd)
+        _close_git_handle(root_fd)
         return root
 
-    current = Path(cwd).resolve()
+    current = _git_absolute(cwd)
     for candidate in (current, *current.parents):
         marker = candidate / ".git"
         try:
@@ -297,10 +451,23 @@ def _git_open_flags(*, directory):
     return flags
 
 
-def _open_git_path(path, *, directory):
+def _open_git_path(path, *, directory, single_link=True):
     if not _HAS_GIT_DIR_FD_TRAVERSAL:
         raise ValueError("unsafe git repository")
     candidate = Path(os.path.abspath(path))
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        try:
+            handle = native.open_path(
+                candidate,
+                directory=directory,
+                share_access=native.FILE_SHARE_READ_WRITE,
+                single_link=single_link,
+            )
+        except native.ReparsePointError as exc:
+            raise ValueError("unsafe git repository") from exc
+        return candidate, handle
     descriptor = os.open(candidate.anchor, _git_open_flags(directory=True))
     try:
         components = candidate.parts[1:]
@@ -317,9 +484,9 @@ def _open_git_path(path, *, directory):
                 if not expected_type(opened.st_mode):
                     raise ValueError("unsafe git repository")
             except Exception:
-                os.close(next_descriptor)
+                _close_git_handle(next_descriptor)
                 raise
-            os.close(descriptor)
+            _close_git_handle(descriptor)
             descriptor = next_descriptor
         opened = os.fstat(descriptor)
         expected_type = stat.S_ISDIR if directory else stat.S_ISREG
@@ -327,16 +494,33 @@ def _open_git_path(path, *, directory):
             raise ValueError("unsafe git repository")
         return candidate, descriptor
     except Exception:
-        os.close(descriptor)
+        _close_git_handle(descriptor)
         raise
 
 
-def _open_git_entry(directory_fd, name, *, directory):
+def _open_git_entry(directory_fd, name, *, directory, single_link=True):
     raw_name = os.fsdecode(name)
     if Path(raw_name).name != raw_name or raw_name in {"", ".", ".."}:
         raise ValueError("unsafe git repository")
     if not _HAS_GIT_DIR_FD_TRAVERSAL:
         raise ValueError("unsafe git repository")
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        try:
+            handle, _created = native.open_relative(
+                directory_fd,
+                raw_name,
+                directory=directory,
+                desired_access=(
+                    native.FILE_DIRECTORY_ACCESS if directory else native.FILE_READ_ACCESS
+                ),
+                share_access=native.FILE_SHARE_READ_WRITE,
+                single_link=single_link,
+            )
+        except native.ReparsePointError as exc:
+            raise ValueError("unsafe git repository") from exc
+        return handle
     return os.open(
         raw_name,
         _git_open_flags(directory=directory),
@@ -345,17 +529,48 @@ def _open_git_entry(directory_fd, name, *, directory):
 
 
 def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
-    descriptor = -1
+    descriptor = None
     try:
         if dir_fd is None:
-            _, descriptor = _open_git_path(path, directory=False)
+            _, descriptor = _open_git_path(path, directory=False, single_link=False)
         else:
-            descriptor = _open_git_entry(dir_fd, path, directory=False)
+            descriptor = _open_git_entry(
+                dir_fd,
+                path,
+                directory=False,
+                single_link=False,
+            )
     except FileNotFoundError:
         if allow_missing:
             return None
         raise
     try:
+        if os.name == "nt":
+            from pony.security import windows_native as native
+
+            opened = native.facts(descriptor)
+            if opened.link_count != 1 or opened.size > _MAX_GIT_METADATA_BYTES:
+                raise ValueError("unsafe git repository")
+            before = (
+                opened.filesystem_id,
+                opened.file_id,
+                opened.size,
+                opened.modified_ns,
+                opened.changed_ns,
+                opened.link_count,
+            )
+            data = native.read_bytes(descriptor, max_bytes=_MAX_GIT_METADATA_BYTES)
+            after = native.facts(descriptor)
+            if before != (
+                after.filesystem_id,
+                after.file_id,
+                after.size,
+                after.modified_ns,
+                after.changed_ns,
+                after.link_count,
+            ):
+                raise ValueError("unsafe git repository")
+            return data
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -364,14 +579,14 @@ def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
         ):
             raise ValueError("unsafe git repository")
         with os.fdopen(descriptor, "rb") as handle:
-            descriptor = -1
+            descriptor = None
             data = handle.read(_MAX_GIT_METADATA_BYTES + 1)
         if len(data) > _MAX_GIT_METADATA_BYTES:
             raise ValueError("unsafe git repository")
         return data
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        if descriptor is not None:
+            _close_git_handle(descriptor)
 
 
 def _single_git_path(data, *, prefix=""):
@@ -399,7 +614,7 @@ def _open_metadata_directory(base, value):
 
 def _metadata_directory(base, value):
     candidate, descriptor = _open_metadata_directory(base, value)
-    os.close(descriptor)
+    _close_git_handle(descriptor)
     return candidate
 
 
@@ -407,6 +622,25 @@ def _metadata_file(base, value):
     candidate = _metadata_candidate(base, value)
     _read_git_metadata(candidate)
     return candidate
+
+
+def _git_file_identity(path):
+    _candidate, handle = _open_git_path(path, directory=False)
+    try:
+        if os.name == "nt":
+            from pony.security import windows_native as native
+
+            return native.identity(handle)
+        opened = os.fstat(handle)
+        return opened.st_dev, opened.st_ino
+    finally:
+        _close_git_handle(handle)
+
+
+def _same_git_file(left, right):
+    if left == right:
+        return True
+    return os.name == "nt" and _git_file_identity(left) == _git_file_identity(right)
 
 
 def _git_config_value(raw_value):
@@ -499,7 +733,7 @@ def _validate_linked_worktree_gitfile(marker, target, target_fd, backlink_data):
         target,
         _single_git_path(backlink_data),
     )
-    if backlink != marker:
+    if not _same_git_file(backlink, marker):
         raise ValueError("unsafe git repository")
     common, common_fd = _open_metadata_directory(
         target,
@@ -517,7 +751,7 @@ def _validate_linked_worktree_gitfile(marker, target, target_fd, backlink_data):
             allow_missing=True,
         )
     finally:
-        os.close(common_fd)
+        _close_git_handle(common_fd)
     return common
 
 
@@ -538,11 +772,7 @@ def _enclosing_git_dir(lexical_root):
         marker_data = None
         try:
             try:
-                mode = os.stat(
-                    ".git",
-                    dir_fd=super_fd,
-                    follow_symlinks=False,
-                ).st_mode
+                mode = _git_entry_mode(super_fd, ".git")
             except FileNotFoundError:
                 continue
             if stat.S_ISLNK(mode):
@@ -554,13 +784,13 @@ def _enclosing_git_dir(lexical_root):
                     _read_git_metadata("HEAD", dir_fd=common_fd)
                     _read_git_metadata("config", dir_fd=common_fd)
                 finally:
-                    os.close(common_fd)
+                    _close_git_handle(common_fd)
                 return common
             if not stat.S_ISREG(mode):
                 raise ValueError("unsafe git repository")
             marker_data = _read_git_metadata(".git", dir_fd=super_fd)
         finally:
-            os.close(super_fd)
+            _close_git_handle(super_fd)
         _, git_dir = _validate_gitfile_binding(
             super_root,
             marker,
@@ -578,7 +808,7 @@ def _validate_absorbed_submodule_gitfile(lexical_root, target, target_fd):
         raise ValueError("unsafe git repository")
     super_git_dir = _enclosing_git_dir(lexical_root)
     modules, modules_fd = _open_metadata_directory(super_git_dir, "modules")
-    os.close(modules_fd)
+    _close_git_handle(modules_fd)
     try:
         relative_target = target.relative_to(modules)
     except ValueError:
@@ -612,13 +842,39 @@ def _validate_gitfile_binding(lexical_root, marker, *, marker_data=None):
             )
             return "linked-worktree", target
         finally:
-            os.close(target_fd)
+            _close_git_handle(target_fd)
     except (OSError, RuntimeError, ValueError):
         raise ValueError("unsafe git repository config") from None
 
 
+def _bare_git_repository(candidate):
+    _, directory = _open_git_path(candidate, directory=True)
+    try:
+        modes = {}
+        for name in ("HEAD", "config", "objects"):
+            try:
+                modes[name] = _git_entry_mode(directory, name)
+            except FileNotFoundError:
+                modes[name] = None
+        if all(value is None for value in modes.values()):
+            return False
+        if not (
+            stat.S_ISREG(modes["HEAD"] or 0)
+            and stat.S_ISREG(modes["config"] or 0)
+            and stat.S_ISDIR(modes["objects"] or 0)
+        ):
+            raise ValueError("unsafe git repository")
+        _read_git_metadata("HEAD", dir_fd=directory)
+        _read_git_metadata("config", dir_fd=directory)
+        objects = _open_git_entry(directory, "objects", directory=True)
+        _close_git_handle(objects)
+        return True
+    finally:
+        _close_git_handle(directory)
+
+
 def _lexical_git_repository_kind(cwd):
-    current = Path(cwd).resolve()
+    current = _git_absolute(cwd)
     if _HAS_GIT_DIR_FD_TRAVERSAL:
         lexical_root, root_fd, marker_mode = _open_lexical_repo_root(current)
         marker = lexical_root / ".git"
@@ -629,7 +885,7 @@ def _lexical_git_repository_kind(cwd):
                     return "directory"
                 marker_data = _read_git_metadata(".git", dir_fd=root_fd)
         finally:
-            os.close(root_fd)
+            _close_git_handle(root_fd)
         if marker_data is not None:
             return _validate_gitfile_binding(
                 lexical_root,
@@ -644,6 +900,10 @@ def _lexical_git_repository_kind(cwd):
         if marker.is_file():
             return _validate_gitfile_binding(lexical_root, marker)[0]
     for candidate in (current, *current.parents):
+        if _HAS_GIT_DIR_FD_TRAVERSAL:
+            if _bare_git_repository(candidate):
+                return "bare"
+            continue
         try:
             head_mode = (candidate / "HEAD").lstat().st_mode
             config_mode = (candidate / "config").lstat().st_mode
@@ -669,6 +929,18 @@ def _safe_path_dirs(workspace_root, env):
         candidate = Path(raw)
         if not raw or raw == "." or not candidate.is_absolute():
             continue
+        if os.name == "nt":
+            try:
+                resolved = Path(os.path.abspath(candidate))
+                if resolved == root or root in resolved.parents:
+                    continue
+                _require_immutable_windows_directory(resolved)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            value = str(resolved)
+            if value not in result:
+                result.append(value)
+            continue
         try:
             resolved = candidate.resolve(strict=True)
             mode = resolved.stat().st_mode
@@ -687,10 +959,36 @@ def _safe_path_dirs(workspace_root, env):
 def build_trusted_executables(workspace_root, *, env=None, names=()):
     root = Path(workspace_root).resolve()
     safe_path_dirs = _safe_path_dirs(root, env)
-    if not safe_path_dirs:
+    requested = tuple(
+        names
+        or (
+            WINDOWS_DEFAULT_TRUSTED_EXECUTABLES
+            if os.name == "nt"
+            else DEFAULT_TRUSTED_EXECUTABLES
+        )
+    )
+    if not safe_path_dirs and os.name != "nt":
         return {}
     result = {}
-    for raw_name in tuple(names or DEFAULT_TRUSTED_EXECUTABLES):
+    if os.name == "nt" and not names:
+        from pony.security import windows_native as native
+
+        powershell = (
+            native.windows_directory()
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        try:
+            identity = _verified_executable_identity(powershell)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        else:
+            result["powershell"] = _TrustedExecutable(
+                str(powershell), identity, root
+            )
+    for raw_name in requested:
         name = str(raw_name)
         if not name or Path(name).name != name:
             continue
@@ -699,7 +997,11 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
             if not found:
                 continue
             try:
-                resolved = Path(found).resolve(strict=True)
+                resolved = (
+                    Path(os.path.abspath(found))
+                    if os.name == "nt"
+                    else Path(found).resolve(strict=True)
+                )
                 if resolved == root or root in resolved.parents:
                     continue
                 identity = _verified_executable_identity(resolved)
@@ -707,16 +1009,28 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
                 continue
             result[name] = _TrustedExecutable(str(resolved), identity, root)
             break
+    if (
+        os.name == "nt"
+        and "python3" in requested
+        and "python3" not in result
+        and "python" in result
+    ):
+        result["python3"] = result["python"]
     return result
 
 
 def _minimal_env(cwd, executable):
     source = os.environ
     env = {name: source[name] for name in _ENV_ALLOWLIST if source.get(name)}
-    path_value = os.pathsep.join(
-        _safe_path_dirs(cwd, {"PATH": os.pathsep.join((str(Path(executable).parent), source.get("PATH", "")))})
+    candidate_path = os.pathsep.join(
+        (str(Path(executable).parent), source.get("PATH", ""))
     )
+    path_value = os.pathsep.join(_safe_path_dirs(cwd, {"PATH": candidate_path}))
     env["PATH"] = path_value
+    if ntpath.basename(str(executable)).casefold() == "powershell.exe":
+        env["PSModulePath"] = ntpath.join(
+            ntpath.dirname(str(executable)), "Modules"
+        )
     return env
 
 
@@ -766,6 +1080,86 @@ def _hardened_git_env(cwd, executable):
         GIT_TERMINAL_PROMPT="0",
     )
     return env
+
+
+def _canonical_windows_git_text_config(key, raw_value):
+    value = raw_value.strip().casefold()
+    if key == "core.autocrlf":
+        if value == "input":
+            return value
+        true_values = {"", "1", "on", "true", "yes"}
+        false_values = {"0", "off", "false", "no"}
+        if value in true_values:
+            return "true"
+        if value in false_values:
+            return "false"
+    elif key == "core.eol" and value in {"crlf", "lf", "native"}:
+        return value
+    elif key == "core.safecrlf":
+        if value == "warn":
+            return value
+        if value in {"", "1", "on", "true", "yes"}:
+            return "true"
+        if value in {"0", "off", "false", "no"}:
+            return "false"
+    raise ValueError("unsafe Windows Git line-ending configuration")
+
+
+def _windows_git_text_config_overrides(executable, *, cwd, timeout):
+    if not _WINDOWS or not _lexical_git_repository_kind(cwd):
+        return ()
+    argv = _hardened_git_prefix(executable)
+    argv.extend(("-c", "alias.config="))
+    argv.extend(
+        (
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^core\.(autocrlf|eol|safecrlf)$",
+        )
+    )
+    env = _minimal_env(cwd, executable)
+    env.update(
+        GIT_ALLOW_PROTOCOL="git:http:https:ssh",
+        GIT_TERMINAL_PROMPT="0",
+    )
+    result = _run_bounded(
+        argv,
+        executable=_execution_path(executable),
+        cwd=Path(cwd).resolve(),
+        capture_output=True,
+        text=False,
+        check=False,
+        timeout=min(int(timeout), 5),
+        env=env,
+        shell=False,
+    )
+    if result.returncode == 1 and result.stdout == b"":
+        return ()
+    if result.returncode != 0 or not isinstance(result.stdout, (bytes, bytearray)):
+        raise ValueError("unsafe Windows Git line-ending configuration")
+    values = {}
+    for record in bytes(result.stdout).split(b"\x00"):
+        if not record:
+            continue
+        raw_key, separator, raw_value = record.partition(b"\n")
+        if not separator:
+            raise ValueError("unsafe Windows Git line-ending configuration")
+        try:
+            key = raw_key.decode("ascii").casefold()
+            value = raw_value.decode("ascii")
+        except UnicodeDecodeError:
+            raise ValueError(
+                "unsafe Windows Git line-ending configuration"
+            ) from None
+        if key not in _WINDOWS_GIT_TEXT_CONFIG_KEYS:
+            raise ValueError("unsafe Windows Git line-ending configuration")
+        values[key] = value
+    return tuple(
+        f"{key}={_canonical_windows_git_text_config(key, values[key])}"
+        for key in _WINDOWS_GIT_TEXT_CONFIG_KEYS
+        if key in values
+    )
 
 
 def build_hardened_git_argv(executable, args):
@@ -1029,7 +1423,18 @@ def run_hardened_git(
             args=args,
             timeout=timeout,
         )
+        text_config_overrides = _windows_git_text_config_overrides(
+            prepared,
+            cwd=cwd,
+            timeout=timeout,
+        )
         argv = build_hardened_git_argv(prepared, args)
+        if text_config_overrides:
+            argv[3:3] = [
+                value
+                for override in text_config_overrides
+                for value in ("-c", override)
+            ]
         env = _hardened_git_env(cwd, prepared)
         if commit_identity is not None:
             name, email = commit_identity
@@ -1159,6 +1564,25 @@ def _capture_process(
     if limit < 1:
         raise ValueError("invalid process output limit")
     command = [str(arg) for arg in argv]
+    if os.name == "nt":
+        from .windows_process import capture_process
+
+        captured = capture_process(
+            command,
+            executable=executable,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            max_output_bytes=limit,
+        )
+        if captured.output_limit_exceeded:
+            raise ProcessOutputLimitExceeded(command, limit)
+        return _CapturedProcess(
+            stdout=captured.stdout,
+            stderr=captured.stderr,
+            returncode=captured.returncode,
+            timed_out=captured.timed_out,
+        )
     process = subprocess.Popen(
         command,
         executable=executable,
@@ -1308,6 +1732,28 @@ def run_process_group(
     )
 
 
+def _shell_argv(executable, command, *, windows):
+    if windows:
+        module_root = ntpath.join(ntpath.dirname(str(executable)), "Modules")
+        imports = []
+        for name in (
+            "Microsoft.PowerShell.Management",
+            "Microsoft.PowerShell.Utility",
+        ):
+            manifest = ntpath.join(module_root, name, f"{name}.psd1")
+            quoted = manifest.replace("'", "''")
+            imports.append(f"Import-Module -Name '{quoted}' -ErrorAction Stop")
+        return [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"{'; '.join(imports)}; {command}",
+        ]
+    return [executable, "-c", command]
+
+
 def run_hardened_command(
     executable,
     *,
@@ -1321,7 +1767,7 @@ def run_hardened_command(
 ):
     with _prepared_executable(executable) as prepared:
         if shell:
-            argv = [prepared, "-c", command]
+            argv = _shell_argv(prepared, command, windows=_WINDOWS)
             result = run_process_group(
                 argv,
                 executable=_execution_path(prepared) or str(prepared),

@@ -179,6 +179,10 @@ Split-turn 的 8,192 tokens 分配给 current goal、actions/tool results、deci
 files/errors；branch summary 的 2,048 tokens 分配给 abandoned approach、discoveries/decisions、file operations
 和 carry-forward facts。
 
+这些 hard cap 约束进入 active context 的 summary 正文，不缩小 Provider 请求的输出预算。普通、split-turn 与
+branch summary 请求都使用冻结的输出上限 `O`，再按各自 hard cap 裁切可持久化正文；这样 thinking Provider 可在
+同一请求内消耗推理 tokens，而不会突破 Session 的 summary/context 上限或绕过用户配置的 output limit。
+
 成功生成 summary 后才追加 `compaction` entry，记录 `first_kept_entry_id`、tokens before/after、tail、读写文件、
 原因和 Provider usage。Summary 调用失败不会追加 entry，也不会删除历史。Context reconstruction 找到 active path
 上最新 compaction 后，只发送 summary、可选 split summary、recent tail 和其后的新 entries。

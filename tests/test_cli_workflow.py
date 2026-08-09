@@ -1,10 +1,12 @@
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
+from pony.cli import start
 from pony.cli.start import _open_plan_in_editor, _process_repl_input, run_repl
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.resume import active_prompt_history
@@ -134,7 +136,7 @@ def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
     monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
 
     def edit(argv, **_kwargs):
-        Path(argv[-1]).write_text("# Edited Plan\n1. Test\n", encoding="utf-8")
+        Path(argv[-1]).write_bytes(b"# Edited Plan\r\n1. Test\r\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("pony.cli.start.subprocess.run", edit)
@@ -147,6 +149,20 @@ def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
     assert len(tree.entries) == before + 2
     assert tree.entries[-1]["type"] == "plan_artifact"
     assert "Opened plan in editor" in capsys.readouterr().out
+
+
+def test_editor_command_uses_native_windows_parser(monkeypatch):
+    monkeypatch.setattr(start, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        start,
+        "_split_windows_command_line",
+        lambda value: [value, "--wait"],
+    )
+
+    assert start._split_editor_command(r"C:\Program Files\Editor\editor.exe") == [
+        r"C:\Program Files\Editor\editor.exe",
+        "--wait",
+    ]
 
 
 @pytest.mark.parametrize("concurrent_change", ("exit", "rewind", "fork"))
@@ -297,15 +313,15 @@ def test_plain_history_is_rebuilt_from_canonical_prompts_after_every_input(
     tmp_path,
     monkeypatch,
 ):
-    import readline
-
+    history = []
+    monkeypatch.setitem(
+        sys.modules,
+        "readline",
+        SimpleNamespace(clear_history=history.clear, add_history=history.append),
+    )
     agent = _agent(tmp_path, outputs=("done",))
     inputs = iter(("/help", "inspect canonical state", "/exit"))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     assert run_repl(agent, plain=True) == 0
-    history = [
-        readline.get_history_item(index)
-        for index in range(1, readline.get_current_history_length() + 1)
-    ]
     assert history == ["inspect canonical state"]

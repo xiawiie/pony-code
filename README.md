@@ -87,8 +87,10 @@ permission mode、可见工具和请求上下文都会在 turn 内冻结；并�
 
 ### 1. 从源码安装
 
-Pony 1.0 支持 Python 3.11、3.12 的 macOS 与 Linux。Windows 不在 1.0 支持范围；它缺少当前安全文件与锁模型
-依赖的 POSIX 原语。
+Pony 1.0 支持 Python 3.11、3.12 的 macOS、Linux 与 Windows 11 x64。Windows 使用原生 PowerShell、Git for
+Windows 和 Win32/NT 安全原语，不依赖 WSL、Git Bash、MSYS2 或 Cygwin；受信宿主准备与支持边界见
+[安装文档](docs/cli-installation-and-updates.md#windows-宿主准备)及
+[ADR-0050](docs/adr/0050-windows-native-support.md)。
 
 ```bash
 git clone https://github.com/xiawiie/pony-code.git
@@ -102,9 +104,11 @@ uv run pony --version
 ```bash
 uv tool install --editable .
 uv tool update-shell
-exec zsh
 pony --version
 ```
+
+`uv tool update-shell` 后重新打开当前 shell；macOS/Linux 也可执行 `exec zsh`，Windows 请新开 PowerShell 或
+Windows Terminal 标签页。
 
 ### 2. 在要操作的仓库配置模型
 
@@ -128,7 +132,9 @@ pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
 
 `pony` 与 `pony repl` 是同一个交互会话；`pony run` 一次执行后退出。未知首 token 不会被静默当作 prompt。
-非 TTY、缺少/空白 `TERM`、`TERM=dumb` 或窄于 40 列时自动回退为纯文本 REPL；`pony run` 不显示装饰性 banner。
+完整 TUI 要求 stdin/stdout 为 TTY 且至少 112 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。交互 TTY 不满足能力或
+宽度要求时返回稳定 usage error，不会进入无 Logo 的纯文本界面；只有非 TTY 自动化输入才使用纯文本 REPL。
+`pony run` 不显示装饰性 banner。
 
 ## 配置与 Provider 路由
 
@@ -199,8 +205,9 @@ stateDiagram-v2
 | Skills | `/<skill-name> [prompt]` | 仅受信 `.claude/skills`、只读、当前 turn、不会执行脚本 |
 | Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
 
-完整 TUI 始终保留响应式马形 Logo、`PONY CODE` 字标和欢迎页布局；它们是冻结的产品资产，除非用户明确要求，维护和重构
-不得修改。
+完整 TUI 只允许截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标；它是不可隐藏的唯一欢迎状态，`--quiet` 也不能抑制。
+终端启动宽度低于 112 列时直接要求扩宽，不会显示无 Logo、小版、micro、缩放或单行替代界面。完整大版和欢迎页布局是
+冻结的产品资产，除非用户明确要求，维护和重构不得修改。
 
 ## 并行 Worktree Agent
 
@@ -293,5 +300,6 @@ flowchart LR
 | Legacy artifact 与恢复边界 | [恢复](docs/recovery.md) |
 | exact-head 门禁、live 验收与发布 | [验证与发布](docs/verification.md) |
 | 产品支持边界 | [ADR-0048](docs/adr/0048-product-and-support-boundary.md) |
+| Windows 原生支持实施 | [ADR-0050](docs/adr/0050-windows-native-support.md) |
 
 Pony 使用 [MIT License](LICENSE)。

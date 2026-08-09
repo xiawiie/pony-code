@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from benchmarks.live_e2e import run_live_session
+from pony.security.private_files import private_file_signature
 from benchmarks.live_e2e.run_live_session import (
     Assertion,
     AssertionEngine,
@@ -2435,8 +2436,7 @@ def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
     payload = json.loads(text)
     assert secret not in text
     assert payload["artifact_security"] == artifact_security
-    if os.name == "posix":
-        assert report_path.stat().st_mode & 0o777 == 0o600
+    assert private_file_signature(report_path).is_private
 
 
 def test_provider_wrapper_blocks_payload_leak_before_delegate():
@@ -3056,7 +3056,15 @@ def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
     fixture.__enter__()
     digest = tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL
     digest.unlink()
-    digest.symlink_to(tmp_path / "missing-target")
+    try:
+        digest.symlink_to(tmp_path / "missing-target")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip(
+                "Windows symlink creation requires Developer Mode or "
+                "SeCreateSymbolicLinkPrivilege"
+            )
+        raise
     fixture.__exit__(None, None, None)
 
     assert not os.path.lexists(digest)

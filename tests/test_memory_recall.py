@@ -140,9 +140,9 @@ def test_recall_reads_each_candidate_once_and_reuses_link_neighbor_snapshot(
     calls = []
     real_read = block_store_module._read_bounded_regular
 
-    def counting_read(path, limit, *, private=False):
+    def counting_read(path, limit, *, private=False, **kwargs):
         calls.append(path.name)
-        return real_read(path, limit, private=private)
+        return real_read(path, limit, private=private, **kwargs)
 
     monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
     monkeypatch.setattr(store, "list", lambda: pytest.fail("recall reopened list"))
@@ -168,7 +168,7 @@ def test_recall_quote_escapes_provenance_attributes(tmp_path):
     a, ws = _agent(tmp_path)
     _w(
         ws,
-        'notes/bad" onload="x.md',
+        "notes/bad&onload='x.md",
         "---\nname: bad\ntype: reference\" injected=\"yes\n"
         'description: cache\n---\nSafe body evil="x.\n',
     )
@@ -176,7 +176,7 @@ def test_recall_quote_escapes_provenance_attributes(tmp_path):
     out = recall_for_turn(a, 'cache evil="x', budget_tokens=1000)
 
     assert out is not None
-    assert ' onload="x.md"' not in out
+    assert "onload='x.md'" not in out
     assert ' injected="yes"' not in out
     assert "&quot;" in out
     assert 'why="cache,evil,x"' in out

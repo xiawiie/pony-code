@@ -17,9 +17,11 @@ import stat
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable, Literal, Optional
 
 from pony.security import private_files as securitylib
+from pony.security import workspace_files as workspace_files
 from pony.workspace.context import _safe_index_directory, _safe_index_file
 
 SymbolKind = Literal["class", "function", "method"]
@@ -105,8 +107,25 @@ _RUST_PATTERNS = [
 ]
 
 
-def _read_bounded_regular(path, limit):
+def _read_bounded_regular(path, limit, *, root=None, root_identity=None):
     path = Path(os.path.abspath(os.fspath(path)))
+    if os.name == "nt":
+        if root is None:
+            raise ValueError("repo-map root is required")
+        result = workspace_files.read_regular_bytes_anchored(
+            root,
+            path.relative_to(root),
+            max_bytes=limit,
+            expected_root_identity=root_identity,
+        )
+        if not result["exists"]:
+            raise FileNotFoundError(path)
+        metadata = SimpleNamespace(
+            st_ino=result["identity"][1],
+            st_size=result["size"],
+            st_mtime_ns=result["modified_ns"],
+        )
+        return result["data"], metadata
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     if not nofollow:
         raise RuntimeError("bounded no-follow reads unavailable")
@@ -185,6 +204,7 @@ _EMPTY_SNAPSHOT = _RepoMapSnapshot(
 class RepoMap:
     def __init__(self, repo_root: Path):
         self.repo_root = Path(os.path.abspath(os.fspath(repo_root)))
+        self._root_identity = securitylib.private_directory_identity(self.repo_root)
         self._snapshot = _EMPTY_SNAPSHOT
         self._warned_cap = False
 
@@ -296,6 +316,9 @@ class RepoMap:
         )
 
     def _walk(self) -> Iterable[tuple[Path, str]]:
+        if os.name == "nt":
+            yield from self._walk_windows()
+            return
         indexed = 0
         root = _safe_index_directory(self.repo_root, self.repo_root)
         if root is None:
@@ -331,6 +354,54 @@ class RepoMap:
                     continue
                 yield real_path, rel
 
+    def _walk_windows(self) -> Iterable[tuple[Path, str]]:
+        indexed = 0
+        stack = ["."]
+        while stack:
+            directory = stack.pop()
+            try:
+                listing = workspace_files.list_directory_names_anchored(
+                    self.repo_root,
+                    directory,
+                    max_entries=MAX_FILES,
+                    expected_root_identity=self._root_identity,
+                )
+            except (OSError, RuntimeError, ValueError):
+                continue
+            indexed += listing["unsafe_count"]
+            if indexed >= MAX_FILES:
+                return
+            children = []
+            for entry in listing["entries"]:
+                relative = (
+                    entry["name"]
+                    if directory == "."
+                    else f"{directory}/{entry['name']}"
+                )
+                if stat.S_ISDIR(entry["mode"]):
+                    if entry["name"] not in IGNORED_DIRS and not entry[
+                        "name"
+                    ].startswith("."):
+                        children.append(relative)
+                    continue
+                if not stat.S_ISREG(entry["mode"]):
+                    continue
+                if indexed >= MAX_FILES:
+                    return
+                indexed += 1
+                if indexed == MAX_FILES and not self._warned_cap:
+                    self._warned_cap = True
+                    import sys
+
+                    print(
+                        f"warning: repo_map scan hit {MAX_FILES}-file cap; "
+                        f"symbols beyond this point are not indexed",
+                        file=sys.stderr,
+                    )
+                yield self.repo_root / Path(relative), relative
+            for child in reversed(children):
+                stack.append(child)
+
     def _index_file_into(
         self,
         real_path: Path,
@@ -345,7 +416,15 @@ class RepoMap:
             return 0, False
         limit = min(MAX_FILE_SIZE, remaining)
         try:
-            data, opened = _read_bounded_regular(real_path, limit)
+            if os.name == "nt":
+                data, opened = _read_bounded_regular(
+                    real_path,
+                    limit,
+                    root=self.repo_root,
+                    root_identity=self._root_identity,
+                )
+            else:
+                data, opened = _read_bounded_regular(real_path, limit)
         except (OSError, RuntimeError, ValueError) as exc:
             used_bytes = getattr(exc, "bytes_read", 0)
             exhausted = used_bytes >= remaining or (

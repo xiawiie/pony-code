@@ -10,7 +10,7 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   事实保留和 Provider failure 证据的 compaction 净 token/break-even 与非流式 Provider latency 测量。
 - 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
 - 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pony init`。
-- 参考 Pi 消息层级的行内 TUI：响应式马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
+- 参考 Pi 消息层级的行内 TUI：完整尺寸马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
   可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
 - `pony --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
 - PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
@@ -37,6 +37,17 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
+  model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
+  绕过用户配置的 output limit。
+- Windows 11 x64 晋级为与 macOS/Linux 平级的一等发布平台：私有文件 identity/signature 上层合同使用平台中立字段，原生 backend 覆盖 `NtCreateFile` root-handle traversal、protected DACL、File ID、原子替换、`LockFileEx`、Job Object 与 PowerShell policy；3.11/3.12 CI、攻击 probe、完整发布门禁、clean-install 与 Windows Terminal Phase 5 共同约束每个 exact candidate。跨机器或跨 OS 复制 active Session 仍不在支持声明内。
+- Windows 普通 CI 与 `v*` Tag 发布共用同一 3.11/3.12 标准用户验证 workflow；发布 job 必须等待 Windows 完整门禁与原生
+  probe，完整 pytest 会拒绝未知 skip/xfail，并输出 schema v1 的机器可读 skip 原因、数量和慢测试审计；Windows Terminal
+  Phase 5 另以 exact candidate SHA 的 80/111 列拒绝和 112/120 列完整大版实机清单留证，不能由 import、单元测试或
+  截图替代。该 workflow 还会
+  在标准用户离线门禁前预热 `uv.lock` 的运行时依赖 cache，确保 clean-install smoke 验证包本身而非偶然命中宿主缓存。
+- Windows reparse-point 拒绝改为可识别的专用异常；private-state 与 file-lock 保持平台中立的 symlink 错误，Git marker、
+  Git metadata 和 migration manifest 分别恢复既有领域错误，不再把 Win32 底层文本泄漏到稳定错误合同。
 - Coding-quality task 现在把 scope hard gate 显式写入 Agent 可见 prompt；condition artifact format v3 记录并校验
   changed/forbidden 文件证据，scope-explicit 收费 pilot 达到 `24/24 SCC`，当前 corpus 仅保留为 must-pass canary。
 - 收紧 Python package 支持范围为 3.11/3.12；移除未接入 runtime 的 sampling flags，并统一规范化 Provider API Base。
@@ -47,12 +58,19 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 - 裸 `pony` 现在直接进入交互 TUI；`pony repl` 保留为显式同义入口，`pony run <prompt...>` 与管理子命令继续使用
   生产分支的显式 CLI 合同。
-- 恢复并冻结响应式马形 `PONY CODE` 欢迎页；纯文本 fallback 不显示 banner，`pony run` 只输出执行结果。
+- 恢复并冻结完整尺寸马形 `PONY CODE` 欢迎页；它成为 TUI 不可隐藏的唯一状态，`--quiet` 也不能抑制。交互 TTY 低于
+  112 列时返回稳定 usage error，不能进入无 Logo 的纯文本界面，也不显示缩小变体；非 TTY fallback 不显示 banner，
+  `pony run` 只输出执行结果。
 - TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
   smoke 在隔离环境中离线验证锁定依赖和 TUI import。
 - TUI 运行事件收束为瞬态 `Working…`、单行 Tool 摘要、一次性 permission prompt 和明确的失败/中断；自动 checkpoint
   不再进入对话区，footer 不再显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 与
   streaming 不属于 1.0 展示面。
+- Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
+  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时完整大版仍保持而不切换为无 Logo 状态，首条输入后仍保留
+  原生 inline scrollback。
+- Windows 候选宿主增加固定版本/哈希的 ripgrep 安装脚本；它把 WinGet 来源复制到 protected Program Files 工具根，拒绝
+  reparse point、意外内容和 ACL 漂移，不把用户可写 package root 或符号链接加入受信 executable 集合。
 - 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`runtime`、`security`、`state`、
   `tui`、`tools`、`workspace` 等领域包归位；`pony/` 顶层只保留 `__init__.py` 与
   `__main__.py`。

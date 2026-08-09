@@ -1,3 +1,4 @@
+import os
 import signal
 import sys
 import time
@@ -21,21 +22,21 @@ def test_approved_shell_execution_is_immutable_and_complete(tmp_path):
         execution.timeout = 2
 
 
-def test_process_group_timeout_terms_then_kills_and_waits():
+def test_process_group_timeout_terminates_and_waits(tmp_path):
     command = (
         "import signal,time; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
     )
     result = run_process_group(
         [sys.executable, "-c", command],
-        cwd="/tmp",
+        cwd=tmp_path,
         env={},
         timeout=0.1,
         term_grace=0.1,
     )
 
     assert result.timed_out is True
-    assert result.returncode == -signal.SIGKILL
+    assert result.returncode == (1 if os.name == "nt" else -signal.SIGKILL)
 
 
 def test_process_group_output_limit_terminates_without_unbounded_capture(tmp_path):
@@ -61,7 +62,7 @@ def test_process_group_output_limit_terminates_without_unbounded_capture(tmp_pat
                 "-c",
                 parent,
             ],
-            cwd="/tmp",
+            cwd=tmp_path,
             env={},
             timeout=10,
             term_grace=0.1,

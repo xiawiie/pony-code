@@ -20,7 +20,20 @@ from pony.config.model import (
 from pony.config.project import load_pony_toml
 
 
-@pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "symlink",
+        "hardlink",
+        pytest.param(
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
+        "directory",
+    ),
+)
 def test_pony_toml_unsafe_entry_warns_and_uses_defaults(
     tmp_path,
     capsys,

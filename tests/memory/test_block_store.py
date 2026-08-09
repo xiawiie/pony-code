@@ -2,6 +2,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,7 +44,7 @@ def test_read_returns_full_content(tmp_path):
     user = tmp_path / "user"
     (workspace / "notes").mkdir(parents=True)
     user.mkdir()
-    (workspace / "notes" / "auth.md").write_text("hello\nworld\n")
+    (workspace / "notes" / "auth.md").write_bytes(b"hello\r\nworld\r\n")
 
     store = BlockStore(workspace_root=workspace, user_root=user)
     assert store.read("workspace/notes/auth.md") == "hello\nworld\n"
@@ -85,7 +86,7 @@ def test_append_agent_note_appends(tmp_path):
     assert contents.index("first") < contents.index("second")
 
 
-def test_append_agent_note_rejects_scope_root_swapped_before_atomic_write(
+def test_append_agent_note_rejects_or_blocks_scope_root_swap_before_atomic_write(
     tmp_path,
     monkeypatch,
 ):
@@ -104,28 +105,53 @@ def test_append_agent_note_rejects_scope_root_swapped_before_atomic_write(
 
     monkeypatch.setattr(store, "_atomic_write", swap_scope_root)
 
-    with pytest.raises(ValueError, match="private root changed"):
+    with pytest.raises((PermissionError, ValueError)) as caught:
         store.append_agent_note(scope="workspace", note="must not land")
 
-    assert list(workspace.iterdir()) == []
+    assert isinstance(caught.value, PermissionError) or str(caught.value) == (
+        "private root changed"
+    )
+    assert not (workspace / "agent_notes.md").exists()
     assert not (trusted_workspace / "agent_notes.md").exists()
 
 
-def test_append_agent_note_fsyncs_file_then_parent(tmp_path, monkeypatch):
+def test_append_agent_note_flushes_file_then_commit(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
     workspace.mkdir()
     user.mkdir()
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
     events = []
-    real_fsync = os.fsync
 
-    def observed_fsync(descriptor):
-        mode = os.fstat(descriptor).st_mode
-        events.append("parent" if stat.S_ISDIR(mode) else "file")
-        real_fsync(descriptor)
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    monkeypatch.setattr(os, "fsync", observed_fsync)
+        real_write = windows_private_files.native.write_bytes
+        real_rename = windows_private_files.native.rename_handle
+
+        def observed_write(*args, **kwargs):
+            real_write(*args, **kwargs)
+            events.append("file")
+
+        def observed_rename(*args, **kwargs):
+            real_rename(*args, **kwargs)
+            events.append("parent")
+
+        monkeypatch.setattr(windows_private_files.native, "write_bytes", observed_write)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "rename_handle",
+            observed_rename,
+        )
+    else:
+        real_fsync = os.fsync
+
+        def observed_fsync(descriptor):
+            mode = os.fstat(descriptor).st_mode
+            events.append("parent" if stat.S_ISDIR(mode) else "file")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", observed_fsync)
 
     store.append_agent_note(scope="workspace", note="durable")
 
@@ -518,6 +544,55 @@ def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatc
     assert store.list() == []
 
 
+def test_windows_memory_directory_scan_limit_is_separate_from_index_limit(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    observed = {}
+
+    monkeypatch.setattr(block_store_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_FILES", 2)
+
+    def list_directory(*_args, **kwargs):
+        observed.update(kwargs)
+        return {"entries": (), "unsafe_count": 0}
+
+    monkeypatch.setattr(
+        block_store_module.workspace_files,
+        "list_directory_names_anchored",
+        list_directory,
+    )
+
+    assert list(BlockStore._markdown_files(workspace, notes)) == []
+    assert observed["max_entries"] == block_store_module.MAX_MEMORY_DIRECTORY_ENTRIES
+
+
+def test_windows_memory_directory_skips_unsafe_entry_but_keeps_safe_file(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    monkeypatch.setattr(block_store_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        block_store_module.workspace_files,
+        "list_directory_names_anchored",
+        lambda *_args, **_kwargs: {
+            "entries": ({"name": "safe.md", "mode": stat.S_IFREG},),
+            "unsafe_count": 1,
+        },
+    )
+
+    assert list(BlockStore._markdown_files(workspace, notes)) == [
+        None,
+        notes / "safe.md",
+    ]
+
+
 def test_unsafe_hardlink_consumes_aggregate_byte_budget(tmp_path, monkeypatch):
     import pony.memory.block_store as block_store_module
 
@@ -609,7 +684,7 @@ def test_read_rejects_unsafe_agent_notes_leaf(tmp_path, unsafe_kind):
             pytest.skip("FIFO unavailable")
         os.mkfifo(agent_notes)
 
-    with pytest.raises(ValueError, match="symlink|private|regular"):
+    with pytest.raises((OSError, ValueError)):
         store.read("workspace/agent_notes.md")
 
     assert outside.read_text(encoding="utf-8") == "outside-canary"

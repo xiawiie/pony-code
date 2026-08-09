@@ -7,8 +7,13 @@ import pytest
 import pony.security.command_policy as recovery_policy
 
 
-def assess_command(*args, **kwargs):
-    return recovery_policy.assess_command(*args, **kwargs)
+def assess_command(command, workspace_root, executables=None):
+    return recovery_policy._assess_command(
+        command,
+        workspace_root,
+        executables,
+        _depth=0,
+    )
 
 
 def _scan_shell_syntax(command):
@@ -322,6 +327,7 @@ def test_unquoted_line_separators_require_shell_approval(workspace, command):
     assert result["execution_mode"] == "shell"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 @pytest.mark.parametrize("quote", ["'", '"'])
 def test_quoted_newline_remains_literal_argv_text(workspace, quote):
     result = assess_command(f"ls {quote}literal\nname{quote}", workspace)
@@ -363,6 +369,7 @@ def test_line_continuation_cannot_hide_sensitive_path(workspace, command):
     assert result["execution_mode"] == "shell"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 def test_single_quoted_line_continuation_is_literal(workspace):
     command = "ls '.e\\\nnv'"
 
@@ -442,6 +449,7 @@ def test_command_substitution_is_scanned_as_longest_token():
     assert scan["has_expansion"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 def test_quotes_and_escapes_keep_literal_argv_text(workspace):
     literal_commands = {
         "ls 'literal|$HOME*?[~'": ["ls", "literal|$HOME*?[~"],
@@ -634,7 +642,14 @@ def test_path_grammar_rejects_internal_parent_components_before_collapse(
     ("name", "command", "kind"),
     [
         (".env.example", "ls .env.example", "directory"),
-        (".env.sample", "wc .env.sample", "fifo"),
+        pytest.param(
+            ".env.sample",
+            "wc .env.sample",
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
         (".env.template", "ls .env.template", "missing"),
     ],
 )
@@ -892,6 +907,7 @@ def test_command_substitution_cannot_hide_sensitive_path(workspace, command):
         "ls '$" + "\\\n" + "(cat .env)'",
     ],
 )
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 def test_literal_command_substitution_text_remains_literal(workspace, command):
     result = assess_command(command, workspace)
 
@@ -989,6 +1005,7 @@ def test_leading_assignment_cannot_hide_sensitive_path(workspace, command):
     assert result["reason"] == "sensitive_path"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename grammar")
 @pytest.mark.parametrize("quote", ["'", '"'])
 def test_quoted_newline_assignment_text_remains_literal(workspace, quote):
     command = f"ls {quote}foo\nBASH_ENV=.env{quote}"
@@ -1020,7 +1037,18 @@ def test_control_words_do_not_promote_later_assignment_like_arguments(
     assert result["decision"] != "reject"
 
 
-@pytest.mark.parametrize("kind", ["directory", "fifo"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "directory",
+        pytest.param(
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
+    ],
+)
 def test_wc_rejects_existing_non_regular_operand(workspace, kind):
     target = workspace / kind
     if kind == "directory":
@@ -1066,3 +1094,159 @@ def test_assessment_never_invokes_a_subprocess(workspace, monkeypatch):
     )
 
     assert assess_command("pwd", workspace)["decision"] == "allow"
+
+
+def assess_windows_command(command, workspace, executables=None):
+    return recovery_policy._assess_windows_command(
+        command,
+        workspace,
+        executables,
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "decision", "reason", "execution_mode"),
+    [
+        ("git.exe status --short", "allow", "proved_read_only", "argv"),
+        ("Get-Location", "ask", "shell_grammar_requires_approval", "shell"),
+        (
+            "Get-ChildItem README.md",
+            "ask",
+            "shell_grammar_requires_approval",
+            "shell",
+        ),
+        ("Get-Content '.env'", "reject", "sensitive_path", "shell"),
+        (
+            "Write-Output 'a;b|c>literal'",
+            "ask",
+            "shell_grammar_requires_approval",
+            "shell",
+        ),
+        (
+            "Write-Output hi | Select-String hi",
+            "ask",
+            "shell_grammar_requires_approval",
+            "shell",
+        ),
+        (
+            "Write-Output hi > output.txt",
+            "ask",
+            "redirect_requires_approval",
+            "shell",
+        ),
+        (
+            "Write-Output $env:PATH",
+            "reject",
+            "dynamic_expansion_rejected",
+            "shell",
+        ),
+        (
+            "Write-Output $(Get-Location)",
+            "reject",
+            "dynamic_expansion_rejected",
+            "shell",
+        ),
+        (
+            "Write-Output `whoami`",
+            "reject",
+            "dynamic_expansion_rejected",
+            "shell",
+        ),
+        (
+            "& 'tool.exe'",
+            "reject",
+            "invocation_operator_rejected",
+            "shell",
+        ),
+        (
+            ". '.\\script.ps1'",
+            "reject",
+            "dot_sourcing_rejected",
+            "argv",
+        ),
+        ("cmd /c dir", "reject", "shell_wrapper_rejected", "argv"),
+        (
+            "powershell -Command Get-Location",
+            "reject",
+            "shell_wrapper_rejected",
+            "argv",
+        ),
+        ("bash -c pwd", "reject", "shell_wrapper_rejected", "argv"),
+        ("file.txt:stream", "reject", "alternate_data_stream_rejected", "argv"),
+        (
+            r"C:\repo\file.txt:stream",
+            "reject",
+            "alternate_data_stream_rejected",
+            "argv",
+        ),
+        (
+            "https://example.com",
+            "ask",
+            "executable_path_requires_approval",
+            "argv",
+        ),
+        (
+            "git status --short | cmd /c dir",
+            "reject",
+            "shell_wrapper_rejected",
+            "shell",
+        ),
+    ],
+)
+def test_windows_command_policy_is_fail_closed(
+    workspace,
+    command,
+    decision,
+    reason,
+    execution_mode,
+):
+    result = assess_windows_command(
+        command,
+        workspace,
+        executables={"git": r"C:\Program Files\Git\cmd\git.exe"},
+    )
+
+    assert result["decision"] == decision
+    assert result["reason"] == reason
+    assert result["execution_mode"] == execution_mode
+
+
+def test_windows_single_quoted_dollar_remains_literal(workspace):
+    result = assess_windows_command("Write-Output '$env:PATH'", workspace)
+
+    assert result["decision"] == "ask"
+    assert result["reason"] == "shell_grammar_requires_approval"
+
+
+def test_windows_multiple_redirects_are_all_checked(workspace):
+    result = assess_windows_command(
+        "Write-Output hi > output.txt 2> .env",
+        workspace,
+    )
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "sensitive_path"
+
+
+def test_windows_unterminated_quote_is_rejected(workspace):
+    result = assess_windows_command("Write-Output 'unterminated", workspace)
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "powershell_parse_error"
+
+
+def test_windows_wrapper_after_newline_is_rejected(workspace):
+    result = assess_windows_command("Get-Location\r\ncmd /c dir", workspace)
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "shell_wrapper_rejected"
+
+
+def test_windows_empty_quoted_argv_is_not_dropped(workspace):
+    result = assess_windows_command(
+        "unknown.exe '' argument",
+        workspace,
+        executables={"unknown": r"C:\Program Files\Unknown\unknown.exe"},
+    )
+
+    assert result["argv"] == ["unknown.exe", "", "argument"]

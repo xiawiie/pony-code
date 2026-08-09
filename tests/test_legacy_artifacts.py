@@ -4,13 +4,30 @@ import os
 import pytest
 
 from pony.runtime.legacy import LegacySandboxResumeError, preflight_legacy_sandbox_resume
+from pony.security.private_files import (
+    ensure_private_dir,
+    ensure_private_file,
+    private_directory_identity,
+)
 from pony.state.legacy_artifacts import LegacyArtifactError, LegacyCheckpointReader
 
 
 def _private_directory(path):
-    path.mkdir(parents=True)
-    path.chmod(0o700)
+    return ensure_private_dir(path)
+
+
+def _private_bytes(path, data):
+    path.write_bytes(data)
+    ensure_private_file(
+        path,
+        trusted_root=path.parent,
+        trusted_root_identity=private_directory_identity(path.parent),
+    )
     return path
+
+
+def _private_text(path, text):
+    return _private_bytes(path, text.encode("utf-8"))
 
 
 def _sidecar(root, *, session_id="session-1"):
@@ -18,7 +35,8 @@ def _sidecar(root, *, session_id="session-1"):
     source = root.lstat()
     sandbox_id = "sandbox_" + "a" * 32
     path = directory / f"{sandbox_id}.json"
-    path.write_text(
+    _private_text(
+        path,
         json.dumps(
             {
                 "record_type": "docker_sandbox_session_pointer",
@@ -33,9 +51,7 @@ def _sidecar(root, *, session_id="session-1"):
                 "state_inode": 2,
             }
         ),
-        encoding="utf-8",
     )
-    path.chmod(0o600)
     return path
 
 
@@ -72,8 +88,7 @@ def test_legacy_sandbox_preflight_fails_closed_for_untrusted_sidecars(tmp_path, 
     else:
         for index in range(128):
             copy = directory / f"sandbox_{index:032x}.json"
-            copy.write_bytes(path.read_bytes())
-            copy.chmod(0o600)
+            _private_bytes(copy, path.read_bytes())
 
     with pytest.raises(LegacySandboxResumeError, match="sandbox_state_invalid"):
         preflight_legacy_sandbox_resume(tmp_path, "other-session")
@@ -94,8 +109,7 @@ def test_legacy_sandbox_preflight_rejects_malformed_sidecar_metadata(
     path = _sidecar(tmp_path, session_id="other-session")
     pointer = json.loads(path.read_text(encoding="utf-8"))
     pointer[field] = value
-    path.write_text(json.dumps(pointer), encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, json.dumps(pointer))
 
     with pytest.raises(LegacySandboxResumeError, match="sandbox_state_invalid"):
         preflight_legacy_sandbox_resume(tmp_path, "session-1")
@@ -116,8 +130,7 @@ def test_legacy_checkpoint_reader_projects_safe_fields_without_writing(tmp_path)
         "private_payload": "must not be exposed",
     }
     path = records / "checkpoint-1.json"
-    path.write_text(json.dumps(raw), encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, json.dumps(raw))
     before = path.read_bytes()
 
     reader = LegacyCheckpointReader(tmp_path)
@@ -161,8 +174,7 @@ def test_legacy_checkpoint_reader_rejects_unknown_record_contract(tmp_path, fiel
     }
     record[field] = value
     path = records / "checkpoint-1.json"
-    path.write_text(json.dumps(record), encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, json.dumps(record))
 
     with pytest.raises(LegacyArtifactError):
         LegacyCheckpointReader(tmp_path).list_checkpoint_records(strict=True)
@@ -172,8 +184,7 @@ def test_legacy_checkpoint_reader_rejects_non_object_json(tmp_path):
     checkpoints = _private_directory(tmp_path / ".pony" / "checkpoints")
     records = _private_directory(checkpoints / "records")
     path = records / "checkpoint-1.json"
-    path.write_text("[]", encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, "[]")
 
     with pytest.raises(LegacyArtifactError):
         LegacyCheckpointReader(tmp_path).list_checkpoint_records(strict=True)
@@ -221,8 +232,7 @@ def test_legacy_checkpoint_reader_rejects_truncated_projected_record(
     record.pop(missing)
     record_id = record.get("checkpoint_id", record.get("tool_change_id", "change-1"))
     path = directory / f"{record_id}.json"
-    path.write_text(json.dumps(record), encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, json.dumps(record))
     reader = LegacyCheckpointReader(tmp_path)
 
     with pytest.raises(LegacyArtifactError):
@@ -237,8 +247,7 @@ def test_legacy_checkpoint_reader_rejects_checkpoint_root_replacement(tmp_path):
     checkpoints = _private_directory(tmp_path / ".pony" / "checkpoints")
     records = _private_directory(checkpoints / "records")
     path = records / "checkpoint-1.json"
-    path.write_text("{}", encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, "{}")
     reader = LegacyCheckpointReader(tmp_path)
     replacement = tmp_path / "replacement"
     _private_directory(replacement / "records")
@@ -253,8 +262,7 @@ def test_legacy_checkpoint_reader_rejects_unsafe_record_without_writing(tmp_path
     checkpoints = _private_directory(tmp_path / ".pony" / "checkpoints")
     records = _private_directory(checkpoints / "records")
     path = records / "checkpoint-1.json"
-    path.write_text("{}", encoding="utf-8")
-    path.chmod(0o600)
+    _private_text(path, "{}")
     before = path.read_bytes()
 
     with pytest.raises(LegacyArtifactError):

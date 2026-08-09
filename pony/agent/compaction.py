@@ -400,7 +400,7 @@ def _summary_request(
                 system=system,
                 tools=[],
                 messages=messages,
-                max_tokens=min(hard_cap, agent.model_capabilities.max_output_tokens),
+                max_tokens=agent.model_budget.output_tokens,
                 cache_breakpoints=[],
             )
             break
@@ -609,7 +609,7 @@ def _generate_branch_summary(agent, entries, focus):
             system=system,
             tools=[],
             messages=messages,
-            max_tokens=min(hard_cap, agent.model_capabilities.max_output_tokens),
+            max_tokens=agent.model_budget.output_tokens,
             cache_breakpoints=[],
         )
     except Exception as exc:

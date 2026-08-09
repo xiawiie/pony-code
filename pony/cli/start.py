@@ -6,15 +6,16 @@ import os
 import signal
 import shlex
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import threading
 
+from pony.security import private_files
 from pony.tools.permissions import display_permission_mode, validate_permission_mode
 from pony.tools import registry as toolkit
 from pony.agent.messages import message_content_text
+from pony.cli.errors import CLI_EXIT_USAGE
 from pony.cli.input_queue import InputQueue, MAX_PENDING_INPUTS
 from pony.config.model import provider_family_for_protocol
 from pony.security.redaction import redact_text
@@ -41,11 +42,38 @@ def _print_model_target(agent):
     print(f"model: {binding.get('model', '')}")
 
 
+def _split_windows_command_line(value):
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.CommandLineToArgvW.argtypes = (
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_int),
+    )
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32.LocalFree.argtypes = (wintypes.LPVOID,)
+    kernel32.LocalFree.restype = wintypes.LPVOID
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(value, ctypes.byref(count))
+    if not argv:
+        raise ValueError("plan editor is invalid")
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        kernel32.LocalFree(ctypes.cast(argv, wintypes.LPVOID))
+
+
+def _split_editor_command(value):
+    return _split_windows_command_line(value) if os.name == "nt" else shlex.split(value)
+
+
 def _open_plan_in_editor(agent):
     raw_editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if not raw_editor:
         raise ValueError("plan editor unavailable; set VISUAL or EDITOR")
-    editor = shlex.split(raw_editor)
+    editor = _split_editor_command(raw_editor)
     if not editor:
         raise ValueError("plan editor is invalid")
     executable = shutil.which(editor[0])
@@ -64,11 +92,18 @@ def _open_plan_in_editor(agent):
         dir=agent.session_store.root.parent,
     )
     path = os.fspath(raw_path)
+    private_root = agent.session_store.root.parent
+    root_identity = private_files.private_directory_identity(private_root)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(original_plan)
             handle.flush()
             os.fsync(handle.fileno())
+        private_files.ensure_private_file(
+            path,
+            trusted_root=private_root,
+            trusted_root_identity=root_identity,
+        )
         completed = subprocess.run(
             [executable, *editor[1:], path],
             check=False,
@@ -76,27 +111,21 @@ def _open_plan_in_editor(agent):
         )
         if completed.returncode != 0:
             raise ValueError("plan editor exited with an error")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
-            os, "O_NOFOLLOW", 0
-        )
-        reader = os.open(path, flags)
         try:
-            info = os.fstat(reader)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise ValueError("plan editor output is unsafe")
-            chunks = []
-            remaining = MAX_PLAN_TEXT_BYTES + 1
-            while remaining:
-                chunk = os.read(reader, remaining)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            data = b"".join(chunks)
-        finally:
-            os.close(reader)
-        if len(data) > MAX_PLAN_TEXT_BYTES:
-            raise ValueError("plan text exceeds 12 KiB")
+            data = private_files.read_private_bytes(
+                path,
+                trusted_root=private_root,
+                trusted_root_identity=root_identity,
+                max_bytes=MAX_PLAN_TEXT_BYTES,
+                harden=False,
+            )
+        except ValueError as exc:
+            message = (
+                "plan text exceeds 12 KiB"
+                if str(exc) == "private file too large"
+                else "plan editor output is unsafe"
+            )
+            raise ValueError(message) from None
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
@@ -704,9 +733,10 @@ def run_repl(
     with _cli_interrupt_boundary():
         try:
             if not plain:
-                from pony.tui.app import run_tui, should_use_tui
+                from pony.tui.app import run_tui, tui_capability
 
-                if should_use_tui():
+                tui_enabled, tui_error = tui_capability()
+                if tui_enabled:
                     return _finish_repl(
                         agent,
                         run_tui(
@@ -719,6 +749,9 @@ def run_repl(
                             prompt_history=prompt_history,
                         ),
                     )
+                if tui_error:
+                    print(f"error: {tui_error}", file=sys.stderr)
+                    return CLI_EXIT_USAGE
 
             def refresh_plain_history():
                 current = getattr(agent, "session", {})

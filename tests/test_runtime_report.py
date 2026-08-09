@@ -21,6 +21,16 @@ def build_workspace(tmp_path):
     return WorkspaceContext.build(tmp_path)
 
 
+def _failing_workspace_write_command():
+    if os.name == "nt":
+        return "Set-Content -LiteralPath README.md -Value changed; exit 1"
+    return "printf 'changed\n' > README.md && exit 1"
+
+
+def _current_directory_command():
+    return "Get-Location" if os.name == "nt" else "pwd"
+
+
 def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
@@ -189,7 +199,7 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
             {
                 "name": "run_shell",
                 "args": {
-                    "command": "printf 'changed\\n' > README.md && exit 1",
+                    "command": _failing_workspace_write_command(),
                     "timeout": 20,
                 },
             },
@@ -210,7 +220,13 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
 def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
     agent = build_agent(
         tmp_path,
-        [{"name": "run_shell", "args": {"command":"pwd","timeout":20}}],
+        [
+            {
+                "name": "run_shell",
+                "args": {"command": _current_directory_command(), "timeout": 20},
+            }
+        ],
+        permission_mode="default",
     )
     agent.tools["run_shell"]["run"] = lambda _execution: (_ for _ in ()).throw(
         KeyboardInterrupt()
@@ -602,7 +618,7 @@ def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(
     result = agent.run_tool(
         "run_shell",
         {
-            "command": "printf 'changed\\n' > README.md && exit 1",
+            "command": _failing_workspace_write_command(),
             "timeout": 20,
         },
     )
@@ -897,7 +913,7 @@ def test_partial_success_records_metadata_without_process_notes(tmp_path):
     agent.run_tool(
         "run_shell",
         {
-            "command": "printf 'changed\\n' > README.md && exit 1",
+            "command": _failing_workspace_write_command(),
             "timeout": 20,
         },
     )

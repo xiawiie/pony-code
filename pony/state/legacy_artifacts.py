@@ -55,15 +55,28 @@ def _directory(path, *, missing_ok=False):
         if missing_ok:
             return None
         raise LegacyArtifactError() from None
-    uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
     try:
         identity = private_directory_identity(path)
     except (OSError, RuntimeError, ValueError) as exc:
         raise LegacyArtifactError() from exc
+    if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        raise LegacyArtifactError()
+    if os.name == "nt":
+        from pony.security import windows_native
+
+        try:
+            with windows_native.open_path(path, directory=True) as handle:
+                if windows_native.identity(handle) != tuple(identity):
+                    raise LegacyArtifactError()
+                windows_native.require_private(handle)
+        except LegacyArtifactError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise LegacyArtifactError() from exc
+        return path, identity
+    uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
     if (
-        path.is_symlink()
-        or not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != uid
+        info.st_uid != uid
         or stat.S_IMODE(info.st_mode) != 0o700
         or identity != (info.st_dev, info.st_ino)
     ):

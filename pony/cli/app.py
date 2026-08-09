@@ -444,7 +444,7 @@ def main(argv=None):
                 agent,
                 model=model,
                 no_color=args.no_color,
-                show_header=not args.quiet,
+                show_header=True,
                 show_resume=bool(args.resume) and args.format == "text",
             )
         return run_agent_once(agent, invocation.command_args)

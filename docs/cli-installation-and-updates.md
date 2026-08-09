@@ -3,7 +3,8 @@
 ## 支持范围
 
 - Python：3.11、3.12；package metadata 拒绝其他版本。
-- OS：macOS 与 Linux；两者进入 CI。Windows 不受支持，所需 POSIX 文件身份和锁原语不可用时 Pony fail closed。
+- OS：macOS、Linux 与 Windows 11 x64；三者进入发布门禁。Windows 原生实现与边界见
+  [ADR-0050](adr/0050-windows-native-support.md)。
 - Runtime dependencies：一个直接依赖 `prompt-toolkit`；锁定环境中同时安装其传递依赖 `wcwidth`。
 - Host CLI：只在受信 Source Root 直接执行；Host 不是 OS sandbox。
 
@@ -14,6 +15,16 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install pony-code==1.0.0
+pony --version
+pony --help
+```
+
+Windows PowerShell 使用下列激活命令，其余安装命令相同：
+
+```powershell
+python -m venv .venv
+& .\.venv\Scripts\Activate.ps1
 python -m pip install pony-code==1.0.0
 pony --version
 pony --help
@@ -32,6 +43,34 @@ uv run pony --version
 ```
 
 `uv.lock` 是开发和 CI 的锁定真源。日常验证使用 `uv run ...`，不要向 runtime dependency 添加仅供测试或构建使用的包。
+
+### Windows 宿主准备
+
+Windows 11 x64 支持范围只接受原生工具链，不以 WSL、Git Bash、MSYS2 或用户可写 shim 代替。先用厂商签名的
+64 位安装程序把所需的 Python 3.11 或 3.12 与 Git for Windows 安装到 `%ProgramFiles%`，并选择
+all-users/machine-scope 安装；发布门禁会分别验证两个 Python minor。
+Python 用户态安装、WindowsApps alias 和用户可写 Git 目录不会被 Pony 当作受信 executable。
+
+`rg` 使用 WinGet 的 `BurntSushi.ripgrep.MSVC` 固定包，再复制到 protected DACL 的稳定机器目录。请从准备使用或验收的
+exact release tag 检出源码，并在管理员 Windows PowerShell 中运行：
+
+```powershell
+& .\scripts\windows\install_host_tools.ps1
+```
+
+脚本固定 ripgrep 版本与实际 executable SHA-256，不使用 `--ignore-security-hash`，拒绝 reparse point、异常文件和意外目录内容；
+最终只允许 Administrators/SYSTEM 写入 `C:\Program Files\Pony Host Tools`，普通 Users 只有读取/执行权限。它不信任
+WinGet 的符号链接或安装用户可写的 package root。完成后新开一个标准用户终端并检查：
+
+```powershell
+python --version
+git --version
+rg --version
+pony doctor
+```
+
+脚本只准备宿主工具，不安装 Pony、不修改仓库配置，也不把 Host 描述成 OS sandbox。若 machine-scope Python/Git、固定
+`rg` 或对应信任检查不成立，Pony 会明确 fail closed；不得通过放宽 executable trust 绕过。
 
 ## 项目初始化
 
@@ -102,8 +141,10 @@ Provider、protocol 与 model，`/model <model>` 保存新的 Session model。�
 opaque Provider state 的历史返回 `model_session_mismatch`。Pony 不维护模型目录，也不会为切换发起探测或在失败后
 fallback。
 
-TUI 需要 stdin/stdout 同时为 TTY、`TERM` 不是 `dumb` 且终端至少 40 列，否则自动使用纯文本 REPL。颜色还会遵守
-`--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；busy 时可排队最多五条 follow-up，`/queue [clear]` 查看或清空。
+TUI 需要 stdin/stdout 同时为 TTY 且终端至少 112 列；非 Windows 还要求 `TERM` 有效且不是 `dumb`。完整尺寸 Logo 是
+交互 TUI 不可隐藏的唯一欢迎状态；TTY 不满足能力或宽度要求时返回 usage error 并要求扩宽，不会进入无 Logo 的纯文本
+REPL。只有非交互输入按纯文本处理。颜色仍遵守 `--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；busy 时可排队最多
+五条 follow-up，`/queue [clear]` 查看或清空。
 idle 时 `Ctrl+D` 退出，`Ctrl+C` 清空输入并可再次按下退出；busy 时两者不取消已开始的 Provider 或 Tool。
 
 ### Permission mode 与 Plan
@@ -248,4 +289,5 @@ terminal child 要显式加 `--discard`。执行阶段进程中断遗留的 `cre
 | `legacy_sandbox_session_unsupported` | 该 Session 绑定旧 Sandbox；检查历史后创建新的 Host Session |
 | `pony` 找不到 | 虚拟环境与 PATH 是否一致 |
 | 裸 `pony` 仍显示旧 help | `command -v pony` / `pony --version` 是否指向旧安装；从当前版本重新安装或使用 `uv run pony` |
-| 没有 TUI 颜色或菜单 | stdin/stdout、`TERM`、终端宽度、`NO_COLOR` / `--no-color` 是否触发纯文本或无色模式 |
+| TUI 因完整 Logo 宽度被拒绝 | 将交互终端扩至至少 112 列；不要恢复小版或无 Logo fallback |
+| 没有 TUI 颜色或菜单 | 检查 stdin/stdout、`TERM`、`NO_COLOR` / `--no-color`；非 TTY 才使用纯文本模式 |

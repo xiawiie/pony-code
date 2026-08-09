@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 
 from pony.cli.app import main
 from pony.cli.session import (
@@ -7,6 +8,12 @@ from pony.cli.session import (
     inspect_session,
     resolve_session_id_readonly,
 )
+from pony.security.private_files import (
+    harden_private_tree,
+    private_directory_identity,
+    write_private_bytes_atomic,
+)
+from pony.state import file_lock
 from pony.state.session_store import (
     LEGACY_JSONL_SESSION_FORMAT_VERSION,
     PREVIOUS_SESSION_FORMAT_VERSION,
@@ -40,18 +47,29 @@ def _payload(workspace, session_id, messages, *, version=1):
 
 
 def _write_legacy(root, workspace, session_id, messages):
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    root.chmod(0o700)
-    lock = root / ".session_store.lock"
-    lock.touch(mode=0o600)
-    lock.chmod(0o600)
+    root = harden_private_tree(root)
+    identity = private_directory_identity(root)
+    with file_lock.locked_file(root / ".session_store.lock", require_lock=True):
+        pass
     path = root / f"{session_id}.json"
-    path.write_text(
-        json.dumps(_payload(workspace, session_id, messages)),
-        encoding="utf-8",
+    return write_private_bytes_atomic(
+        path,
+        json.dumps(_payload(workspace, session_id, messages)).encode("utf-8"),
+        trusted_root=root,
+        trusted_root_identity=identity,
+        require_absent=True,
     )
-    path.chmod(0o600)
-    return path
+
+
+def _make_insecure(path):
+    if os.name == "nt":
+        subprocess.run(
+            ["icacls.exe", str(path), "/grant", "*S-1-1-0:(R)", "/q"],
+            check=True,
+            capture_output=True,
+        )
+        return
+    path.chmod(0o644)
 
 
 def _rewrite_as_v4(path):
@@ -166,7 +184,7 @@ def test_inspect_legacy_reports_pending_migration_without_migrating(tmp_path):
 def test_inspect_legacy_preserves_file_identity_and_permissions(tmp_path):
     root = tmp_path / "sessions"
     legacy = _write_legacy(root, tmp_path, "readonly-v1", _tool_messages())
-    legacy.chmod(0o644)
+    _make_insecure(legacy)
     before = legacy.stat()
     original = legacy.read_bytes()
 
@@ -292,7 +310,7 @@ def test_latest_skips_unsafe_session_without_changing_its_permissions(tmp_path):
     )
     os.utime(safe, ns=(1, 1))
     os.utime(unsafe, ns=(2, 2))
-    unsafe.chmod(0o644)
+    _make_insecure(unsafe)
     before = unsafe.stat()
     original = unsafe.read_bytes()
 

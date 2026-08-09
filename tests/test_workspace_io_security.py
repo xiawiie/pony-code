@@ -58,7 +58,20 @@ def _make_unsafe_entry(root, outside, kind):
     return target, outside_file
 
 
-@pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "symlink",
+        "hardlink",
+        pytest.param(
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
+        "directory",
+    ),
+)
 def test_anchored_reader_rejects_unsafe_leaf_without_exposing_outside(
     tmp_path,
     kind,
@@ -108,9 +121,43 @@ def test_reader_revalidates_parent_before_reading_after_final_open_swap(
     detached = tmp_path / "detached"
     parent.mkdir(parents=True)
     outside.mkdir()
-    (parent / "note.txt").write_text("inside\n", encoding="utf-8")
+    (parent / "note.txt").write_bytes(b"inside\n")
     outside_target = outside / "note.txt"
     outside_target.write_text("outside-canary\n", encoding="utf-8")
+
+    if os.name == "nt":
+        from pony.security import windows_workspace_files
+
+        real_read = windows_workspace_files.native.read_bytes
+        swap_blocked = False
+
+        def block_parent_swap(handle, *args, **kwargs):
+            nonlocal swap_blocked
+            if not swap_blocked:
+                with pytest.raises(OSError) as caught:
+                    parent.rename(detached)
+                assert windows_workspace_files.native.error_code(caught.value) in {5, 32}
+                swap_blocked = True
+            return real_read(handle, *args, **kwargs)
+
+        monkeypatch.setattr(
+            windows_workspace_files.native,
+            "read_bytes",
+            block_parent_swap,
+        )
+
+        result = workspace_files.read_regular_bytes_anchored(
+            root,
+            "parent/note.txt",
+            max_bytes=1024,
+            expected_root_identity=private_files.private_directory_identity(root),
+        )
+
+        assert result["data"] == b"inside\n"
+        assert swap_blocked is True
+        assert outside_target.read_text(encoding="utf-8") == "outside-canary\n"
+        return
+
     outside_identity = (
         outside_target.stat().st_dev,
         outside_target.stat().st_ino,
@@ -164,32 +211,55 @@ def test_reader_rejects_target_inode_exchange_before_any_content_read(
     target.write_text("inside\n", encoding="utf-8")
     outside_target = outside / "outside.txt"
     outside_target.write_text("outside-canary\n", encoding="utf-8")
-    outside_identity = (
-        outside_target.stat().st_dev,
-        outside_target.stat().st_ino,
-    )
-    real_open = workspace_files.os.open
-    real_read = workspace_files.os.read
     swapped = False
     outside_reads = 0
 
-    def swap_target(path, flags, *args, **kwargs):
-        nonlocal swapped
-        if path == "note.txt" and kwargs.get("dir_fd") is not None and not swapped:
-            target.unlink()
-            os.link(outside_target, target)
-            swapped = True
-        return real_open(path, flags, *args, **kwargs)
+    if os.name == "nt":
+        from pony.security import windows_workspace_files
 
-    def track_read(descriptor, size):
-        nonlocal outside_reads
-        opened = os.fstat(descriptor)
-        if (opened.st_dev, opened.st_ino) == outside_identity:
+        real_open = windows_workspace_files.native.open_relative
+        real_read = windows_workspace_files.native.read_bytes
+
+        def swap_target(parent, name, *args, **kwargs):
+            nonlocal swapped
+            if name == "note.txt" and kwargs.get("directory") is False and not swapped:
+                target.unlink()
+                os.link(outside_target, target)
+                swapped = True
+            return real_open(parent, name, *args, **kwargs)
+
+        def track_read(*args, **kwargs):
+            nonlocal outside_reads
             outside_reads += 1
-        return real_read(descriptor, size)
+            return real_read(*args, **kwargs)
 
-    monkeypatch.setattr(workspace_files.os, "open", swap_target)
-    monkeypatch.setattr(workspace_files.os, "read", track_read)
+        monkeypatch.setattr(windows_workspace_files.native, "open_relative", swap_target)
+        monkeypatch.setattr(windows_workspace_files.native, "read_bytes", track_read)
+    else:
+        outside_identity = (
+            outside_target.stat().st_dev,
+            outside_target.stat().st_ino,
+        )
+        real_open = workspace_files.os.open
+        real_read = workspace_files.os.read
+
+        def swap_target(path, flags, *args, **kwargs):
+            nonlocal swapped
+            if path == "note.txt" and kwargs.get("dir_fd") is not None and not swapped:
+                target.unlink()
+                os.link(outside_target, target)
+                swapped = True
+            return real_open(path, flags, *args, **kwargs)
+
+        def track_read(descriptor, size):
+            nonlocal outside_reads
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) == outside_identity:
+                outside_reads += 1
+            return real_read(descriptor, size)
+
+        monkeypatch.setattr(workspace_files.os, "open", swap_target)
+        monkeypatch.setattr(workspace_files.os, "read", track_read)
 
     with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
         workspace_files.read_regular_bytes_anchored(
@@ -225,7 +295,20 @@ def test_reader_rejects_workspace_root_replacement_before_leaf_open(tmp_path):
     assert exc_info.value.code == "workspace_entry_unsafe"
 
 
-@pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "symlink",
+        "hardlink",
+        pytest.param(
+            "fifo",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"), reason="FIFO unavailable"
+            ),
+        ),
+        "directory",
+    ),
+)
 def test_atomic_writer_rejects_unsafe_target_without_outside_write(
     tmp_path,
     kind,
@@ -261,6 +344,43 @@ def test_atomic_writer_revalidates_parent_before_writing_temp(
     outside.mkdir()
     outside_target = outside / "note.txt"
     outside_target.write_text("outside-canary\n", encoding="utf-8")
+
+    if os.name == "nt":
+        from pony.security import windows_workspace_files
+
+        real_write = windows_workspace_files.native.write_bytes
+        swap_blocked = False
+
+        def block_parent_swap(handle, data):
+            nonlocal swap_blocked
+            if not swap_blocked:
+                with pytest.raises(OSError) as caught:
+                    parent.rename(detached)
+                assert windows_workspace_files.native.error_code(caught.value) in {5, 32}
+                swap_blocked = True
+            return real_write(handle, data)
+
+        monkeypatch.setattr(
+            windows_workspace_files.native,
+            "write_bytes",
+            block_parent_swap,
+        )
+
+        workspace_files.write_regular_bytes_anchored_atomic(
+            root,
+            "parent/note.txt",
+            b"pony-write\n",
+            max_bytes=1024,
+            expected_root_identity=private_files.private_directory_identity(root),
+        )
+
+        assert swap_blocked is True
+        assert (parent / "note.txt").read_text(encoding="utf-8") == "pony-write\n"
+        assert outside_target.read_text(encoding="utf-8") == "outside-canary\n"
+        assert not detached.exists()
+        assert not list(parent.glob(".note.txt.*.tmp"))
+        return
+
     real_open = workspace_files.os.open
     swapped = False
 
@@ -320,6 +440,7 @@ def test_patch_uses_read_digest_as_atomic_write_cas(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "external-change\n"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode preservation contract")
 def test_atomic_writer_preserves_existing_mode_and_uses_0644_for_new_file(
     tmp_path,
 ):
@@ -346,6 +467,174 @@ def test_atomic_writer_preserves_existing_mode_and_uses_0644_for_new_file(
     assert stat.S_IMODE(existing.stat().st_mode) == 0o640
     assert stat.S_IMODE((tmp_path / "nested" / "new.txt").stat().st_mode) == 0o644
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native file contract")
+def test_atomic_writer_uses_native_file_contract_on_windows(tmp_path):
+    from pony.security import windows_native
+
+    existing = tmp_path / "existing.txt"
+    existing.write_text("old\n", encoding="utf-8")
+    identity = private_files.private_directory_identity(tmp_path)
+
+    replaced = workspace_files.write_regular_bytes_anchored_atomic(
+        tmp_path,
+        "existing.txt",
+        b"new\n",
+        max_bytes=1024,
+        expected_root_identity=identity,
+    )
+    created = workspace_files.write_regular_bytes_anchored_atomic(
+        tmp_path,
+        "nested/new.txt",
+        b"new\n",
+        max_bytes=1024,
+        expected_root_identity=identity,
+    )
+
+    assert replaced == {
+        "mode": stat.S_IFREG,
+        "sha256": "7aa7a5359173d05b63cfd682e3c38487f3cb4f7f1d60659fe59fab1505977d4c",
+        "created": False,
+    }
+    assert created == {**replaced, "created": True}
+    for path in (existing, tmp_path / "nested" / "new.txt"):
+        with windows_native.open_path(path, directory=False) as handle:
+            facts = windows_native.require_kind(handle, directory=False)
+        assert facts.link_count == 1
+        assert facts.reparse_tag == 0
+        assert path.read_bytes() == b"new\n"
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle publish contract")
+def test_windows_atomic_writer_does_not_use_path_publish_apis(
+    tmp_path,
+    monkeypatch,
+):
+    from pony.security import windows_workspace_files
+
+    target = tmp_path / "note.txt"
+    target.write_bytes(b"old\n")
+    root_identity = private_files.private_directory_identity(tmp_path)
+
+    def reject_path_publish(*_args, **_kwargs):
+        raise AssertionError("path-based publish is forbidden")
+
+    monkeypatch.setattr(windows_workspace_files.native, "move_file", reject_path_publish)
+    monkeypatch.setattr(
+        windows_workspace_files.native,
+        "replace_file",
+        reject_path_publish,
+    )
+
+    workspace_files.write_regular_bytes_anchored_atomic(
+        tmp_path,
+        "note.txt",
+        b"new\n",
+        max_bytes=1024,
+        expected_root_identity=root_identity,
+    )
+    workspace_files.write_regular_bytes_anchored_atomic(
+        tmp_path,
+        "created.txt",
+        b"created\n",
+        max_bytes=1024,
+        expected_root_identity=root_identity,
+    )
+
+    assert target.read_bytes() == b"new\n"
+    assert (tmp_path / "created.txt").read_bytes() == b"created\n"
+    assert not list(tmp_path.glob("*.restore"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle publish contract")
+def test_windows_atomic_writer_rolls_back_reported_handle_rename_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from pony.security import windows_workspace_files
+
+    target = tmp_path / "note.txt"
+    target.write_bytes(b"old\n")
+    root_identity = private_files.private_directory_identity(tmp_path)
+    original_rename = windows_workspace_files.native.rename_handle
+    failed = False
+
+    def fail_after_install(handle, parent, name, **kwargs):
+        nonlocal failed
+        result = original_rename(handle, parent, name, **kwargs)
+        if not failed and name == target.name:
+            failed = True
+            raise OSError("workspace publish crash")
+        return result
+
+    monkeypatch.setattr(
+        windows_workspace_files.native,
+        "rename_handle",
+        fail_after_install,
+    )
+
+    with pytest.raises(OSError, match="publish crash"):
+        workspace_files.write_regular_bytes_anchored_atomic(
+            tmp_path,
+            target.name,
+            b"new\n",
+            max_bytes=1024,
+            expected_root_identity=root_identity,
+        )
+
+    assert target.read_bytes() == b"old\n"
+    assert not list(tmp_path.glob("*.tmp"))
+    assert not list(tmp_path.glob("*.restore"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle publish contract")
+def test_windows_atomic_writer_preserves_unknown_swapped_temp_binding(
+    tmp_path,
+    monkeypatch,
+):
+    from pony.security import windows_workspace_files
+
+    target = tmp_path / "note.txt"
+    target.write_bytes(b"old\n")
+    root_identity = private_files.private_directory_identity(tmp_path)
+    original_rename = windows_workspace_files.native.rename_handle
+    swapped = False
+
+    def swap_temp_before_publish(handle, parent, name, **kwargs):
+        nonlocal swapped
+        if not swapped and name == target.name:
+            temp_path = next(tmp_path.glob(".note.txt.*.tmp"))
+            detached = tmp_path / "detached-temp"
+            temp_path.rename(detached)
+            temp_path.write_bytes(b"unknown\n")
+            swapped = True
+        return original_rename(handle, parent, name, **kwargs)
+
+    monkeypatch.setattr(
+        windows_workspace_files.native,
+        "rename_handle",
+        swap_temp_before_publish,
+    )
+
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.write_regular_bytes_anchored_atomic(
+            tmp_path,
+            target.name,
+            b"new\n",
+            max_bytes=1024,
+            expected_root_identity=root_identity,
+        )
+
+    assert exc_info.value.code == "workspace_changed_during_write"
+    assert swapped is True
+    assert target.read_bytes() == b"old\n"
+    swapped_entries = list(tmp_path.glob(".note.txt.*.tmp"))
+    assert len(swapped_entries) == 1
+    assert swapped_entries[0].read_bytes() == b"unknown\n"
+    assert not (tmp_path / "detached-temp").exists()
+    assert not list(tmp_path.glob("*.restore"))
 
 
 def test_directory_listing_bounds_results_and_counts_unsafe_entries(tmp_path):

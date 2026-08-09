@@ -1,9 +1,10 @@
 import pytest
 import json
-import os
 import signal
 
 from pony.cli.app import main
+from pony.cli.arguments import build_arg_parser
+from pony.cli.assembly import build_agent
 from pony.cli.start import run_agent_once, run_repl
 from pony.providers.transport import ProviderTransportError
 from pony.state.session_store import UnsupportedLegacyEntry
@@ -31,7 +32,7 @@ class _InterruptAgent:
     def ask(self, _prompt):
         if self.signum is None:
             raise KeyboardInterrupt("stop")
-        os.kill(os.getpid(), self.signum)
+        signal.raise_signal(self.signum)
         raise AssertionError("signal handler did not interrupt")
 
     def redact_text(self, text):
@@ -77,7 +78,7 @@ def test_repl_sigterm_during_non_model_branch_still_finalizes(monkeypatch):
         (),
         {
             "__str__": lambda _self: (
-                os.kill(os.getpid(), signal.SIGTERM),
+                signal.raise_signal(signal.SIGTERM),
                 "unreachable",
             )[1]
         },
@@ -231,6 +232,10 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
         "PONY_API_KEY=test-key\n",
         encoding="utf-8",
     )
+    args = build_arg_parser().parse_args(["--cwd", str(tmp_path), "--quiet"])
+
+    with pytest.raises(ValueError, match="api_base_credentials"):
+        build_agent(args, confirm=lambda _root: True)
 
     assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 

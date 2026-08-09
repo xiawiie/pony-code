@@ -152,9 +152,17 @@ def test_project_env_rejects_control_characters_after_decoding(
 def test_project_env_replace_failure_preserves_original(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_bytes(b"PONY_TEST_SETTING=deepseek\n")
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        replace_owner = windows_private_files.native
+        replace_name = "rename_handle"
+    else:
+        replace_owner = security_module.os
+        replace_name = "replace"
     monkeypatch.setattr(
-        security_module.os,
-        "replace",
+        replace_owner,
+        replace_name,
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("replace failed")),
     )
 
@@ -207,22 +215,35 @@ def test_project_env_existing_file_is_private_before_read(tmp_path):
 def test_project_env_non_hardening_read_still_rejects_non_private_file(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("PONY_TEST_SETTING=deepseek\n", encoding="utf-8")
-    env_path.chmod(0o644)
+    if os.name == "posix":
+        env_path.chmod(0o644)
 
     with pytest.raises(ValueError, match="private file permissions are unsafe"):
         read_project_env(tmp_path, warn=False, harden=False)
 
-    assert stat.S_IMODE(env_path.stat().st_mode) == 0o644
+    if os.name == "nt":
+        assert security_module.private_file_signature(env_path).is_private is False
+    else:
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o644
 
 
 def test_project_env_chmod_failure_fails_before_returning_values(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("PONY_API_KEY=opaque-value\n", encoding="utf-8")
 
-    def fail_env_chmod(_descriptor, _mode):
+    def fail_env_chmod(*_args):
         raise PermissionError("chmod denied")
 
-    monkeypatch.setattr(security_module.os, "fchmod", fail_env_chmod)
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "make_private",
+            fail_env_chmod,
+        )
+    else:
+        monkeypatch.setattr(security_module.os, "fchmod", fail_env_chmod)
 
     with pytest.raises(PermissionError, match="chmod denied"):
         read_project_env(tmp_path, warn=False)
@@ -233,20 +254,43 @@ def test_project_env_reads_verified_descriptor_after_leaf_swap(tmp_path, monkeyp
     env_path.write_text("PONY_TEST_SETTING=deepseek\n", encoding="utf-8")
     outside = tmp_path / "outside.env"
     outside.write_text("PONY_TEST_SETTING=anthropic\n", encoding="utf-8")
-    real_fchmod = security_module.os.fchmod
     swapped = False
 
-    def swap_after_validation(descriptor, mode):
-        nonlocal swapped
-        real_fchmod(descriptor, mode)
-        if not swapped:
-            env_path.unlink()
-            env_path.symlink_to(outside)
-            swapped = True
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    monkeypatch.setattr(security_module.os, "fchmod", swap_after_validation)
+        original = tmp_path / "original.env"
+        real_make_private = windows_private_files.native.make_private
+
+        def swap_after_validation(handle):
+            nonlocal swapped
+            real_make_private(handle)
+            if not swapped:
+                env_path.replace(original)
+                outside.replace(env_path)
+                swapped = True
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "make_private",
+            swap_after_validation,
+        )
+    else:
+        real_fchmod = security_module.os.fchmod
+
+        def swap_after_validation(descriptor, mode):
+            nonlocal swapped
+            real_fchmod(descriptor, mode)
+            if not swapped:
+                env_path.unlink()
+                env_path.symlink_to(outside)
+                swapped = True
+
+        monkeypatch.setattr(security_module.os, "fchmod", swap_after_validation)
 
     assert read_project_env(tmp_path, warn=False) == {"PONY_TEST_SETTING": "deepseek"}
+    assert swapped is True
+    assert env_path.read_text(encoding="utf-8") == "PONY_TEST_SETTING=anthropic\n"
 
 
 def test_project_env_rejects_symlinked_private_parent_and_lock(tmp_path):
@@ -273,16 +317,35 @@ def test_project_env_temp_fsync_failure_preserves_original(tmp_path, monkeypatch
     env_path = tmp_path / ".env"
     original = b"PONY_TEST_SETTING=deepseek\n"
     env_path.write_bytes(original)
-    real_fsync = os.fsync
     calls = {"count": 0}
 
-    def fail_first_fsync(fd):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            raise OSError("temp fsync failed")
-        return real_fsync(fd)
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    monkeypatch.setattr(os, "fsync", fail_first_fsync)
+        real_write = windows_private_files.native.write_bytes
+
+        def fail_first_fsync(handle, data, **kwargs):
+            result = real_write(handle, data, **kwargs)
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("temp fsync failed")
+            return result
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "write_bytes",
+            fail_first_fsync,
+        )
+    else:
+        real_fsync = os.fsync
+
+        def fail_first_fsync(fd):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("temp fsync failed")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", fail_first_fsync)
 
     with pytest.raises(OSError, match="temp fsync failed"):
         write_project_env_assignments(tmp_path, {"PONY_TEST_SETTING": "anthropic"})
@@ -296,19 +359,39 @@ def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeyp
     outside = tmp_path.parent / f"{tmp_path.name}-outside-swap"
     outside_bytes = b"PONY_TEST_SETTING=outside\n"
     outside.write_bytes(outside_bytes)
-    real_fsync = os.fsync
     swapped = {}
 
-    def swap_temp_after_fsync(fd):
-        real_fsync(fd)
-        if swapped:
-            return
-        temp_path = next(tmp_path.glob(".*.tmp"))
-        temp_path.unlink()
-        os.link(outside, temp_path)
-        swapped["path"] = temp_path
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    monkeypatch.setattr(os, "fsync", swap_temp_after_fsync)
+        real_rename = windows_private_files.native.rename_handle
+
+        def swap_temp_before_rename(handle, parent, name, *, replace=False):
+            if not swapped and name == ".env":
+                temp_path = next(tmp_path.glob(".*.tmp"))
+                temp_path.unlink()
+                os.link(outside, temp_path)
+                swapped["path"] = temp_path
+            return real_rename(handle, parent, name, replace=replace)
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "rename_handle",
+            swap_temp_before_rename,
+        )
+    else:
+        real_fsync = os.fsync
+
+        def swap_temp_after_fsync(fd):
+            real_fsync(fd)
+            if swapped:
+                return
+            temp_path = next(tmp_path.glob(".*.tmp"))
+            temp_path.unlink()
+            os.link(outside, temp_path)
+            swapped["path"] = temp_path
+
+        monkeypatch.setattr(os, "fsync", swap_temp_after_fsync)
 
     with pytest.raises(ValueError, match="project env temp changed"):
         write_project_env_assignments(tmp_path, {"PONY_TEST_SETTING": "anthropic"})
@@ -323,25 +406,46 @@ def test_project_env_rejects_temp_hardlink_before_replace(tmp_path, monkeypatch)
     original = b"PONY_TEST_SETTING=deepseek\n"
     env_path.write_bytes(original)
     alias = tmp_path.parent / f"{tmp_path.name}-outside-temp-alias"
-    real_fsync = os.fsync
     linked = False
 
-    def hardlink_temp_after_fsync(descriptor):
-        nonlocal linked
-        real_fsync(descriptor)
-        if not linked:
-            temp_path = next(tmp_path.glob(".*.tmp"))
-            os.link(temp_path, alias)
-            linked = True
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    monkeypatch.setattr(os, "fsync", hardlink_temp_after_fsync)
+        real_rename = windows_private_files.native.rename_handle
+
+        def hardlink_temp_before_rename(handle, parent, name, *, replace=False):
+            nonlocal linked
+            if not linked and name == ".env":
+                temp_path = next(tmp_path.glob(".*.tmp"))
+                os.link(temp_path, alias)
+                linked = True
+            return real_rename(handle, parent, name, replace=replace)
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "rename_handle",
+            hardlink_temp_before_rename,
+        )
+    else:
+        real_fsync = os.fsync
+
+        def hardlink_temp_after_fsync(descriptor):
+            nonlocal linked
+            real_fsync(descriptor)
+            if not linked:
+                temp_path = next(tmp_path.glob(".*.tmp"))
+                os.link(temp_path, alias)
+                linked = True
+
+        monkeypatch.setattr(os, "fsync", hardlink_temp_after_fsync)
 
     with pytest.raises(ValueError, match="project env temp changed"):
         write_project_env_assignments(tmp_path, {"PONY_TEST_SETTING": "anthropic"})
 
     assert env_path.read_bytes() == original
     assert alias.exists()
-    assert alias.read_bytes() == b""
+    expected_alias = b'PONY_TEST_SETTING="anthropic"\n' if os.name == "nt" else b""
+    assert alias.read_bytes() == expected_alias
     assert not list(tmp_path.glob(".*.tmp"))
 
 

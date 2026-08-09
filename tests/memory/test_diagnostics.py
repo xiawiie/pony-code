@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,112 @@ def _memory_root(repo):
     root = repo / ".pony" / "memory"
     (root / "notes").mkdir(parents=True)
     return root
+
+
+def test_windows_memory_health_uses_anchored_backends(tmp_path, monkeypatch):
+    root = tmp_path / "memory"
+    identities = {
+        ".": (1, "root"),
+        "notes": (1, "notes"),
+        "notes/nested": (1, "nested"),
+    }
+    listings = {
+        ".": (
+            {"name": "notes", "mode": stat.S_IFDIR, "identity": identities["notes"]},
+            {"name": "agent_notes.md", "mode": stat.S_IFREG, "identity": (1, "agent")},
+        ),
+        "notes": (
+            {"name": "note.md", "mode": stat.S_IFREG, "identity": (1, "note")},
+            {
+                "name": "nested",
+                "mode": stat.S_IFDIR,
+                "identity": identities["notes/nested"],
+            },
+        ),
+        "notes/nested": (
+            {"name": "deep.md", "mode": stat.S_IFREG, "identity": (1, "deep")},
+        ),
+    }
+    file_identities = {
+        "agent_notes.md": (1, "agent"),
+        "notes/note.md": (1, "note"),
+        "notes/nested/deep.md": (1, "deep"),
+    }
+    reads = []
+
+    monkeypatch.setattr(
+        diagnostics_module.private_files,
+        "private_directory_identity",
+        lambda _path: identities["."],
+    )
+
+    def list_directory(_root, relative, **_kwargs):
+        return {
+            "entries": listings[relative],
+            "unsafe_count": 0,
+            "scanned": len(listings[relative]),
+            "identity": identities[relative],
+        }
+
+    def read_file(_root, relative, **_kwargs):
+        reads.append(relative)
+        return {
+            "exists": True,
+            "identity": file_identities[relative],
+            "data": b"safe",
+        }
+
+    monkeypatch.setattr(
+        diagnostics_module.workspace_files,
+        "list_directory_names_anchored",
+        list_directory,
+    )
+    monkeypatch.setattr(
+        diagnostics_module.workspace_files,
+        "read_regular_bytes_anchored",
+        read_file,
+    )
+
+    issues = []
+    diagnostics_module._scan_scope_windows(
+        "workspace", root, issues, {"entries": 0, "bytes": 0}
+    )
+
+    assert issues == []
+    assert reads == ["notes/note.md", "notes/nested/deep.md", "agent_notes.md"]
+
+
+def test_windows_memory_health_reports_unsafe_root_entries(tmp_path, monkeypatch):
+    root = tmp_path / "memory"
+    monkeypatch.setattr(
+        diagnostics_module.private_files,
+        "private_directory_identity",
+        lambda _path: (1, "root"),
+    )
+    monkeypatch.setattr(
+        diagnostics_module.workspace_files,
+        "list_directory_names_anchored",
+        lambda *_args, **_kwargs: {
+            "entries": (),
+            "unsafe_count": 1,
+            "scanned": 1,
+            "identity": (1, "root"),
+        },
+    )
+
+    issues = []
+    state = {"entries": 0, "bytes": 0}
+    diagnostics_module._scan_scope_windows("workspace", root, issues, state)
+
+    assert issues == [
+        {
+            "path": "workspace",
+            "count": 1,
+            "reason_code": "memory_directory_unavailable",
+            "limit": 0,
+        }
+    ]
+    assert state == {"entries": 1, "bytes": 0}
 
 
 def test_memory_health_is_bounded_and_does_not_validate_note_content(tmp_path):
@@ -148,26 +255,49 @@ def test_memory_health_fails_closed_when_root_is_replaced_during_scan(
     (replacement / "notes" / "new.md").write_text("new note", encoding="utf-8")
     (replacement / "agent_notes.md").write_text("new agent", encoding="utf-8")
     displaced = tmp_path / "displaced"
-    original_read = diagnostics_module._read_bounded_at
+    replaced = False
     parent_identities = []
 
-    def replace_root(parent_descriptor, name, expected, limit):
-        if not parent_identities:
-            memory.rename(displaced)
-            replacement.rename(memory)
-        parent_identities.append(
-            diagnostics_module._identity(os.fstat(parent_descriptor))
-        )
-        return original_read(parent_descriptor, name, expected, limit)
+    if os.name == "nt":
+        original_read = diagnostics_module.workspace_files.read_regular_bytes_anchored
 
-    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_root)
+        def replace_root(root, relative, **kwargs):
+            nonlocal replaced
+            if not replaced:
+                memory.rename(displaced)
+                replacement.rename(memory)
+                replaced = True
+            return original_read(root, relative, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.workspace_files,
+            "read_regular_bytes_anchored",
+            replace_root,
+        )
+    else:
+        original_read = diagnostics_module._read_bounded_at
+
+        def replace_root(parent_descriptor, name, expected, limit):
+            nonlocal replaced
+            if not replaced:
+                memory.rename(displaced)
+                replacement.rename(memory)
+                replaced = True
+            parent_identities.append(
+                diagnostics_module._identity(os.fstat(parent_descriptor))
+            )
+            return original_read(parent_descriptor, name, expected, limit)
+
+        monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_root)
 
     result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert parent_identities == [old_notes_identity, old_root_identity]
+    assert replaced
+    if os.name != "nt":
+        assert parent_identities == [old_notes_identity, old_root_identity]
     assert result["status"] == "unknown"
     assert {
         "path": "workspace",
@@ -189,25 +319,43 @@ def test_memory_health_fails_closed_when_nested_directory_is_replaced(
     replacement.mkdir()
     (replacement / "new.md").write_text("new note", encoding="utf-8")
     displaced = tmp_path / "displaced-nested"
-    original_read = diagnostics_module._read_bounded_at
     replaced = False
 
-    def replace_nested(parent_descriptor, name, expected, limit):
-        nonlocal replaced
-        if not replaced:
-            nested.rename(displaced)
-            replacement.rename(nested)
-            replaced = True
-        return original_read(parent_descriptor, name, expected, limit)
+    if os.name == "nt":
+        original_read = diagnostics_module.workspace_files.read_regular_bytes_anchored
 
-    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_nested)
+        def replace_nested(root, relative, **kwargs):
+            nonlocal replaced
+            if not replaced:
+                nested.rename(displaced)
+                replacement.rename(nested)
+                replaced = True
+            return original_read(root, relative, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.workspace_files,
+            "read_regular_bytes_anchored",
+            replace_nested,
+        )
+    else:
+        original_read = diagnostics_module._read_bounded_at
+
+        def replace_nested(parent_descriptor, name, expected, limit):
+            nonlocal replaced
+            if not replaced:
+                nested.rename(displaced)
+                replacement.rename(nested)
+                replaced = True
+            return original_read(parent_descriptor, name, expected, limit)
+
+        monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_nested)
 
     result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert replaced is True
+    assert replaced
     assert result["status"] == "unknown"
     assert {
         "path": "workspace/notes/nested",
@@ -226,25 +374,44 @@ def test_memory_health_fails_closed_when_hardlink_is_added_during_read(
     note = memory / "notes" / "note.md"
     note.write_text("note", encoding="utf-8")
     hardlink = tmp_path / "note-hardlink.md"
-    original_stat = diagnostics_module.os.stat
-    note_stat_calls = 0
 
-    def add_hardlink_before_final_stat(path, *args, **kwargs):
-        nonlocal note_stat_calls
-        if path == "note.md" and kwargs.get("dir_fd") is not None:
-            note_stat_calls += 1
-            if note_stat_calls == 2:
-                os.link(note, hardlink)
-        return original_stat(path, *args, **kwargs)
+    if os.name == "nt":
+        original_read = diagnostics_module.workspace_files.read_regular_bytes_anchored
+        read_calls = 0
 
-    monkeypatch.setattr(diagnostics_module.os, "stat", add_hardlink_before_final_stat)
+        def add_hardlink_before_read(root, relative, **kwargs):
+            nonlocal read_calls
+            read_calls += 1
+            os.link(note, hardlink)
+            return original_read(root, relative, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.workspace_files,
+            "read_regular_bytes_anchored",
+            add_hardlink_before_read,
+        )
+    else:
+        original_stat = diagnostics_module.os.stat
+        read_calls = 0
+
+        def add_hardlink_before_final_stat(path, *args, **kwargs):
+            nonlocal read_calls
+            if path == "note.md" and kwargs.get("dir_fd") is not None:
+                read_calls += 1
+                if read_calls == 2:
+                    os.link(note, hardlink)
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.os, "stat", add_hardlink_before_final_stat
+        )
 
     result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert note_stat_calls == 2
+    assert read_calls == (1 if os.name == "nt" else 2)
     assert result["status"] == "unknown"
     assert {
         "path": "workspace/notes/note.md",

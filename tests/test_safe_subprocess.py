@@ -2,6 +2,8 @@ import multiprocessing
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+import shutil
 import stat
 import subprocess
 import sys
@@ -27,11 +29,37 @@ def _executable(path, body="#!/bin/sh\nexit 0\n"):
 
 
 def _real_git():
+    if os.name == "nt":
+        discovered = shutil.which("git")
+        assert discovered is not None
+        return os.path.abspath(discovered)
     trusted = build_trusted_executables(Path.cwd(), names=("git",))
     assert "git" in trusted
     return str(trusted["git"])
 
 
+@pytest.fixture(autouse=True)
+def _contract_host_git_independently_from_windows_install_acl(monkeypatch):
+    if os.name != "nt":
+        return
+    executable = _real_git()
+    expected = os.path.normcase(executable)
+    original = safe_subprocess_module._prepared_executable
+
+    @contextmanager
+    def prepare(candidate):
+        if os.path.normcase(os.path.abspath(candidate)) == expected:
+            yield safe_subprocess_module._PreparedExecutable(executable, executable)
+            return
+        with original(candidate) as prepared:
+            yield prepared
+
+    # Executable discovery/ACL rejection has dedicated tests. Real-Git contracts
+    # exercise hardened argv, environment, repository validation, and semantics.
+    monkeypatch.setattr(safe_subprocess_module, "_prepared_executable", prepare)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX detached process contract")
 def test_timeout_does_not_wait_for_detached_descendant_capture_pipe(tmp_path):
     script = (
         "import os,time\n"
@@ -55,9 +83,44 @@ def test_timeout_does_not_wait_for_detached_descendant_capture_pipe(tmp_path):
     assert time.monotonic() - started < 1
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object contract")
+def test_windows_root_exit_terminates_descendants_that_hold_capture_pipes(tmp_path):
+    marker = tmp_path / "descendant-survived"
+    child = (
+        "import pathlib,time\n"
+        "time.sleep(1.5)\n"
+        f"pathlib.Path({str(marker)!r}).write_text('alive', encoding='ascii')\n"
+    )
+    parent = (
+        "import subprocess,sys\n"
+        f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "print('done', flush=True)\n"
+    )
+    started = time.monotonic()
+
+    result = run_process_group(
+        [sys.executable, "-c", parent],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "done\n"
+    assert result.timed_out is False
+    assert time.monotonic() - started < 3
+    time.sleep(2)
+    assert not marker.exists()
+
+
 def _init_git_repo(path):
     git = _real_git()
     subprocess.run([git, "init", "-q"], cwd=path, check=True)
+    subprocess.run(
+        [git, "config", "core.autocrlf", "false"],
+        cwd=path,
+        check=True,
+    )
     subprocess.run(
         [git, "config", "user.email", "tests@example.com"],
         cwd=path,
@@ -204,6 +267,28 @@ def test_discover_lexical_repo_root_rejects_git_symlink_without_raw_path(tmp_pat
     assert str(tmp_path) not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("name", "message"),
+    ((".git", "unsafe .git symlink"), ("config", "unsafe git repository")),
+)
+def test_windows_git_entry_mode_normalizes_reparse_errors(name, message, monkeypatch):
+    from pony.security import windows_native
+
+    monkeypatch.setattr(safe_subprocess_module.os, "name", "nt")
+
+    def reject_reparse(*_args, **_kwargs):
+        raise windows_native.ReparsePointError()
+
+    monkeypatch.setattr(windows_native, "open_relative", reject_reparse)
+
+    with pytest.raises(ValueError) as exc_info:
+        safe_subprocess_module._git_entry_mode(object(), name)
+
+    assert type(exc_info.value) is ValueError
+    assert str(exc_info.value) == message
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable trust contract")
 def test_trusted_executables_ignore_relative_missing_and_workspace_path(tmp_path):
     fake = _executable(tmp_path / "git")
 
@@ -316,6 +401,7 @@ def test_executable_parent_swap_is_rejected_by_anchored_traversal(
     assert controlled.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable trust contract")
 def test_mutable_git_is_rejected_before_any_probe_executes(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -369,6 +455,7 @@ def test_owner_can_chmod_nominally_read_only_executable_and_is_rejected(tmp_path
     assert trusted == {}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable trust contract")
 def test_bad_path_entry_does_not_hide_later_trusted_executable(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -382,6 +469,7 @@ def test_bad_path_entry_does_not_hide_later_trusted_executable(tmp_path):
     assert trusted == {"git": "/usr/bin/git"}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable trust contract")
 def test_mutable_executable_does_not_hide_later_trusted_executable(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -448,16 +536,17 @@ def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-inherited")
     monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
-    run_hardened_git("/usr/bin/git", ["status", "--short"], cwd=tmp_path)
+    git = _real_git()
+    run_hardened_git(git, ["status", "--short"], cwd=tmp_path)
 
     argv = captured["argv"]
     env = captured["kwargs"]["env"]
-    assert argv[0] == "/usr/bin/git"
+    assert argv[0] == git
     assert argv[1] == "--no-pager"
     assert argv[2] == "--no-optional-locks"
     assert argv[-2:] == ["status", "--short"]
     assert "core.fsmonitor=false" in argv
-    assert "core.hooksPath=/dev/null" in argv
+    assert f"core.hooksPath={os.devnull}" in argv
     assert "diff.external=" in argv
     assert "credential.helper=" in argv
     assert "protocol.ext.allow=never" in argv
@@ -476,6 +565,56 @@ def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert "UNRELATED_SECRET" not in env
     assert captured["kwargs"]["capture_output"] is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Git line-ending contract")
+def test_hardened_git_preserves_safe_global_line_ending_config(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    home.mkdir()
+    repo.mkdir()
+    (home / ".gitconfig").write_text(
+        "[core]\n\tautocrlf = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    git = _real_git()
+
+    subprocess.run([git, "init", "-q"], cwd=repo, check=True)
+    (repo / "README.md").write_bytes(b"demo\n")
+    subprocess.run([git, "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "user.name=Pony Tests",
+            "-c",
+            "user.email=tests@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "README.md").unlink()
+    subprocess.run([git, "checkout", "--", "README.md"], cwd=repo, check=True)
+
+    assert (repo / "README.md").read_bytes() == b"demo\r\n"
+    result = run_hardened_git(
+        git,
+        ["status", "--porcelain=v1"],
+        cwd=repo,
+        check=True,
+        text=True,
+    )
+    assert result.stdout == ""
 
 
 def test_hardened_git_blocks_real_repo_local_clean_filter(tmp_path):
@@ -1138,30 +1277,63 @@ def test_hardened_git_marker_read_is_anchored_against_parent_swap(
     _, child = _absorbed_submodule(tmp_path)
     marker = child / ".git"
     valid_marker = marker.read_bytes()
-    marker.write_text("not-a-gitdir\n", encoding="utf-8")
+    if os.name == "nt":
+        with marker.open("r+b") as handle:
+            handle.seek(0)
+            handle.write(b"not-a-gitdir\n")
+            handle.truncate()
+    else:
+        marker.write_text("not-a-gitdir\n", encoding="utf-8")
     replacement = child.parent / "replacement-child"
     replacement.mkdir()
     (replacement / ".git").write_bytes(valid_marker)
     displaced = child.parent / "displaced-child"
-    real_open = os.open
+    swap_attempted = False
     swapped = False
 
-    def racing_open(path, flags, mode=0o777, *, dir_fd=None):
-        nonlocal swapped
-        raw_path = os.fsdecode(path)
-        opening_marker = (dir_fd is None and Path(raw_path) == marker) or (
-            dir_fd is not None and raw_path == ".git"
-        )
-        if opening_marker and not swapped:
-            child.replace(displaced)
-            replacement.replace(child)
-            swapped = True
-        return real_open(path, flags, mode, dir_fd=dir_fd)
+    if os.name == "nt":
+        from pony.security import windows_native as native
 
-    monkeypatch.setattr(os, "open", racing_open)
+        real_open = native.open_relative
+        marker_file_opens = 0
+
+        def racing_open(parent, name, *, directory, **kwargs):
+            nonlocal marker_file_opens, swap_attempted, swapped
+            if os.fsdecode(name) == ".git" and not directory:
+                marker_file_opens += 1
+            if marker_file_opens == 2 and not swap_attempted:
+                swap_attempted = True
+                try:
+                    child.replace(displaced)
+                    replacement.replace(child)
+                    swapped = True
+                except PermissionError:
+                    pass
+            return real_open(parent, name, directory=directory, **kwargs)
+
+        monkeypatch.setattr(native, "open_relative", racing_open)
+    else:
+        real_open = os.open
+
+        def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal swap_attempted, swapped
+            raw_path = os.fsdecode(path)
+            opening_marker = (dir_fd is None and Path(raw_path) == marker) or (
+                dir_fd is not None and raw_path == ".git"
+            )
+            if opening_marker and not swap_attempted:
+                swap_attempted = True
+                child.replace(displaced)
+                replacement.replace(child)
+                swapped = True
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "open", racing_open)
 
     _assert_gitfile_rejected_before_git(monkeypatch, child)
-    assert swapped is True
+    assert swap_attempted is True
+    if os.name != "nt":
+        assert swapped is True
 
 
 def test_hardened_git_marker_kind_is_anchored_against_parent_swap(
@@ -1171,35 +1343,65 @@ def test_hardened_git_marker_kind_is_anchored_against_parent_swap(
     _, child = _absorbed_submodule(tmp_path)
     marker = child / ".git"
     valid_marker = marker.read_bytes()
-    marker.write_text("not-a-gitdir\n", encoding="utf-8")
+    if os.name == "nt":
+        with marker.open("r+b") as handle:
+            handle.seek(0)
+            handle.write(b"not-a-gitdir\n")
+            handle.truncate()
+    else:
+        marker.write_text("not-a-gitdir\n", encoding="utf-8")
     replacement = child.parent / "replacement-child"
     replacement.mkdir()
     (replacement / ".git").write_bytes(valid_marker)
     displaced = child.parent / "displaced-child"
-    real_stat = os.stat
+    swap_attempted = False
     swapped = False
 
-    def racing_stat(path, *args, dir_fd=None, follow_symlinks=True):
-        nonlocal swapped
-        raw_path = os.fsdecode(path)
-        checking_marker = (dir_fd is None and Path(raw_path) == marker) or (
-            dir_fd is not None and raw_path == ".git"
-        )
-        if checking_marker and not swapped:
-            child.replace(displaced)
-            replacement.replace(child)
-            swapped = True
-        return real_stat(
-            path,
-            *args,
-            dir_fd=dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
+    if os.name == "nt":
+        from pony.security import windows_native as native
 
-    monkeypatch.setattr(os, "stat", racing_stat)
+        real_open = native.open_relative
+
+        def racing_open(parent, name, *, directory, **kwargs):
+            nonlocal swap_attempted, swapped
+            if os.fsdecode(name) == ".git" and not swap_attempted:
+                swap_attempted = True
+                try:
+                    child.replace(displaced)
+                    replacement.replace(child)
+                    swapped = True
+                except PermissionError:
+                    pass
+            return real_open(parent, name, directory=directory, **kwargs)
+
+        monkeypatch.setattr(native, "open_relative", racing_open)
+    else:
+        real_stat = os.stat
+
+        def racing_stat(path, *args, dir_fd=None, follow_symlinks=True):
+            nonlocal swap_attempted, swapped
+            raw_path = os.fsdecode(path)
+            checking_marker = (dir_fd is None and Path(raw_path) == marker) or (
+                dir_fd is not None and raw_path == ".git"
+            )
+            if checking_marker and not swap_attempted:
+                swap_attempted = True
+                child.replace(displaced)
+                replacement.replace(child)
+                swapped = True
+            return real_stat(
+                path,
+                *args,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        monkeypatch.setattr(os, "stat", racing_stat)
 
     _assert_gitfile_rejected_before_git(monkeypatch, child)
-    assert swapped is True
+    assert swap_attempted is True
+    if os.name != "nt":
+        assert swapped is True
 
 
 def test_hardened_git_blocks_gitfile_core_worktree_escape(tmp_path, monkeypatch):
@@ -1255,7 +1457,7 @@ def test_hardened_git_config_probe_nonzero_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     with pytest.raises(ValueError, match="unsafe git repository config"):
-        run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
+        run_hardened_git(_real_git(), ["status"], cwd=tmp_path)
 
     assert len(calls) == 1
     assert "config" in calls[0]
@@ -1272,7 +1474,7 @@ def test_hardened_git_config_probe_timeout_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     with pytest.raises(subprocess.TimeoutExpired):
-        run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
+        run_hardened_git(_real_git(), ["status"], cwd=tmp_path)
 
     assert len(calls) == 1
     assert "config" in calls[0]
@@ -1326,7 +1528,7 @@ def test_hardened_git_rejects_malformed_ls_files_probe_output(
     monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     with pytest.raises(ValueError, match="unsafe git repository config"):
-        run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
+        run_hardened_git(_real_git(), ["status"], cwd=tmp_path)
 
     assert len(calls) == 2
 
@@ -1406,7 +1608,7 @@ def test_hardened_git_safe_exact_queries_work_with_dangerous_filter_config(
 
     output = result.stdout.strip()
     if expected == "repo-root":
-        assert output == str(tmp_path.resolve())
+        assert Path(output).resolve() == tmp_path.resolve()
     else:
         assert output == expected
     assert not marker.exists()
@@ -1458,7 +1660,7 @@ def test_hardened_git_disables_textconv_for_diff_rendering_commands(
     monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     run_hardened_git(
-        "/usr/bin/git",
+        _real_git(),
         ["show", "HEAD:README.md"],
         cwd=tmp_path,
         text=True,
@@ -1496,9 +1698,10 @@ def test_hardened_rg_uses_fixed_config_and_minimal_environment(tmp_path, monkeyp
     monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
     monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
-    run_hardened_rg("/usr/bin/rg", ["needle", "."], cwd=tmp_path)
+    frozen_rg = Path(Path.cwd().anchor) / "frozen" / "bin" / "rg"
+    run_hardened_rg(str(frozen_rg), ["needle", "."], cwd=tmp_path)
 
-    assert captured["argv"] == ["/usr/bin/rg", "needle", "."]
+    assert captured["argv"] == [str(frozen_rg), "needle", "."]
     assert captured["kwargs"]["env"]["RIPGREP_CONFIG_PATH"] == os.devnull
     assert "UNRELATED_SECRET" not in captured["kwargs"]["env"]
     assert captured["kwargs"]["capture_output"] is True
@@ -1533,14 +1736,15 @@ def test_hardened_rg_child_path_comes_only_from_frozen_executable(
     monkeypatch.setattr(safe_subprocess, "_prepared_executable", passthrough)
     monkeypatch.setattr(safe_subprocess, "_run_bounded", fake_run)
 
+    frozen_rg = Path(Path.cwd().anchor) / "opt" / "pony-frozen" / "bin" / "rg"
     run_hardened_rg(
-        "/opt/pony-frozen/bin/rg",
+        str(frozen_rg),
         ["needle", "."],
         cwd=tmp_path,
     )
 
-    assert captured["argv"][0] == "/opt/pony-frozen/bin/rg"
-    assert captured["env"]["PATH"] == "/opt/pony-frozen/bin"
+    assert captured["argv"][0] == str(frozen_rg)
+    assert captured["env"]["PATH"] == str(frozen_rg.parent)
     assert captured["env"]["RIPGREP_CONFIG_PATH"] == os.devnull
 
 
@@ -1553,3 +1757,79 @@ def test_hardened_rg_rejects_preprocessors(option, tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         run_hardened_rg("/usr/bin/rg", [option, "needle", "."], cwd=tmp_path)
+
+
+def test_windows_shell_argv_uses_fixed_powershell_flags():
+    command = "Get-ChildItem README.md | Select-String Pony"
+
+    argv = safe_subprocess_module._shell_argv(
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        command,
+        windows=True,
+    )
+
+    assert argv == [
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Import-Module -Name "
+        "'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\"
+        "Microsoft.PowerShell.Management\\Microsoft.PowerShell.Management.psd1' "
+        "-ErrorAction Stop; Import-Module -Name "
+        "'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\"
+        "Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1' "
+        f"-ErrorAction Stop; {command}",
+    ]
+    assert "cmd" not in argv
+
+
+def test_windows_shell_minimal_environment_drops_module_and_secret_state(
+    tmp_path,
+    monkeypatch,
+):
+    powershell = Path(
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    )
+    monkeypatch.setenv("PATH", "untrusted")
+    monkeypatch.setenv("PSModulePath", "user-modules")
+    monkeypatch.setenv("PONY_API_KEY", "secret")
+    monkeypatch.setenv("APPDATA", r"C:\Users\pony-ci\AppData\Roaming")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\pony-ci\AppData\Local")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\pony-ci")
+    monkeypatch.setattr(
+        safe_subprocess_module,
+        "_safe_path_dirs",
+        lambda *_args, **_kwargs: [str(powershell.parent)],
+    )
+
+    env = safe_subprocess_module._minimal_env(tmp_path, powershell)
+
+    assert env["APPDATA"] == r"C:\Users\pony-ci\AppData\Roaming"
+    assert env["LOCALAPPDATA"] == r"C:\Users\pony-ci\AppData\Local"
+    assert env["PATH"] == str(powershell.parent)
+    assert env["SystemRoot"] == r"C:\Windows"
+    assert env["USERPROFILE"] == r"C:\Users\pony-ci"
+    assert env["PSModulePath"] == (
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
+    )
+    assert env["PSModulePath"] != "user-modules"
+    assert "PONY_API_KEY" not in env
+
+
+def test_gitfile_backlink_accepts_windows_alias_of_same_file(monkeypatch):
+    from pony.tools import subprocess as safe_subprocess
+
+    monkeypatch.setattr(safe_subprocess, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        safe_subprocess,
+        "_git_file_identity",
+        lambda _path: (7, b"same"),
+    )
+
+    assert safe_subprocess._same_git_file(
+        Path(r"C:\\LONGNA~1\\marker"),
+        Path(r"C:\\Long Name\\marker"),
+    )

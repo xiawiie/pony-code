@@ -7,11 +7,42 @@ import os
 from pathlib import Path
 import secrets
 import stat
+from typing import NamedTuple
 
 from .paths import _lexical_absolute
 
 
 _OPEN_SUPPORTS_DIR_FD = os.open in getattr(os, "supports_dir_fd", ())
+
+
+class PrivateDirectoryIdentity(NamedTuple):
+    """Platform-neutral identity for an opened directory."""
+
+    filesystem_id: object
+    file_id: object
+
+
+class PrivateFileSignature(NamedTuple):
+    """Platform-neutral identity, version, and protection facts for a private file."""
+
+    filesystem_id: object
+    file_id: object
+    size: int
+    modified_ns: int
+    changed_ns: int
+    link_count: int
+    protection_identity: object
+    is_private: bool
+
+    @property
+    def version_identity(self):
+        return (
+            self.filesystem_id,
+            self.file_id,
+            self.size,
+            self.modified_ns,
+            self.changed_ns,
+        )
 
 
 class PrivateAtomicWriteError(RuntimeError):
@@ -173,7 +204,7 @@ def private_directory_identity(path):
     descriptor = _open_private_directory(path)
     try:
         opened = os.fstat(descriptor)
-        return opened.st_dev, opened.st_ino
+        return PrivateDirectoryIdentity(opened.st_dev, opened.st_ino)
     finally:
         os.close(descriptor)
 
@@ -187,15 +218,18 @@ def private_file_signature(path, *, trusted_root=None, trusted_root_identity=Non
     )
     try:
         opened = os.fstat(descriptor)
-        return (
-            opened.st_dev,
-            opened.st_ino,
-            opened.st_size,
-            opened.st_mtime_ns,
-            opened.st_ctime_ns,
-            opened.st_nlink,
-            stat.S_IMODE(opened.st_mode),
-            opened.st_uid,
+        mode = stat.S_IMODE(opened.st_mode)
+        owner_id = opened.st_uid
+        current_owner = os.geteuid() if hasattr(os, "geteuid") else owner_id
+        return PrivateFileSignature(
+            filesystem_id=opened.st_dev,
+            file_id=opened.st_ino,
+            size=opened.st_size,
+            modified_ns=opened.st_mtime_ns,
+            changed_ns=opened.st_ctime_ns,
+            link_count=opened.st_nlink,
+            protection_identity=(mode, owner_id),
+            is_private=mode == 0o600 and owner_id == current_owner,
         )
     finally:
         os.close(descriptor)
@@ -1175,3 +1209,118 @@ def harden_private_tree(path):
                 else:
                     raise ValueError("private tree has unsafe entry")
     return root
+
+
+if os.name == "nt":
+    from . import windows_private_files as _windows_private
+
+    def ensure_private_dir(path):
+        return _windows_private.ensure_private_dir(path)
+
+    def ensure_private_file(path, *, trusted_root=None, trusted_root_identity=None):
+        return _windows_private.ensure_private_file(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+
+    def read_private_text(
+        path,
+        *,
+        encoding="utf-8",
+        errors="strict",
+        trusted_root=None,
+        trusted_root_identity=None,
+        max_bytes=None,
+        harden=True,
+        allow_insecure_mode=False,
+    ):
+        return _windows_private.read_private_text(
+            path,
+            encoding=encoding,
+            errors=errors,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_bytes=max_bytes,
+            harden=harden,
+            allow_insecure_mode=allow_insecure_mode,
+        )
+
+    def read_private_bytes(
+        path,
+        *,
+        trusted_root=None,
+        trusted_root_identity=None,
+        max_bytes=None,
+        harden=True,
+        allow_insecure_mode=False,
+    ):
+        return _windows_private.read_private_bytes(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_bytes=max_bytes,
+            harden=harden,
+            allow_insecure_mode=allow_insecure_mode,
+        )
+
+    def private_directory_identity(path):
+        return _windows_private.private_directory_identity(path, PrivateDirectoryIdentity)
+
+    def private_file_signature(path, *, trusted_root=None, trusted_root_identity=None):
+        return _windows_private.private_file_signature(
+            path,
+            PrivateFileSignature,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+
+    def write_private_bytes_atomic(
+        path,
+        data,
+        *,
+        trusted_root,
+        trusted_root_identity,
+        error="private temp changed",
+        fsync_file=None,
+        fsync_parent=None,
+        max_existing_bytes=None,
+        require_absent=False,
+        validate_commit=None,
+    ):
+        try:
+            return _windows_private.write_private_bytes_atomic(
+                path,
+                data,
+                trusted_root=trusted_root,
+                trusted_root_identity=trusted_root_identity,
+                error=error,
+                fsync_file=fsync_file,
+                fsync_parent=fsync_parent,
+                max_existing_bytes=max_existing_bytes,
+                require_absent=require_absent,
+                validate_commit=validate_commit,
+            )
+        except _windows_private.AtomicWriteAmbiguous as exc:
+            raise PrivateAtomicWriteError(str(exc)) from exc
+
+    def append_private_bytes(
+        path,
+        data,
+        *,
+        trusted_root,
+        trusted_root_identity,
+        max_total_bytes=None,
+        expected_identity=None,
+    ):
+        return _windows_private.append_private_bytes(
+            path,
+            data,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_total_bytes=max_total_bytes,
+            expected_identity=expected_identity,
+        )
+
+    def harden_private_tree(path):
+        return _windows_private.harden_private_tree(path)

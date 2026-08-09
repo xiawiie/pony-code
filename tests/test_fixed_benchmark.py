@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from collections import Counter
 
@@ -8,8 +9,10 @@ from benchmarks.evaluation.benchmark_schema import (
     load_benchmark,
     summarize_rows,
 )
+from benchmarks.evaluation import fixed_benchmark
 from benchmarks.evaluation.fixed_benchmark import (
     BenchmarkEvaluator,
+    _run_verifier,
     _verifier_argv,
     run_fixed_benchmark,
     run_harness_regression_v2,
@@ -17,6 +20,23 @@ from benchmarks.evaluation.fixed_benchmark import (
 from pony.agent.observability import RunArtifactError
 from benchmarks.support.fake_provider import FakeModelClient
 
+
+
+@pytest.fixture(autouse=True)
+def windows_contract_python(monkeypatch, contract_python):
+    if os.name != "nt":
+        return
+    original = fixed_benchmark.build_trusted_executables
+
+    def trusted(workspace_root, *, env=None, names=()):
+        result = original(workspace_root, env=env, names=names)
+        if "python" in names:
+            result["python"] = contract_python
+        if "python3" in names:
+            result["python3"] = contract_python
+        return result
+
+    monkeypatch.setattr(fixed_benchmark, "build_trusted_executables", trusted)
 
 def test_load_benchmark_validates_fixed_schema():
     benchmark = load_benchmark(Path("benchmarks/coding_tasks.json"))
@@ -116,6 +136,32 @@ def test_verifier_is_parsed_as_structured_argv_without_shell_operators():
     ]
     with pytest.raises(ValueError, match="shell operators"):
         _verifier_argv("python3 -c 'print(1)' && touch escaped")
+
+
+def test_windows_python3_verifier_uses_trusted_python(monkeypatch, tmp_path):
+    observed = {}
+    result = object()
+    monkeypatch.setattr(
+        fixed_benchmark,
+        "os",
+        type("WindowsOS", (), {"name": "nt", "environ": {}})(),
+    )
+
+    def trusted(_cwd, *, names):
+        observed["names"] = names
+        return {"python": r"C:\Program Files\Python\python.exe"}
+
+    def run(executable, **options):
+        observed.update(executable=executable, options=options)
+        return result
+
+    monkeypatch.setattr(fixed_benchmark, "build_trusted_executables", trusted)
+    monkeypatch.setattr(fixed_benchmark, "run_hardened_command", run)
+
+    assert _run_verifier("python3 -c 'print(1)'", cwd=tmp_path) is result
+    assert observed["names"] == ("python",)
+    assert observed["executable"] == r"C:\Program Files\Python\python.exe"
+    assert observed["options"]["args"] == ["-c", "print(1)"]
 
 
 def test_run_fixed_benchmark_uses_fresh_fixture_copy_and_fresh_run_directory(tmp_path):

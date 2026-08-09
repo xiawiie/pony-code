@@ -16,6 +16,30 @@ from pony.state import file_lock
 
 
 _MAX_TRUST_BYTES = 1024 * 1024
+_BYTES_IDENTITY_PREFIX = "bytes:"
+
+
+def _encode_identity_value(value):
+    if type(value) is int:
+        return value
+    if type(value) is bytes:
+        return _BYTES_IDENTITY_PREFIX + value.hex()
+    raise ValueError("invalid project identity")
+
+
+def _decode_identity_value(value):
+    if type(value) is int:
+        return value
+    if not isinstance(value, str) or not value.startswith(_BYTES_IDENTITY_PREFIX):
+        raise ValueError("invalid trust store")
+    encoded = value.removeprefix(_BYTES_IDENTITY_PREFIX)
+    try:
+        decoded = bytes.fromhex(encoded)
+    except ValueError as exc:
+        raise ValueError("invalid trust store") from exc
+    if decoded.hex() != encoded:
+        raise ValueError("invalid trust store")
+    return decoded
 
 
 class ProjectTrustStore:
@@ -30,6 +54,14 @@ class ProjectTrustStore:
 
     def _read_root_identity(self):
         identity = private_directory_identity(self.root)
+        if os.name == "nt":
+            from pony.security import windows_native
+
+            with windows_native.open_path(self.root, directory=True) as handle:
+                if windows_native.identity(handle) != tuple(identity):
+                    raise ValueError("trust store root changed")
+                windows_native.require_private(handle)
+            return identity
         info = self.root.stat(follow_symlinks=False)
         uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
         if (
@@ -51,8 +83,8 @@ class ProjectTrustStore:
         with file_lock.locked_file(self.lock_path, require_lock=True):
             projects = self._load_projects()
             projects[str(project_root)] = {
-                "device": identity[0],
-                "inode": identity[1],
+                "device": identity.filesystem_id,
+                "inode": identity.file_id,
             }
             if private_directory_identity(project_root) != identity:
                 raise ValueError("project root changed")
@@ -101,7 +133,7 @@ class ProjectTrustStore:
         if (
             not isinstance(payload, dict)
             or set(payload) != {"version", "projects"}
-            or payload["version"] != 1
+            or payload["version"] not in {1, 2}
         ):
             raise ValueError("invalid trust store")
         projects = payload["projects"]
@@ -112,16 +144,27 @@ class ProjectTrustStore:
                 not isinstance(path, str)
                 or not isinstance(record, dict)
                 or set(record) != {"device", "inode"}
-                or type(record["device"]) is not int
-                or type(record["inode"]) is not int
             ):
                 raise ValueError("invalid trust store")
+            if payload["version"] == 1:
+                if type(record["device"]) is not int or type(record["inode"]) is not int:
+                    raise ValueError("invalid trust store")
+                continue
+            record["device"] = _decode_identity_value(record["device"])
+            record["inode"] = _decode_identity_value(record["inode"])
         return projects
 
     def _write_projects(self, projects):
+        encoded_projects = {
+            path: {
+                "device": _encode_identity_value(record["device"]),
+                "inode": _encode_identity_value(record["inode"]),
+            }
+            for path, record in projects.items()
+        }
         rendered = (
             json.dumps(
-                {"version": 1, "projects": projects},
+                {"version": 2, "projects": encoded_projects},
                 ensure_ascii=True,
                 sort_keys=True,
             )

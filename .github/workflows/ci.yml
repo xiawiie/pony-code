@@ -60,6 +60,9 @@ jobs:
         if: matrix.python-version == '3.12'
         run: ./scripts/check.sh
 
+  windows-capabilities:
+    uses: ./.github/workflows/windows-verification.yml
+
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest

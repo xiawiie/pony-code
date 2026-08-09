@@ -5,12 +5,11 @@ import stat
 import pytest
 
 from pony.cli.app import main
+from pony.security.private_files import ensure_private_dir, ensure_private_file
 
 
 def _private_directory(path):
-    path.mkdir(parents=True, exist_ok=True)
-    path.chmod(0o700)
-    return path
+    return ensure_private_dir(path)
 
 
 def _legacy_checkpoint_root(root):
@@ -37,7 +36,7 @@ def _write_legacy_checkpoint(root, checkpoint_id):
         ),
         encoding="utf-8",
     )
-    path.chmod(0o600)
+    ensure_private_file(path)
     return path
 
 
@@ -60,7 +59,7 @@ def _write_legacy_tool_change(root, tool_change_id, *, status="pending"):
         ),
         encoding="utf-8",
     )
-    path.chmod(0o600)
+    ensure_private_file(path)
     return path
 
 
@@ -80,7 +79,26 @@ def test_checkpoints_list_is_zero_mutation_when_store_is_absent(tmp_path, capsys
 
     assert capsys.readouterr().out == ""
     assert not (tmp_path / ".pony").exists()
-    assert tmp_path.stat() == before
+    after = tmp_path.stat()
+    # Windows/Python 3.11 may advance st_atime merely by inspecting the directory.
+    # Compare metadata that would indicate an actual filesystem mutation instead.
+    assert (
+        after.st_mode,
+        after.st_ino,
+        after.st_dev,
+        after.st_nlink,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ) == (
+        before.st_mode,
+        before.st_ino,
+        before.st_dev,
+        before.st_nlink,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
@@ -170,7 +188,7 @@ def test_checkpoints_pending_lists_tool_change_and_invalid_record(tmp_path, caps
     invalid.write_bytes(
         b"{private-invalid-evidence"
     )
-    invalid.chmod(0o600)
+    ensure_private_file(invalid)
     code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"])
     payload = json.loads(capsys.readouterr().out)
     assert code == 0

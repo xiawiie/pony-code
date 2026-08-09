@@ -429,6 +429,7 @@ def test_private_file_open_rejects_parent_swap_before_leaf_open(tmp_path, monkey
     assert stat.S_IMODE((original_parent / target.name).stat().st_mode) == 0o644
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
 def test_anchored_regular_reader_fifo_swap_is_nonblocking(tmp_path, monkeypatch):
     target = tmp_path / "note.txt"
     target.write_bytes(b"safe")

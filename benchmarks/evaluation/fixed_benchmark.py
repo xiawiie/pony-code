@@ -49,11 +49,15 @@ _COMPACTION_SETUP = "compaction"
 
 
 def _git_value(args, fallback="", cwd=None):
+    root = cwd or Path.cwd()
     try:
+        executable = build_trusted_executables(root, names=("git",)).get("git")
+        if executable is None:
+            return fallback
         result = run_hardened_git(
-            "/usr/bin/git",
+            executable,
             args,
-            cwd=cwd or Path.cwd(),
+            cwd=root,
             text=True,
             check=True,
             timeout=5,
@@ -76,13 +80,15 @@ def _verifier_argv(command):
 def _run_verifier(command, *, cwd):
     argv = _verifier_argv(command)
     name = Path(argv[0]).name
-    if name in {"python", "python3"} and Path("/usr/bin/python3").exists():
-        executable = "/usr/bin/python3"
+    if name in {"python", "python3"} and os.name != "nt":
+        executable = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else None
     else:
-        trusted = build_trusted_executables(cwd, names=(name,))
-        executable = trusted.get(name)
-        if executable is None:
-            raise ValueError("trusted verifier executable unavailable")
+        trusted_name = "python" if os.name == "nt" and name == "python3" else name
+        executable = build_trusted_executables(cwd, names=(trusted_name,)).get(
+            trusted_name
+        )
+    if executable is None:
+        raise ValueError("trusted verifier executable unavailable")
     return run_hardened_command(
         executable,
         args=argv[1:],

@@ -13,6 +13,7 @@ from pony.context.skills import (
     discover_project_skills,
 )
 from pony.runtime.options import RuntimeOptions
+from pony.security.private_files import private_directory_identity
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
@@ -38,7 +39,7 @@ def _skill(
 def _catalog(root, **kwargs):
     return discover_project_skills(
         root,
-        expected_root_identity=(root.stat().st_dev, root.stat().st_ino),
+        expected_root_identity=private_directory_identity(root),
         **kwargs,
     )
 

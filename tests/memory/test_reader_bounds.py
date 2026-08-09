@@ -66,9 +66,9 @@ def test_memory_list_reads_each_safe_candidate_exactly_once(tmp_path, monkeypatc
     calls = []
     real_read = block_store_module._read_bounded_regular
 
-    def counting_read(path, limit, *, private=False):
+    def counting_read(path, limit, *, private=False, **kwargs):
         calls.append(Path(path).name)
-        return real_read(path, limit, private=private)
+        return real_read(path, limit, private=private, **kwargs)
 
     monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
 
@@ -122,7 +122,7 @@ def test_memory_aggregate_counts_bytes_read_while_detecting_growth(
             super().__init__("memory file too large")
             self.bytes_read = bytes_read
 
-    def growing_read(_path, limit, *, private=False):
+    def growing_read(_path, limit, *, private=False, **_kwargs):
         calls.append((limit, private))
         raise GrewDuringRead(limit + 1)
 
@@ -169,7 +169,29 @@ def test_memory_index_rejects_leaf_replaced_after_descriptor_open(
             target.write_text("replacement\n", encoding="utf-8")
         return descriptor
 
-    monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
+    if os.name == "nt":
+        real_read = (
+            block_store_module.workspace_files.read_regular_bytes_anchored
+        )
+
+        def reject_replaced_leaf(root, raw_path, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(raw_path).name == target.name:
+                swapped = True
+                target.unlink()
+                target.write_text("replacement\n", encoding="utf-8")
+                raise block_store_module.workspace_files.WorkspaceIOError(
+                    "workspace_entry_unsafe"
+                )
+            return real_read(root, raw_path, **kwargs)
+
+        monkeypatch.setattr(
+            block_store_module.workspace_files,
+            "read_regular_bytes_anchored",
+            reject_replaced_leaf,
+        )
+    else:
+        monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
 
     assert store.list() == []
     assert swapped is True
@@ -206,7 +228,33 @@ def test_retrieval_fails_closed_on_descriptor_swap_then_refreshes_next_query(
             )
         return descriptor
 
-    monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
+    if os.name == "nt":
+        real_read = (
+            block_store_module.workspace_files.read_regular_bytes_anchored
+        )
+
+        def reject_replaced_leaf(root, raw_path, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(raw_path).name == target.name:
+                swapped = True
+                target.unlink()
+                target.write_text(
+                    "---\nname: replacement\ndescription: cache\n---\n"
+                    "replacement body\n",
+                    encoding="utf-8",
+                )
+                raise block_store_module.workspace_files.WorkspaceIOError(
+                    "workspace_entry_unsafe"
+                )
+            return real_read(root, raw_path, **kwargs)
+
+        monkeypatch.setattr(
+            block_store_module.workspace_files,
+            "read_regular_bytes_anchored",
+            reject_replaced_leaf,
+        )
+    else:
+        monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
 
     assert retrieval.search("cache") == []
     hits = retrieval.search("replacement")
@@ -232,8 +280,8 @@ def test_repo_map_uses_descriptor_reader(tmp_path, monkeypatch):
 def test_repo_map_stops_before_aggregate_byte_limit(tmp_path, monkeypatch):
     source_a = "class First: pass\n"
     source_b = "class Second: pass\n"
-    (tmp_path / "a.py").write_text(source_a, encoding="utf-8")
-    (tmp_path / "b.py").write_text(source_b, encoding="utf-8")
+    (tmp_path / "a.py").write_bytes(source_a.encode("utf-8"))
+    (tmp_path / "b.py").write_bytes(source_b.encode("utf-8"))
     monkeypatch.setattr(
         repo_map_module,
         "MAX_TOTAL_BYTES",
@@ -252,8 +300,8 @@ def test_repo_map_refresh_counts_unchanged_index_bytes(tmp_path, monkeypatch):
     source_a = "class First: pass\n"
     source_b = "class Second: pass\n"
     source_c = "class Third: pass\n"
-    (tmp_path / "a.py").write_text(source_a, encoding="utf-8")
-    (tmp_path / "b.py").write_text(source_b, encoding="utf-8")
+    (tmp_path / "a.py").write_bytes(source_a.encode("utf-8"))
+    (tmp_path / "b.py").write_bytes(source_b.encode("utf-8"))
     monkeypatch.setattr(
         repo_map_module,
         "MAX_TOTAL_BYTES",
@@ -298,7 +346,7 @@ def test_repo_map_aggregate_counts_bytes_read_while_detecting_growth(
             super().__init__("repo-map source too large")
             self.bytes_read = bytes_read
 
-    def growing_read(_path, limit):
+    def growing_read(_path, limit, **_kwargs):
         calls.append(limit)
         raise GrewDuringRead(limit + 1)
 
@@ -330,7 +378,24 @@ def test_repo_map_rechecks_size_on_open_descriptor(tmp_path, monkeypatch):
                 handle.write(b"x" * 128)
         return descriptor
 
-    monkeypatch.setattr(repo_map_module.os, "open", grow_after_open)
+    if os.name == "nt":
+        real_read = repo_map_module.workspace_files.read_regular_bytes_anchored
+
+        def grow_before_native_read(root, raw_path, **kwargs):
+            nonlocal opened
+            if not opened and Path(raw_path).name == target.name:
+                opened = True
+                with target.open("ab") as handle:
+                    handle.write(b"x" * 128)
+            return real_read(root, raw_path, **kwargs)
+
+        monkeypatch.setattr(
+            repo_map_module.workspace_files,
+            "read_regular_bytes_anchored",
+            grow_before_native_read,
+        )
+    else:
+        monkeypatch.setattr(repo_map_module.os, "open", grow_after_open)
     repo_map = RepoMap(tmp_path)
 
     repo_map.scan()

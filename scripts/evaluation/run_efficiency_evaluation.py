@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -13,6 +12,10 @@ if str(ROOT) not in sys.path:
 
 from benchmarks.evaluation.efficiency_evaluation import (  # noqa: E402
     run_efficiency_evaluation,
+)
+from pony.security.private_files import (  # noqa: E402
+    private_directory_identity,
+    write_private_bytes_atomic,
 )
 
 
@@ -40,13 +43,15 @@ def build_arg_parser():
 
 
 def _write_private_json(path, payload):
-    path = Path(path)
+    path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(descriptor, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(payload, stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    write_private_bytes_atomic(
+        path,
+        data,
+        trusted_root=path.parent,
+        trusted_root_identity=private_directory_identity(path.parent),
+    )
 
 
 def main(argv=None):

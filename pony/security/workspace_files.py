@@ -30,6 +30,15 @@ def read_regular_bytes_anchored(
     workspace_root, raw_path, *, max_bytes, expected_root_identity=None
 ):
     """Read one relative regular file once through an anchored bounded fd."""
+    if os.name == "nt":
+        from .windows_workspace_files import read_regular_bytes_anchored as windows_read
+
+        return windows_read(
+            workspace_root,
+            raw_path,
+            max_bytes=max_bytes,
+            expected_root_identity=expected_root_identity,
+        )
     parts = _workspace_relative_parts(raw_path)
     limit = int(max_bytes)
     if limit < 0:
@@ -123,6 +132,9 @@ def read_regular_bytes_anchored(
             "exists": True,
             "data": data,
             "mode": stat.S_IMODE(opened.st_mode),
+            "size": opened.st_size,
+            "modified_ns": opened.st_mtime_ns,
+            "changed_ns": opened.st_ctime_ns,
             "sha256": digest.hexdigest(),
             "identity": (opened.st_dev, opened.st_ino),
         }
@@ -141,6 +153,15 @@ def list_directory_names_anchored(
     expected_root_identity=None,
 ):
     """List one directory without following or returning unsafe entries."""
+    if os.name == "nt":
+        from .windows_workspace_files import list_directory_names_anchored as windows_list
+
+        return windows_list(
+            workspace_root,
+            raw_path,
+            max_entries=max_entries,
+            expected_root_identity=expected_root_identity,
+        )
     parts = _workspace_relative_parts(raw_path, allow_root=True)
     limit = int(max_entries)
     if limit < 1:
@@ -187,6 +208,9 @@ def list_directory_names_anchored(
                         "name": entry.name,
                         "mode": current.st_mode,
                         "size": current.st_size,
+                        "modified_ns": current.st_mtime_ns,
+                        "changed_ns": current.st_ctime_ns,
+                        "identity": _workspace_inode_identity(current),
                     }
                 )
         _require_current_workspace_directory(
@@ -201,6 +225,7 @@ def list_directory_names_anchored(
             "entries": tuple(entries),
             "unsafe_count": unsafe_count,
             "scanned": scanned,
+            "identity": opened_identity,
         }
     finally:
         os.close(descriptor)
@@ -442,6 +467,21 @@ def write_regular_bytes_anchored_atomic(
     fsync_parent=None,
 ):
     """CAS-check and atomically replace one workspace regular file."""
+    if os.name == "nt":
+        from .windows_workspace_files import (
+            write_regular_bytes_anchored_atomic as windows_write,
+        )
+
+        return windows_write(
+            workspace_root,
+            raw_path,
+            data,
+            max_bytes=max_bytes,
+            expected_sha256=expected_sha256,
+            expected_root_identity=expected_root_identity,
+            fsync_file=fsync_file,
+            fsync_parent=fsync_parent,
+        )
     request = _workspace_write_request(
         workspace_root,
         raw_path,
@@ -486,6 +526,9 @@ def _missing_workspace_file():
         "exists": False,
         "data": None,
         "mode": None,
+        "size": None,
+        "modified_ns": None,
+        "changed_ns": None,
         "sha256": "",
         "identity": None,
     }
@@ -500,6 +543,9 @@ def _workspace_file_limit_error(value):
         "exists": True,
         "data": None,
         "mode": stat.S_IMODE(value.st_mode),
+        "size": value.st_size,
+        "modified_ns": value.st_mtime_ns,
+        "changed_ns": value.st_ctime_ns,
         "sha256": "",
         "identity": _workspace_inode_identity(value),
     }

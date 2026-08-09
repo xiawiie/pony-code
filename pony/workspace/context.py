@@ -15,6 +15,7 @@ from pathlib import Path
 from pony.security import private_files as private_files
 from pony.security import paths as security_paths
 from pony.security import redaction as redaction
+from pony.security import workspace_files as workspace_files
 from pony.tools.subprocess import (
     build_trusted_executables,
     discover_lexical_repo_root,
@@ -85,43 +86,17 @@ def _safe_index_directory(root, candidate):
     return candidate if mode is not None and stat.S_ISDIR(mode) else None
 
 
-def _read_bounded_regular(path, limit):
-    path = Path(os.path.abspath(os.fspath(path)))
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    parent_descriptor = private_files._open_private_directory(path.parent)
-    try:
-        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
-        current = os.stat(
-            path.name,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
-    finally:
-        os.close(parent_descriptor)
-    try:
-        opened = os.fstat(descriptor)
-        path_current = os.stat(path, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
-            or (opened.st_dev, opened.st_ino)
-            != (path_current.st_dev, path_current.st_ino)
-            or current.st_nlink != 1
-            or path_current.st_nlink != 1
-            or opened.st_size > limit
-        ):
-            raise ValueError("unsafe automatic workspace file")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = -1
-            data = handle.read(limit + 1)
-        if len(data) > limit:
-            raise ValueError("automatic workspace file is too large")
-        return data
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+def _read_bounded_workspace_file(root, path, limit, root_identity):
+    relative = Path(path).relative_to(root)
+    result = workspace_files.read_regular_bytes_anchored(
+        root,
+        relative,
+        max_bytes=limit,
+        expected_root_identity=root_identity,
+    )
+    if not result["exists"]:
+        raise FileNotFoundError(path)
+    return result["data"]
 
 
 def now():
@@ -223,12 +198,12 @@ class WorkspaceContext:
             repo_root = reported_root if reported_root == lexical_root else lexical_root
         docs = {}
         docs_bytes = 0
+        root_identity = private_files.private_directory_identity(repo_root)
 
-        def add_doc(key, path, snippet_limit):
+        def add_doc(key, data, snippet_limit):
             nonlocal docs_bytes
             if len(docs) >= MAX_BOOTSTRAP_FILES:
                 return
-            data = _read_bounded_regular(path, MAX_BOOTSTRAP_FILE_BYTES)
             if docs_bytes + len(data) > MAX_BOOTSTRAP_TOTAL_BYTES:
                 return
             text = data.decode("utf-8", errors="replace")
@@ -247,7 +222,13 @@ class WorkspaceContext:
                 if key in docs:
                     continue
                 try:
-                    add_doc(key, safe_path, 1200)
+                    data = _read_bounded_workspace_file(
+                        repo_root,
+                        safe_path,
+                        MAX_BOOTSTRAP_FILE_BYTES,
+                        root_identity,
+                    )
+                    add_doc(key, data, 1200)
                 except (OSError, ValueError):
                     continue
 
@@ -258,7 +239,13 @@ class WorkspaceContext:
             global_agents_md = security_paths.require_regular_no_symlink(
                 global_agents_md
             )
-            add_doc("<global>/AGENTS.md", global_agents_md, 1500)
+            data = private_files.read_private_bytes(
+                global_agents_md,
+                max_bytes=MAX_BOOTSTRAP_FILE_BYTES,
+                harden=False,
+                allow_insecure_mode=True,
+            )
+            add_doc("<global>/AGENTS.md", data, 1500)
         except (OSError, RuntimeError, ValueError):
             pass
 

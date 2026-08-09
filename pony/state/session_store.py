@@ -24,6 +24,7 @@ from pony.agent.model_capabilities import estimate_text_tokens
 from pony.security.private_files import (
     append_private_bytes,
     ensure_private_dir,
+    PrivateAtomicWriteError,
     ensure_private_file,
     harden_private_tree,
     private_file_signature,
@@ -538,7 +539,7 @@ def _harden_migration_source(path, *, root, root_identity):
         trusted_root=root,
         trusted_root_identity=root_identity,
     )
-    if signature[6] != 0o600:
+    if not signature.is_private:
         ensure_private_file(
             path,
             trusted_root=root,
@@ -564,6 +565,124 @@ def _write_or_verify_backup(path, raw, *, root, root_identity, max_bytes):
         error="legacy session backup changed",
         expected_bytes=raw,
     )
+
+
+def _signature_identity(signature):
+    return signature.filesystem_id, signature.file_id
+
+
+def _promote_session_candidate(
+    candidate,
+    destination,
+    candidate_signature,
+    destination_signature,
+    *,
+    root,
+    root_identity,
+):
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        try:
+            windows_private_files.promote_private_file(
+                candidate,
+                destination,
+                trusted_root=root,
+                trusted_root_identity=root_identity,
+                expected_source_identity=_signature_identity(candidate_signature),
+                expected_destination_identity=(
+                    None
+                    if destination_signature is None
+                    else _signature_identity(destination_signature)
+                ),
+            )
+        except windows_private_files.AtomicWriteAmbiguous as exc:
+            raise PrivateAtomicWriteError(str(exc)) from exc
+        return
+    parent_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        current = os.stat(
+            candidate.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+                current.st_ctime_ns,
+            )
+            != candidate_signature.version_identity
+        ):
+            raise SessionFormatError("session migration candidate changed")
+        try:
+            destination_current = os.stat(
+                destination.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            if destination_signature is not None:
+                raise SessionFormatError("session changed during migration") from None
+        else:
+            if destination_signature is None or (
+                destination_current.st_dev,
+                destination_current.st_ino,
+                destination_current.st_size,
+                destination_current.st_mtime_ns,
+                destination_current.st_ctime_ns,
+            ) != destination_signature.version_identity:
+                raise SessionFormatError("session changed during migration")
+        os.replace(
+            candidate.name,
+            destination.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _remove_migrated_session(path, signature, *, root, root_identity):
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        windows_private_files.remove_private_file(
+            path,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+            expected_identity=_signature_identity(signature),
+        )
+        return
+    parent_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        current = os.stat(
+            path.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+                current.st_ctime_ns,
+            )
+            != signature.version_identity
+        ):
+            raise SessionFormatError("session changed during migration")
+        os.unlink(path.name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
 
 
 def worktree_identity(workspace_root):
@@ -1612,7 +1731,7 @@ class SessionStore:
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
         )
-        if signature[:5] != final_signature[:5]:
+        if signature.version_identity != final_signature.version_identity:
             raise SessionFormatError("session tree changed while reading")
         self._tree_cache[session_id] = (final_signature, tree)
         return tree
@@ -1745,7 +1864,11 @@ class SessionStore:
         _validate_projection(extended.projection, session_id)
         rendered = b"".join(_serialize_line(entry) for entry in entries)
         cached = self._tree_cache.get(session_id)
-        expected_identity = cached[0][:2] if cached is not None else None
+        expected_identity = (
+            (cached[0].filesystem_id, cached[0].file_id)
+            if cached is not None
+            else None
+        )
         path = append_private_bytes(
             self.path(session_id),
             rendered,
@@ -2740,34 +2863,20 @@ class SessionStore:
         )
         if hashlib.sha256(final_source).digest() != source_digest:
             raise SessionFormatError("session changed during migration")
-        parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            if private_file_signature(
-                candidate_path,
-                trusted_root=self.root,
-                trusted_root_identity=self._root_identity,
-            ) != candidate_signature:
-                raise SessionFormatError("session migration candidate changed")
-            current = os.stat(
-                candidate_path.name,
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or current.st_nlink != 1
-                or (current.st_dev, current.st_ino) != candidate_signature[:2]
-            ):
-                raise SessionFormatError("session migration candidate changed")
-            os.replace(
-                candidate_path.name,
-                source.name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+        if private_file_signature(
+            candidate_path,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        ) != candidate_signature:
+            raise SessionFormatError("session migration candidate changed")
+        _promote_session_candidate(
+            candidate_path,
+            source,
+            candidate_signature,
+            source_signature,
+            root=self.root,
+            root_identity=self._root_identity,
+        )
         self._tree_cache.pop(session_id, None)
         return source
 
@@ -2874,49 +2983,39 @@ class SessionStore:
         candidate_tree = _parse_jsonl(candidate_raw, session_id)
         if not session_projections_equal(candidate_tree.projection, migrated):
             raise SessionFormatError("session migration projection mismatch")
-        parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        final_source, _ = _stable_private_read(
+            legacy,
+            root=self.root,
+            root_identity=self._root_identity,
+            max_bytes=MAX_SESSION_ENTRY_BYTES,
+            error="session changed during migration",
+            expected_signature=source_signature,
+        )
+        if hashlib.sha256(final_source).digest() != source_digest:
+            raise SessionFormatError("session changed during migration")
+        if private_file_signature(
+            candidate_path,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        ) != candidate_signature:
+            raise SessionFormatError("session migration candidate changed")
+        _promote_session_candidate(
+            candidate_path,
+            canonical,
+            candidate_signature,
+            None,
+            root=self.root,
+            root_identity=self._root_identity,
+        )
         try:
-            final_source, _ = _stable_private_read(
+            _remove_migrated_session(
                 legacy,
+                source_signature,
                 root=self.root,
                 root_identity=self._root_identity,
-                max_bytes=MAX_SESSION_ENTRY_BYTES,
-                error="session changed during migration",
-                expected_signature=source_signature,
             )
-            if hashlib.sha256(final_source).digest() != source_digest:
-                raise SessionFormatError("session changed during migration")
-            if private_file_signature(
-                candidate_path,
-                trusted_root=self.root,
-                trusted_root_identity=self._root_identity,
-            ) != candidate_signature:
-                raise SessionFormatError("session migration candidate changed")
-            current = os.stat(
-                candidate_path.name,
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or current.st_nlink != 1
-                or (current.st_dev, current.st_ino) != candidate_signature[:2]
-            ):
-                raise SessionFormatError("session migration candidate changed")
-            os.replace(
-                candidate_path.name,
-                canonical.name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            os.fsync(parent_fd)
-            try:
-                os.unlink(legacy.name, dir_fd=parent_fd)
-                os.fsync(parent_fd)
-            except FileNotFoundError:
-                pass
-        finally:
-            os.close(parent_fd)
+        except FileNotFoundError:
+            pass
         signature = private_file_signature(
             canonical,
             trusted_root=self.root,
@@ -2936,14 +3035,11 @@ class SessionStore:
                         trusted_root=self.root,
                         trusted_root_identity=self._root_identity,
                     )
-                    expected_uid = (
-                        os.geteuid() if hasattr(os, "geteuid") else signature[7]
-                    )
-                    if signature[6] != 0o600 or signature[7] != expected_uid:
+                    if not signature.is_private:
                         continue
                     session_id = path.name.removesuffix(".jsonl").removesuffix(".json")
                     _session_id(session_id)
-                    files.append((signature[3], session_id))
+                    files.append((signature.modified_ns, session_id))
                 except (OSError, ValueError):
                     continue
         files.sort()

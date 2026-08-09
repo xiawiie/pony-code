@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pony.security.private_files import private_file_signature
 from scripts.evaluation import evaluate
 
 
@@ -404,7 +405,10 @@ def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     ]
     assert not any(argv[-1] in dict(evaluate.PERF_RUNNERS) for argv, _cwd in calls)
     assert payload["artifact_path"] == "20260712T040000000000Z-core-functional.json"
-    assert (output / payload["artifact_path"]).is_file()
+    artifact = output / payload["artifact_path"]
+    assert artifact.is_file()
+    assert private_file_signature(artifact).is_private
+    assert private_file_signature(artifact.with_suffix(".md")).is_private
     assert not (repo / "artifacts").exists()
 
 

@@ -34,8 +34,8 @@ G0-G6 与 G9 是 package 发布 mandatory gate。G8 需要用户拥有的账号�
 
 | 维度 | 1.0 声明 | 发布证据 |
 | --- | --- | --- |
-| Python | 3.11、3.12 | Linux 全量测试；macOS 3.12 安全与耐久性专项 |
-| OS | macOS、Linux | CI；Windows 不受支持且安全原语缺失时 fail closed |
+| Python | 3.11、3.12 | Linux 全量测试；macOS 3.12 安全与耐久性专项；Windows 3.11/3.12 完整门禁 |
+| OS | macOS、Linux、Windows 11 x64 | CI 与发布门禁；Windows 原生边界见 [ADR-0050](adr/0050-windows-native-support.md) |
 | Anthropic Messages | 实现支持 | 离线 wire contract；每个账号/model 的 G8 单独验收 |
 | OpenAI Responses | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
 | OpenAI Chat Completions | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
@@ -44,6 +44,175 @@ G0-G6 与 G9 是 package 发布 mandatory gate。G8 需要用户拥有的账号�
 
 “实现支持”不代表所有网关兼容。发布或部署结论必须写明 exact HEAD、Provider、protocol、endpoint 类别、model 和
 G8 是否执行；不得把某一组合的 live 结果外推到其他组合。
+
+### Windows 支持晋级门禁
+
+CI 的 Windows 3.11/3.12 capability job 分开运行 symbol probe 与安全语义 probe。后者在 hosted Windows runner 上验证
+`NtCreateFile` root-handle-relative 逐层打开、reparse point 打开后识别、稳定 File ID、hardlink count；DACL probe 验证文件和
+目录的当前用户 owner、单一无继承 full-control ACE、protected DACL、handle/path 双重复验，以及 owner/DACL 漂移拒绝；
+raw atomic-write capability probe 仍验证同目录 durable temp、失败时保留旧内容以及 `ReplaceFileW` 的系统语义，但 production
+private-state migration promotion 与 workspace atomic writer 的发布权威已改为持续持有并复验 source/temp handle，再通过目标
+parent handle 执行 `NtSetInformationFile(FileRenameInformation)`；发布后复验 File ID、DACL、大小与 digest，失败时从已验证的
+restore handle 回滚，不依赖 `MoveFileExW`/`ReplaceFileW` 路径调用决定提交对象。production private-state probe 通过公共 API
+验证 private directory、create/read/append/replace、post-install validation rollback 与 tree hardening；production
+workspace-file probe 验证 root-handle-relative create/read/list、bounded I/O、CAS、hardlink/reparse 拒绝、完整 parent chain
+deny-delete、replace rollback、commit ambiguity rollback 与 long path；production `LockFileEx` probe 验证跨进程 timeout、
+释放后重获、同线程重入拒绝、hardlink 拒绝、`require_existing` 零写，以及持锁期间禁止删除 leaf/重命名 parent；Job Object
+probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在根进程正常退出、timeout、output-limit 与关闭
+Job 后终止完整 descendant tree。
+Session、migration、memory 与 Git metadata 均有 Windows production-backend probe。Windows 11 x64 已进入公开支持范围；
+这不降低门禁，反而要求每个发布候选在同一 exact HEAD 重建以下证据，否则该候选不得发布：
+
+- Windows 11 x64 的 Python 3.11、3.12 全量 pytest、Ruff、build、distribution verifier 与 clean-install smoke 通过；
+- root-relative traversal、reparse point/junction、hardlink、ADS、DACL/File ID 漂移和 atomic-write fault injection 通过；
+- `LockFileEx` 互斥/timeout/identity race 与 Job Object timeout/output-limit/完整进程树清理通过；
+- PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 80/111 列拒绝与 112/120 列完整大版回归通过；
+- Windows 专项不是由 WSL、Git Bash 或大面积 `skipif Windows` 获得绿色结果。
+
+普通 CI 与 `v*` Tag 发布共用 `.github/workflows/windows-verification.yml` 的 Windows 3.11/3.12 标准用户矩阵；
+`publish` job 必须等待该矩阵完成。完整 Windows pytest 通过显式 skip policy 拒绝未知 skip/xfail，并以 `-ra` 和
+`--durations=50` 输出按原因统计与慢测试证据；末尾的 `windows_skip_audit=<JSON>` 是 schema v1 的机器可读汇总，包含
+每个原因的实际数量、未知原因和总审核结论。数量只用于比较同一 exact candidate SHA 的 3.11/3.12 clean-host 结果，
+不得把 dirty worktree 或不受信宿主的本地数量冻结成发布阈值。Windows classifier 与支持声明不替代证据；每个候选
+exact tag 仍须以实际结果和 Windows Terminal 实机验收完成 Phase 5。
+
+Windows workflow 在切换到受控标准用户前，先从 `uv.lock` 导出仅运行时依赖，并通过隔离 primer 环境把对应归档写入共享
+uv cache；标准用户只在取得该 cache 的显式 ACL 后以 `UV_OFFLINE=1` 执行 distribution clean-install smoke。普通
+`uv sync` 只证明开发环境可安装，不能替代“锁定依赖已预热且离线隔离安装成功”的发布证据。
+
+#### 2026-08-08 Windows 11 x64 本地实施证据
+
+以下结果来自 `467dc7bd1df91b528050e0013fb708b234f8a0da` 上的未提交实现工作区，只用于说明当前分支进度；由于 worktree
+不是 clean exact HEAD、Python 3.11 未运行且 G4 仍被宿主可执行文件信任门禁阻塞，因此不构成发布证据，也不改变 Windows
+“尚未支持”的状态：
+
+- Windows 11 x64、Python 3.12.13：完整 `pytest -q --maxfail=20 -ra` 为 `2575 passed, 150 skipped`；安全聚焦组为
+  `175 passed, 23 skipped`。聚焦 skip 对应当前用户没有 symbolic-link privilege 以及 FIFO/POSIX mode 等明确平台条件，不能
+  将其替代为放宽产品安全策略；完整 skip 集仍须在 clean-host CI 中复核。
+- `uv lock --check`、`uv run --frozen ruff check .` 与 `git diff --check` 通过。
+- 13 个 Windows probe 通过：atomic-write capability、capabilities、DACL、production file lock、file semantics、Git metadata、
+  Job Object、lock semantics、memory、migration、private files、process、workspace files。workspace probe 已覆盖
+  `commit_ambiguity_rollback`、`rollback`、long path、hardlink rejection 与 root rename denial；private probe 已覆盖 create、
+  replace、rollback 与 private DACL。
+- `probe_shell_backend.py` 在本机正确 fail closed：`C:\Git\cmd\git.exe` 及父目录对当前用户可写，因而不能作为 trusted
+  executable。产品策略不得为本机环境放宽；正式 probe 需要受保护目录中的 machine-scope Git（通常位于
+  `C:\Program Files\Git`）。
+- `core-functional` 中 `core.memory-quality-fake` 通过，`core.fixed-benchmark` 因
+  `trusted verifier executable unavailable` 失败。本机 `.venv`、用户级 Python 和 PATH 中其他 Python 候选的父目录均不满足
+  immutable executable directory 合同；这属于 clean-host 环境门禁，不能通过信任用户可写 Python 修复。
+- 仓库外 `%TEMP%` 目录的完全离线 `uv build` 成功，生成 `pony_code-1.0.0.tar.gz` 与
+  `pony_code-1.0.0-py3-none-any.whl`；`verify_distribution.py --install-smoke --offline-bundle-smoke` 通过。
+- PowerShell 与原生 `cmd.exe` 的 `pony --help` 均退出 0；`pony status` 退出 0 并在不可信 Git 环境下将 Git 状态标记为
+  unavailable；`prompt_toolkit` 和 `pony.tui.app` 原生导入通过。Windows Terminal 的实际交互、40/80/120 列视觉回归仍待
+  clean-host Phase 5 验收。
+
+在同日 `cde4029f9fb2f8fa8c989e0f7210c0f5589e3bdc` 的 dirty worktree 上，Python 3.12 全量测试被拆成四个互斥 shard，
+合计 `2709 passed, 152 skipped`（共收集 2861 项）。其中 151 个 skip 属于审核集合，另一个
+`trusted git is unavailable` 被 skip policy 正确拒绝；这与本机用户可写 Git 安装的 fail-closed 结果一致。最慢 shard
+耗时 29 分 19 秒，说明正式 workflow 还必须观察 hosted runner 的超时裕量。该诊断不是 clean exact HEAD、没有 Python
+3.11 对照，也未运行完整 `scripts/check.sh`，因此不是发布通过证据，不应据此增加 Windows classifier。
+
+同一 HEAD 的首次 clean-host CI 在 Python 3.11/3.12 上各暴露 18 个相同失败：reparse point 已正确 fail closed，但
+private-state、file-lock、Git 和 migration 收到了 Win32 底层文本，而不是既有稳定领域错误。随后的候选修复把该事实改为
+专用异常并在领域边界归一化；本机对应七个测试文件为 `271 passed, 55 skipped`，13 个非 shell Windows production probe
+全部通过，skip audit 为 `approved=true`、`unknown_reasons=[]`，其中 junction fixture 明确证明 reparse point 在遍历前被
+拒绝。这些结果只证明候选修复方向，仍须在提交后的
+Windows 3.11/3.12 capability-rich clean host 上确认原 18 项归零，并让完整门禁继续执行 evaluation、build、distribution、
+clean-install 和 CLI tail。
+
+同一 dirty 候选继续执行远端未到达的门禁后半段：wheel/sdist 构建、精确 distribution 校验、install smoke、offline bundle
+smoke、PowerShell/cmd `pony --help`、`pony status` 与 TUI import 均通过。core-functional 的 memory-quality fake 场景通过，
+fixed benchmark 因本机 PATH 中没有满足 executable trust 的 Python 而 fail closed；shell probe 同样因本机 Git 安装目录可写而
+拒绝，固定系统 PowerShell 本身可被信任。不得为消除这两个宿主阻断降低 executable trust；正式结论仍等待 standard-user CI
+wrapper 提供受保护的 machine-scope Python/Git 并在 clean exact HEAD 上从头执行。
+
+同一 dirty 候选的 TUI 与 CLI 自动合同组为 `273 passed, 6 skipped`，覆盖 responsive app、Markdown、安全 renderer、
+runtime hook、parser、commands、error envelope、output、diagnostics、migration、Session 与 memory CLI；它排除了当前实现的
+自动化交互回归，但仍不能替代下述真实 Windows Terminal Phase 5。
+
+#### 2026-08-09 Windows Terminal 阻断项修复证据
+
+以下结果以 `6898d7762ccc0a4a5fed95a6cfd52466f133cc28` 为修改前基线、在 dirty release worktree 和仓库外 disposable
+wheel 环境中取得，只证明阻断项已复现并修复；它不是 clean exact candidate SHA，也不改变 Windows“尚未支持”的状态：
+
+- 根因不是 DeepSeek 或网络：Windows Console 可把非 BMP 字符的高、低 surrogate 分到两个 input batch；
+  prompt-toolkit 3.0.52/3.0.53 会把它们作为两个字符放入 Buffer。旧实现随后在首次 Session 严格 UTF-8 append 时失败，
+  因而呈现为输入框 `??`、空 Session、无 Run、无 HTTP 和通用 `agent runtime failed`。
+- TUI 现于实时 Buffer insertion 边界合并跨事件 surrogate pair，孤立 surrogate 在提交前变为 `U+FFFD`，并在
+  `session.prompt()` 返回边界保留第二层规范化。原生 `WriteConsoleInputW(KEY_EVENT_RECORD)` 把高、低 surrogate 作为两个
+  独立记录注入后，输入框、用户块、Provider request 与 durable Session 均保留一个真实马 emoji。
+- 启动欢迎页改由首个 PromptSession live render 持有；startup 期间列数变化会使用 prompt-toolkit 原生 clear/invalidate
+  清理 Windows Terminal 旧宽行重排。该阶段曾验证 112 列以下隐藏 Logo，但这一视觉降级随后被用户明确否决，不属于现行
+  产品合同；现行 TUI 必须显示完整大版，启动宽度不足时直接拒绝进入交互界面。
+- 从最新 dirty wheel 完成一次 loopback Ollama-contract E2E：低对比用户块、瞬态 `Working…`、标题、列表、行内代码、代码块和
+  表格均可读；HTTP 为 `/api/chat`，Run 为 `completed/final_answer_returned`，trace 为 1 model request、0 retry。
+- 在用户明确授权后，以显式 `openai-chat`、标准 HTTPS endpoint 和 `deepseek-v4-flash` 完成一次收费 G8；resolution 为
+  explicit、probe 为 0、transport attempt 为 1、retry 为 0，返回指定 Markdown、中文与真实马 emoji。该结果只适用于本次
+  账号/endpoint/model 组合，不能外推 Anthropic-compatible endpoint 或其他 model。
+- 最新 dirty worktree 在 Python 3.12 的 `tests` 加 live-E2E assertion 全量为 `2754 passed, 152 skipped`，耗时
+  `0:49:52`；仓库外官方 Python 3.11.9 用户态解释器的同范围重跑也是 `2754 passed, 152 skipped`，耗时 `1:01:18`；
+  CLI 边界与 TUI 专项为 `267 passed, 4 skipped`。最新 sdist/wheel 的精确归档、clean-install 与 offline-bundle smoke 通过；
+  core-functional 仍只在 `core.fixed-benchmark` 以 `trusted verifier executable unavailable` 失败。这些数字仍须在最终 clean
+  exact HEAD 由 `scripts/check.sh` 从头复现；当前本机缺受保护 machine-scope Git/Python，不得为通过该宿主前置而放宽
+  executable trust。
+- 随后在用户授权的可见 UAC 下安装了厂商签名的 machine-scope Git 2.55.0.3、Python 3.11.9/3.12.10，并通过新增的
+  `scripts/windows/install_host_tools.ps1` 把 WinGet ripgrep 15.2.0 固定哈希复制到 protected Program Files 工具根。
+  独立审计确认 `rg.exe` 是非 reparse 的 single-link 普通文件、SHA-256 匹配、owner 为 Administrators、DACL 仅允许
+  SYSTEM/Administrators 写和 Users 读执行；标准用户 production discovery 与 `probe_shell_backend.py` 全项通过。该结果仍来自
+  dirty candidate，只关闭宿主前置，不替代提交后的 clean exact-SHA 完整门禁。
+
+#### Windows Terminal Phase 5 实机验收
+
+此项是候选版本的人工发布门禁。TUI import、单元测试或截图不能替代本清单；任何必做项未执行、证据缺失或结果不一致，
+Phase 5 均为 `FAIL`，该 Windows 候选不得发布。验收必须使用与自动门禁相同的 clean exact candidate SHA，不得从 WSL、
+Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
+
+准备条件：
+
+- 使用 Windows 11 x64 标准用户，以及系统受保护目录中的 machine-scope Python、Git 和 `rg`；先确认同一 SHA 的 Windows
+  3.11/3.12 自动门禁均通过，并安装该 SHA 生成且已由 distribution verifier 验证的 wheel；
+- 在一次性、受信、已完成 `pony init` 的测试仓库中操作；记录 Windows build、Windows Terminal 版本、终端 profile、字体、
+  Python 版本、`pony --version`、exact candidate SHA 和显示缩放比例；
+- 动态 Assistant 渲染步骤会发出一次最小 Provider 请求，必须取得当轮费用/网络授权并记录 Provider、protocol、endpoint
+  类别与 model；未获授权时标记“未执行”，Phase 5 不得判为 `PASS`。
+
+按以下顺序执行并逐项记录 `PASS`/`FAIL`、观察值和证据文件：
+
+1. 分别从 Windows Terminal 的 PowerShell 与 Command Prompt profile 直接运行 `pony --help`、`pony` 和 `pony repl`；两种
+   交互入口必须进入同一 TUI，`/exit` 后终端输入、光标和按键处理恢复正常。不得只验证 CLI 帮助或 import。
+2. 在 PowerShell profile 中分别以 80、111、112、120 列重新启动 `pony` 并记录终端实际列数。80/111 列必须以 usage
+   error 明确要求至少 112 列，且不能进入纯文本 REPL 或无 Logo TUI；112/120 列必须显示同一个完整尺寸马形 Logo 与块状
+   `PONY CODE` 字标，不得出现 medium、micro、缩放、单行或隐藏版。可用宽度下不得裁切、重叠、残留重绘或水平滚动；
+   footer 不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
+3. 在 120 列会话中输入 `/`，确认 completion 菜单最多五项；输入七行文本，确认输入框最多增长六行且光标/滚动正常；
+   输入中文、英文和 emoji，确认用户消息为无角色标签的低对比块。使用已授权 Provider 发送固定最小请求，要求返回标题、
+   列表、行内代码、代码块和表格，确认 Markdown 降级可读、控制字符不可见且 `Working…` 在正式输出前清除。
+4. 会话空闲时按一次 `Ctrl+C` 清空非空输入，再按两次 `Ctrl+C` 验证退出提示与退出；重新进入后以 `Ctrl+D` 退出。
+   退出后键盘、光标和终端模式必须恢复，不能遗留输入 hook。
+5. 分别运行 `pony --no-color` 和设置 `NO_COLOR=1` 后运行 `pony`，确认布局与文本仍完整且没有 ANSI 颜色；清除环境变量后
+   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认完整大版不会切换为无 Logo 状态，且没有旧
+   footer、菜单或消息残影。
+
+验收记录至少包含以下字段，并作为候选 tag 的发布附件或 CI 关联 artifact 保存；截图必须先检查不含 Key、完整 API Base、
+私有 prompt、绝对私有路径或 Session 标识：
+
+```text
+exact candidate SHA:
+Windows build / Windows Terminal version:
+Python / pony / profile / font / scaling:
+PowerShell launch: PASS 或 FAIL（证据）
+Command Prompt launch: PASS 或 FAIL（证据）
+80/111 列拒绝、112/120 列完整大版与运行中缩放: PASS 或 FAIL（证据）
+输入、completion、Markdown、中文与 emoji: PASS 或 FAIL（证据）
+Ctrl+C / Ctrl+D / hook 恢复: PASS 或 FAIL（证据）
+--no-color / NO_COLOR: PASS 或 FAIL（证据）
+Provider / protocol / endpoint 类别 / model / G8 授权与结果:
+Phase 5 结论：PASS 或 FAIL
+验收人 / 时间 / artifact 链接:
+```
+
+跨机器或跨 OS 复制 active Session 的支持声明还必须通过 [ADR-0050](adr/0050-windows-native-support.md) 定义的 logical identity/physical binding 格式迁移；
+否则只声明 Windows 本机新建与恢复 Session。
 
 ## 聚焦测试
 
@@ -106,11 +275,12 @@ uv run pytest -q \
   tests/tui
 ```
 
-必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
-fallback、`NO_COLOR`、40/80/120 列响应式马形 `PONY CODE` 欢迎页与精简 footer、五项 slash completion、
-六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
-欢迎页测试必须同时锁定马形 Logo、块状字标、版本、模型/permission 摘要、宽度上限和 compact 变体；只有用户明确要求
-修改设计时才可更新这些断言，不能把门禁弱化为“包含任意 PONY 文本”。
+必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、非 TTY fallback、交互 TTY 的
+`TERM=dumb`/80/111 列稳定拒绝、`NO_COLOR`、112/120 列完整尺寸马形 `PONY CODE` 欢迎页与精简 footer、五项 slash
+completion、六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
+欢迎页测试必须同时锁定 112 列最低宽度、完整尺寸马形 Logo、块状字标、版本、模型/permission 摘要和可用宽度上限，并证明
+窄交互 TTY 不会进入无 Logo fallback，运行中缩窄也不会隐藏 Logo；只有用户明确要求修改设计时才可更新这些断言，不能把
+门禁弱化为“包含任意 PONY 文本”。
 
 Input queue 测试必须同时覆盖 plain/TUI：单 worker FIFO、五条 pending 上限、满队列拒绝、`/queue clear` 零 Session
 写、queued prompt 只在 dequeue 后按序进入 Canonical Messages、approval answer 由 UI 接收且不入队，以及 `/exit` 等待
@@ -390,7 +560,8 @@ HEAD 从头重跑门禁。
 ## Tag 发布
 
 `.github/workflows/release.yml` 只响应 `v*` tag，并要求 tag 精确等于 `v<project.version>`。工作流在全新 runner 中重复
-静态、功能、评估、临时构建和 clean-install 门禁；随后有意重建固定 `dist/`、再次验证实际待发布归档，再使用
+静态、功能、评估、临时构建和 clean-install 门禁；同时复用与普通 CI 相同的 Windows 3.11/3.12 标准用户完整门禁与
+原生攻击 probe。只有 Windows 矩阵全部通过后，`publish` job 才有意重建固定 `dist/`、再次验证实际待发布归档，再使用
 GitHub OIDC / PyPI Trusted Publishing 上传 wheel 与 sdist，生成 SHA-256 文件并创建 GitHub Release。
 
 发布前外部一次性配置：

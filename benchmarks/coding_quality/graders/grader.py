@@ -135,7 +135,11 @@ def _hardening_env_update():
                 raise AssertionError("invalid assignments must be rejected")
             assert path.read_bytes() == original
         update_env(path, ["MODEL=new", "REGION=us"])
-        assert path.read_bytes() == b"# provider\nMODEL=new\nREGION=us\n"
+        assert path.read_text(encoding="utf-8").splitlines() == [
+            "# provider",
+            "MODEL=new",
+            "REGION=us",
+        ]
 
 
 GRADER_CASES = {

@@ -28,10 +28,18 @@ from pony.providers.factory import build_transport_client  # noqa: E402
 from pony.providers.probe import resolve_provider_client  # noqa: E402
 from pony.runtime.application import Pony  # noqa: E402
 from pony.runtime.options import RuntimeOptions  # noqa: E402
+from pony.security.private_files import (  # noqa: E402
+    private_directory_identity,
+    write_private_bytes_atomic,
+)
 from pony.state.run_store import RunStore  # noqa: E402
 from pony.state.session_store import SessionStore  # noqa: E402
 from pony.tools.registry import legal_tool_names  # noqa: E402
-from pony.tools.subprocess import run_hardened_command, run_hardened_git  # noqa: E402
+from pony.tools.subprocess import (  # noqa: E402
+    build_trusted_executables,
+    run_hardened_command,
+    run_hardened_git,
+)
 from pony.workspace.context import WorkspaceContext  # noqa: E402
 
 TASKS_FORMAT_VERSION = 1
@@ -331,28 +339,34 @@ def load_evaluation_brief(path):
 
 
 def _grader_python():
+    if os.name == "nt":
+        executable = build_trusted_executables(ROOT, names=("python",)).get("python")
+        if executable is None:
+            raise ValueError("trusted grader Python unavailable")
+        return executable
     candidate = Path("/usr/bin/python3")
     if not candidate.exists():
         raise ValueError("trusted grader Python unavailable")
     return str(candidate)
 
 
-def _grader_env():
+def _grader_env(executable):
     return {
         "HOME": os.environ.get("HOME", ""),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "PATH": "/usr/bin:/bin",
+        "PATH": str(Path(executable).parent) if os.name == "nt" else "/usr/bin:/bin",
     }
 
 
 def _run_grader(task, workspace, mode):
+    executable = _grader_python()
     return run_hardened_command(
-        _grader_python(),
+        executable,
         args=(task["grader_path"], task["id"], mode),
         cwd=workspace,
         timeout=GRADER_TIMEOUT_SECONDS,
-        env=_grader_env(),
+        env=_grader_env(executable),
     )
 
 
@@ -555,7 +569,10 @@ def _captured_at():
 
 
 def _git(args, *, cwd):
-    result = run_hardened_git("/usr/bin/git", args, cwd=cwd, text=True, check=True, timeout=10)
+    executable = build_trusted_executables(cwd, names=("git",)).get("git")
+    if executable is None:
+        raise ValueError("trusted Git executable unavailable")
+    result = run_hardened_git(executable, args, cwd=cwd, text=True, check=True, timeout=10)
     return result.stdout.strip()
 
 
@@ -1347,22 +1364,13 @@ def compare_artifacts(*, brief_path, baseline_path, candidate_path, output_path=
 def _write_json_atomic(path, payload):
     target = Path(path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=False)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-    except Exception:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    data = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
+    write_private_bytes_atomic(
+        target,
+        data,
+        trusted_root=target.parent,
+        trusted_root_identity=private_directory_identity(target.parent),
+    )
 
 
 def build_arg_parser():

@@ -1,12 +1,16 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tomllib
+from types import SimpleNamespace
 
 import benchmarks.evaluation.provider_benchmark as provider_benchmark
 import pytest
+
+from pony.security.private_files import private_file_signature
 
 
 def test_ci_tracks_and_uses_frozen_uv_lock():
@@ -35,7 +39,13 @@ def test_project_version_is_locked():
 
 
 def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    workflow = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            ".github/workflows/ci.yml",
+            ".github/workflows/windows-verification.yml",
+        )
+    )
 
     pins = {
         "actions/checkout": (
@@ -67,6 +77,9 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "contents: write" in workflow
     assert "id-token: write" in workflow
     assert "environment: pypi" in workflow
+    assert "verify-windows:" in workflow
+    assert "uses: ./.github/workflows/windows-verification.yml" in workflow
+    assert "needs: verify-windows" in workflow
     assert "uv sync --frozen --dev" in workflow
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
@@ -107,12 +120,277 @@ def test_linux_ci_uses_the_single_exact_head_gate():
     assert "uv build" not in linux
 
 
+def test_ci_probes_native_windows_capabilities_and_file_semantics():
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    windows = Path(".github/workflows/windows-verification.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "windows-capabilities:" in ci
+    assert "uses: ./.github/workflows/windows-verification.yml" in ci
+    assert "workflow_call:" in windows
+    assert "runs-on: windows-2025" in windows
+    assert '          - "3.11"' in windows
+    assert '          - "3.12"' in windows
+    assert "architecture: x64" in windows
+    assert "Prime locked runtime cache for offline install smoke" in windows
+    assert "uv export --frozen --no-dev --no-emit-project" in windows
+    assert 'uv venv --python .venv\\Scripts\\python.exe $primer' in windows
+    assert "uv pip install --refresh --python $primerPython" in windows
+    assert "python scripts/windows/probe_capabilities.py --pretty" in windows
+    assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
+    assert "python scripts/windows/probe_private_files_backend.py" in windows
+    assert "python scripts/windows/probe_workspace_files_backend.py" in windows
+    assert "python scripts/windows/probe_lock_semantics.py --pretty" in windows
+    assert "python scripts/windows/probe_file_lock_backend.py" in windows
+    assert "python scripts/windows/probe_job_semantics.py --pretty" in windows
+    assert "scripts/windows/run_as_standard_user.ps1" in windows
+    assert "-Script scripts/windows/verify_full_runtime.ps1" in windows
+    full_runtime = Path("scripts/windows/verify_full_runtime.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert '"run", "--frozen", "pytest", "-q"' in full_runtime
+    assert '"-ra", "--durations=50"' in full_runtime
+    assert '"-p", "scripts.windows.pytest_skip_policy"' in full_runtime
+    assert '"tests", "benchmarks/live_e2e/tests/test_assertions.py"' in full_runtime
+    assert "--expect-elevated-rejection" in windows
+    assert "-Script scripts/windows/probe_shell_backend.py" in windows
+    runner = Path("scripts/windows/run_as_standard_user.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert '[Guid]::NewGuid().ToString("N")' in runner
+    assert '$userRoot = Join-Path $controlRoot "profile"' in runner
+    assert '"${currentPrincipal}:F"' in runner
+    assert "icacls.exe $workspace /setowner $principal /t /c /q" in runner
+    assert "safe.directory" not in full_runtime
+    assert '$toolRoot = Join-Path $env:ProgramFiles "pony-ci-tools-$runId"' in runner
+    assert '"${principal}:RX"' in runner
+    assert "`$env:APPDATA = '$appDataLiteral'" in runner
+    assert "`$env:LOCALAPPDATA = '$localAppDataLiteral'" in runner
+    assert "`$env:PATH = '$pathLiteral'" in runner
+    assert "$process.WaitForExit(5000)" in runner
+    assert "Select-Object -Skip $stdoutLines" in runner
+    assert "Select-Object -Skip $stderrLines" in runner
+    assert "continue-on-error" not in windows
+
+
+def _load_windows_skip_policy():
+    script = Path("scripts/windows/pytest_skip_policy.py")
+    spec = importlib.util.spec_from_file_location("pytest_skip_policy", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _skip_audit_payload(lines):
+    prefix = "windows_skip_audit="
+    encoded = next(line.removeprefix(prefix) for line in lines if line.startswith(prefix))
+    return json.loads(encoded)
+
+
+def test_windows_skip_policy_accepts_known_platform_reason():
+    module = _load_windows_skip_policy()
+    policy = module.WindowsSkipPolicy()
+    report = SimpleNamespace(
+        skipped=True,
+        longrepr=("test_file.py", 10, "Skipped: FIFO unavailable"),
+        nodeid="tests/test_file.py::test_fifo",
+    )
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    lines = []
+    reporter = SimpleNamespace(
+        write_sep=lambda separator, title: lines.append(f"{separator}{title}"),
+        write_line=lines.append,
+    )
+
+    policy.pytest_runtest_logreport(report)
+    policy.pytest_sessionfinish(session, pytest.ExitCode.OK)
+    policy.pytest_terminal_summary(reporter)
+
+    assert session.exitstatus == pytest.ExitCode.OK
+    assert policy.skip_counts == {"FIFO unavailable": 1}
+    assert _skip_audit_payload(lines) == {
+        "approved": True,
+        "counts": {"FIFO unavailable": 1},
+        "schema_version": 1,
+        "unknown_reasons": [],
+    }
+
+
+def test_windows_skip_policy_rejects_unknown_reason_and_reports_nodes():
+    module = _load_windows_skip_policy()
+    policy = module.WindowsSkipPolicy()
+    report = SimpleNamespace(
+        skipped=True,
+        longrepr=("test_file.py", 20, "Skipped: dependency missing"),
+        nodeid="tests/test_file.py::test_dependency",
+    )
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    lines = []
+    reporter = SimpleNamespace(
+        write_sep=lambda separator, title: lines.append(f"{separator}{title}"),
+        write_line=lines.append,
+    )
+
+    policy.pytest_runtest_logreport(report)
+    policy.pytest_sessionfinish(session, pytest.ExitCode.OK)
+    policy.pytest_terminal_summary(reporter)
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    assert "dependency missing" in "\n".join(lines)
+    assert "tests/test_file.py::test_dependency" in "\n".join(lines)
+    assert _skip_audit_payload(lines) == {
+        "approved": False,
+        "counts": {"dependency missing": 1},
+        "schema_version": 1,
+        "unknown_reasons": ["dependency missing"],
+    }
+
+
+def test_windows_skip_policy_rejects_non_strict_xpass():
+    module = _load_windows_skip_policy()
+    policy = module.WindowsSkipPolicy()
+    report = SimpleNamespace(
+        skipped=False,
+        wasxfail="not supported yet",
+        nodeid="tests/test_file.py::test_future_support",
+    )
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+
+    policy.pytest_runtest_logreport(report)
+    policy.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    assert policy.skip_counts == {"xfail: not supported yet": 1}
+
+
+def test_windows_capability_probe_checks_system_powershell_and_required_apis(
+    tmp_path,
+    monkeypatch,
+):
+    script = Path("scripts/windows/probe_capabilities.py")
+    spec = importlib.util.spec_from_file_location("windows_capability_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.platform, "machine", lambda: "AMD64")
+    system_root = tmp_path / "Windows"
+    powershell = system_root / module._POWERSHELL_RELATIVE
+    powershell.parent.mkdir(parents=True)
+    powershell.write_bytes(b"")
+
+    class Library:
+        pass
+
+    libraries = {}
+    for name, symbols in module._REQUIRED_SYMBOLS.items():
+        library = Library()
+        for symbol in symbols:
+            setattr(library, symbol, object())
+        libraries[name] = library
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="5.1.26100.1", stderr="")
+
+    report = module.probe(
+        system_root=system_root,
+        loader=lambda name, **_kwargs: libraries[name],
+        runner=run,
+    )
+
+    assert report["architecture"] == "x64"
+    assert report["powershell"] == "5.1.26100.1"
+    assert report["api_symbols"] == {
+        name: list(symbols) for name, symbols in module._REQUIRED_SYMBOLS.items()
+    }
+    assert calls == [
+        (
+            [str(powershell), *module._POWERSHELL_ARGS],
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": 10,
+            },
+        )
+    ]
+
+    delattr(libraries["kernel32"], "LockFileEx")
+    with pytest.raises(RuntimeError, match="missing Windows API symbols.*LockFileEx"):
+        module._load_required_symbols(
+            lambda name, **_kwargs: libraries[name]
+        )
+
+
+def test_windows_file_semantics_probe_rejects_path_traversal_components():
+    script = Path("scripts/windows/probe_file_semantics.py")
+    spec = importlib.util.spec_from_file_location("windows_file_semantics_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module._component_name("target.txt") == "target.txt"
+    for value in ("", ".", "..", "nested/target.txt", r"nested\target.txt"):
+        with pytest.raises(ValueError, match="one lexical path component"):
+            module._component_name(value)
+
+    class Ntdll:
+        @staticmethod
+        def NtCreateFile(*_args):
+            return 0
+
+    handle = module._open_relative(
+        Ntdll(),
+        module.wintypes.HANDLE(1),
+        "target.txt",
+        directory=False,
+    )
+    assert handle.value is None
+
+
+def test_windows_lock_probe_fails_if_holder_exits_before_ready(tmp_path):
+    script = Path("scripts/windows/probe_lock_semantics.py")
+    spec = importlib.util.spec_from_file_location("windows_lock_semantics_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    process = SimpleNamespace(poll=lambda: 7)
+    with pytest.raises(RuntimeError, match="holder exited early with status 7"):
+        module._wait_for(tmp_path / "ready", process, module.time.monotonic() + 1)
+
+
+def test_windows_job_probe_creates_child_suspended_before_assignment(tmp_path):
+    script = Path("scripts/windows/probe_job_semantics.py")
+    spec = importlib.util.spec_from_file_location("windows_job_semantics_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    calls = []
+
+    class Kernel32:
+        @staticmethod
+        def CreateProcessW(*args):
+            calls.append(args)
+            return True
+
+    module._create_suspended_child(
+        Kernel32(),
+        tmp_path / "marker",
+        tmp_path / "grandchild-pid",
+    )
+
+    assert calls[0][5] == module._CREATE_SUSPENDED | module._CREATE_NO_WINDOW
+    assert calls[0][4] is False
+
+
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    macos = workflow.split("macos-focused:", 1)[1]
 
-    assert "runs-on: macos-latest" in workflow
-    assert 'python-version: "3.12"' in workflow
-    assert workflow.count("uv sync --frozen --dev") == 2
+    assert "runs-on: macos-latest" in macos
+    assert 'python-version: "3.12"' in macos
+    assert macos.count("uv sync --frozen --dev") == 1
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
     assert "sandbox-contract" not in workflow
@@ -135,6 +413,19 @@ def test_ci_has_macos_security_and_durability_gate():
     assert "-W ignore" not in workflow
 
 
+def test_efficiency_evaluation_writer_keeps_output_private(tmp_path):
+    script = Path("scripts/evaluation/run_efficiency_evaluation.py")
+    spec = importlib.util.spec_from_file_location("efficiency_evaluation_script", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path / "result.json"
+
+    module._write_private_json(output, {"status": "pass"})
+
+    assert output.read_text(encoding="utf-8") == '{\n  "status": "pass"\n}\n'
+    assert private_file_signature(output).is_private
+
+
 def test_maintenance_scripts_start_and_show_help():
     for script in (
         "scripts/evaluation/collect_resume_metrics.py",
@@ -143,6 +434,12 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/evaluation/run_efficiency_evaluation.py",
         "scripts/evaluation/run_provider_experiments.py",
         "scripts/release/verify_distribution.py",
+        "scripts/windows/probe_capabilities.py",
+        "scripts/windows/probe_file_semantics.py",
+        "scripts/windows/probe_lock_semantics.py",
+        "scripts/windows/probe_file_lock_backend.py",
+        "scripts/windows/probe_workspace_files_backend.py",
+        "scripts/windows/probe_job_semantics.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
@@ -175,7 +472,8 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert 'EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]' in verifier
     assert 'metadata["License-Expression"] == "MIT"' in verifier
     assert 'installed_version == f"pony {PROJECT_VERSION}"' in verifier
-    assert '"command -v pony"' in verifier
+    assert 'shutil.which(pony.name, path=env["PATH"])' in verifier
+    assert '"/bin/sh"' not in verifier
     assert '_run(str(pony), "doctor", cwd=cwd, env=env)' in verifier
     assert '"PYTHONHOME"' in verifier
     assert '"PYTHONPATH"' in verifier
@@ -282,7 +580,13 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     script = Path("scripts/check.sh")
 
     assert script.exists()
-    assert script.stat().st_mode & 0o111
+    index_entry = subprocess.run(
+        ["git", "ls-files", "--stage", "--", script.as_posix()],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert index_entry.startswith("100755 ")
 
     text = script.read_text()
     assert "uv lock --check" in text
@@ -309,6 +613,223 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert "trap 'exit 129' 1" in text
     assert "trap 'exit 130' 2" in text
     assert "trap 'exit 143' 15" in text
+
+
+def test_windows_local_check_script_matches_the_full_exact_head_gate():
+    script = Path("scripts/windows/verify_full_runtime.ps1")
+
+    assert script.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert "$args.Count -ne 0" in text
+    assert "uv lock" not in text
+    assert 'Invoke-CheckedNative $uv @("lock", "--check")' in text
+    assert 'Invoke-CheckedNative $uv @("run", "--frozen", "ruff", "check", ".")' in text
+    assert '"tests", "benchmarks/live_e2e/tests/test_assertions.py"' in text
+    assert '"-ra", "--durations=50"' in text
+    assert '"-p", "scripts.windows.pytest_skip_policy"' in text
+    assert '[windows-check] tests' in text
+    assert '[windows-check] distribution' in text
+    assert '"--suite", "core-functional", "--output-dir", $evaluationDir' in text
+    assert '"build", "--offline", "--clear", "--no-create-gitignore"' in text
+    assert '"--install-smoke", "--offline-bundle-smoke"' in text
+    assert 'Invoke-CheckedNative $uv @("run", "--frozen", "pony", "--help")' in text
+    assert 'Invoke-CheckedNative $uv @("run", "--frozen", "pony", "status")' in text
+    assert 'Invoke-CheckedNative "cmd.exe"' in text
+    assert '"import prompt_toolkit; import pony.tui.app"' in text
+    assert 'UV_OFFLINE = "1"' in text
+    assert "GetTempPath()" in text
+    assert "git status --porcelain --untracked-files=all" in text
+    assert text.count("git rev-parse HEAD") == 2
+    assert "checking clean exact HEAD $startHead" in text
+    assert "verified clean exact HEAD $startHead" in text
+    assert "Remove-Item -LiteralPath $temporaryRoot -Recurse -Force" in text
+    assert "safe.directory" not in text
+
+
+def test_windows_host_tools_installer_is_pinned_and_fail_closed():
+    script = Path("scripts/windows/install_host_tools.ps1")
+
+    assert script.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert '$ripgrepVersion = "15.2.0"' in text
+    assert "14231169855EC5205CF5A1B6F1DB358FF4AED4247C86B69CE8AAE647C77F6680" in text
+    assert '"--scope", "machine"' in text
+    assert '"--location", $packageRoot' in text
+    assert "--ignore-security-hash" not in text
+    assert "$noApplicableUpgrade = -1978335189  # 0x8A15002B" in text
+    assert "Assert-NoReparsePoint" in text
+    assert "SetAccessRuleProtection($true, $false)" in text
+    assert "S-1-5-32-544" in text
+    assert "S-1-5-18" in text
+    assert "S-1-5-32-545" in text
+    assert "$maximumNoticeBytes = 65536" in text
+    assert "Assert-TrustedAcl -Path $toolRoot -Directory $true" in text
+    assert "Remove-Item -LiteralPath $destination -Force" in text
+    assert "Assert-TrustedAcl -Path $destination -Directory $false" in text
+    assert '[Environment]::SetEnvironmentVariable("Path", $updatedPath, "Machine")' in text
+    assert '$args.Count -ne 0' in text
+
+    if sys.platform == "win32":
+        windows_powershell = (
+            Path(os.environ["SystemRoot"])
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        escaped_path = str(script.resolve()).replace("'", "''")
+        result = subprocess.run(
+            [
+                windows_powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$ErrorActionPreference = 'Stop'; "
+                    "[void][scriptblock]::Create((Get-Content -LiteralPath "
+                    f"'{escaped_path}' -Raw -Encoding UTF8))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+def _windows_check_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts" / "windows"
+    fake_bin = repo / "bin"
+    check_tmp = tmp_path / "check-tmp"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    check_tmp.mkdir()
+    check = scripts / "verify_full_runtime.ps1"
+    check.write_text(
+        Path("scripts/windows/verify_full_runtime.ps1").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    uv = fake_bin / "uv.cmd"
+    uv.write_text(
+        "@echo off\r\n"
+        'if /I "%PONY_FAKE_UV_MODE%"=="fail" exit /b 7\r\n'
+        'if not "%~1"=="build" exit /b 0\r\n'
+        "set OUT_DIR=\r\n"
+        ":parse\r\n"
+        'if "%~1"=="" goto built\r\n'
+        'if "%~1"=="--out-dir" goto capture_out_dir\r\n'
+        "shift\r\n"
+        "goto parse\r\n"
+        ":capture_out_dir\r\n"
+        "shift\r\n"
+        'set "OUT_DIR=%~1"\r\n'
+        "shift\r\n"
+        "goto parse\r\n"
+        ":built\r\n"
+        'if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"\r\n'
+        'type nul > "%OUT_DIR%\\pony_code-1.0.0.tar.gz"\r\n'
+        'type nul > "%OUT_DIR%\\pony_code-1.0.0-py3-none-any.whl"\r\n'
+        "exit /b 0\r\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Pony Test",
+            "-c",
+            "user.email=pony@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join((str(fake_bin), env["PATH"]))
+    env["TEMP"] = str(check_tmp)
+    env["TMP"] = str(check_tmp)
+    env["PONY_CI_UV"] = str(uv)
+    return repo, check, check_tmp, env
+
+
+def _run_windows_check(repo, check, env, *args, mode="success"):
+    run_env = env.copy()
+    run_env["PONY_FAKE_UV_MODE"] = mode
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(check),
+            *args,
+        ],
+        cwd=repo,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell gate contract")
+def test_windows_local_check_cleanup_preserves_failure_status(tmp_path):
+    repo, check, check_tmp, env = _windows_check_fixture(tmp_path)
+
+    result = _run_windows_check(repo, check, env, mode="fail")
+
+    assert result.returncode == 7, result.stderr
+    assert list(check_tmp.glob("pony-check-*")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell gate contract")
+def test_windows_local_check_rejects_extra_arguments(tmp_path):
+    repo, check, check_tmp, env = _windows_check_fixture(tmp_path)
+
+    result = _run_windows_check(repo, check, env, "--release-dist")
+
+    assert result.returncode == 2
+    assert "usage:" in result.stderr
+    assert list(check_tmp.glob("pony-check-*")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell gate contract")
+def test_windows_local_check_keeps_artifacts_temporary_and_finishes_clean(tmp_path):
+    repo, check, check_tmp, env = _windows_check_fixture(tmp_path)
+
+    result = _run_windows_check(repo, check, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "checking clean exact HEAD" in result.stdout
+    assert "verified clean exact HEAD" in result.stdout
+    assert not (repo / "dist").exists()
+    assert list(check_tmp.glob("pony-check-*")) == []
+    assert subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
 
 
 def _check_fixture(tmp_path):
@@ -380,6 +901,7 @@ def _run_check(repo, check, env, *args, mode="success"):
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell gate contract")
 @pytest.mark.parametrize(("mode", "expected_status"), (("fail", 7), ("term", 143)))
 def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_status):
     repo, check, env = _check_fixture(tmp_path)
@@ -391,6 +913,7 @@ def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_s
     assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell gate contract")
 def test_local_check_rejects_release_dist_argument(tmp_path):
     repo, check, env = _check_fixture(tmp_path)
 
@@ -401,6 +924,7 @@ def test_local_check_rejects_release_dist_argument(tmp_path):
     assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell gate contract")
 def test_local_check_keeps_distributions_in_temporary_directory(tmp_path):
     repo, check, env = _check_fixture(tmp_path)
 
