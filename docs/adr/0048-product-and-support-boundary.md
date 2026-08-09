@@ -15,8 +15,8 @@
    workspace restore 保持删除，旧 Sandbox artifact 只允许 bounded inspection。
 2. 强制 Provider 静态决定 Transport。missing/`auto`/OpenAI family 可在真实任务前进行 bounded synthetic
    resolution；真实用户任务失败后不切换协议重放。
-3. 支持 Python 3.11/3.12 的 macOS 与 Linux。安全文件访问和锁依赖 POSIX 原语；Windows 不在 1.0 支持范围，缺少原语时
-   fail closed，不提供弱化安全保证的兼容路径。
+3. 支持 Python 3.11/3.12 的 macOS、Linux 与 Windows 11 x64。Windows 使用 ADR-0050 冻结的原生 Win32/NT backend，
+   不依赖 WSL/Git Bash；任一平台缺少等价安全原语时 fail closed，不提供弱化安全保证的兼容路径。
 4. 完整 TUI 只保留完整尺寸的马形 Logo 与 `PONY CODE` 字标。终端达到 112 列时显示完整大版；低于 112 列时省略整个
    Logo/字标区域，不提供 medium、micro、缩放或单行替代版。完整大版、欢迎页布局和视觉语言是冻结产品资产；除非用户
    明确要求，维护、竞品交互对齐和代码精简不得修改它们或恢复已删除的小版。
@@ -25,9 +25,10 @@
 
 ## 结果
 
-- package metadata 只声明 macOS/Linux，并在未发布阶段使用 Beta development classifier。
+- package metadata 明确声明 macOS、Linux 与 Windows 11，并在未发布阶段使用 Beta development classifier。
 - 四个 Transport 的离线合同证明实现存在；每个真实账号、endpoint 与 model 的兼容性仍需独立 G8，不能互相外推。
-- 将来增加 Windows 或 OS sandbox 必须有新的威胁模型、ADR、实现和实机证据，不能恢复旧代码作为兼容层。
+- Windows 的威胁模型、原生实现和实机证据由 ADR-0050 收口；将来增加其他平台或 OS sandbox 仍必须有独立设计与证据，
+  不能恢复旧代码作为兼容层。
 
 ## 被拒绝的方案
 

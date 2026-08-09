@@ -87,8 +87,10 @@ permission mode、可见工具和请求上下文都会在 turn 内冻结；并�
 
 ### 1. 从源码安装
 
-Pony 1.0 支持 Python 3.11、3.12 的 macOS 与 Linux。Windows 当前仍不在支持范围；原生一等平台的实施与
-晋级门禁见 [ADR-0050](docs/adr/0050-windows-native-support.md)。
+Pony 1.0 支持 Python 3.11、3.12 的 macOS、Linux 与 Windows 11 x64。Windows 使用原生 PowerShell、Git for
+Windows 和 Win32/NT 安全原语，不依赖 WSL、Git Bash、MSYS2 或 Cygwin；受信宿主准备与支持边界见
+[安装文档](docs/cli-installation-and-updates.md#windows-宿主准备)及
+[ADR-0050](docs/adr/0050-windows-native-support.md)。
 
 ```bash
 git clone https://github.com/xiawiie/pony-code.git
@@ -102,9 +104,11 @@ uv run pony --version
 ```bash
 uv tool install --editable .
 uv tool update-shell
-exec zsh
 pony --version
 ```
+
+`uv tool update-shell` 后重新打开当前 shell；macOS/Linux 也可执行 `exec zsh`，Windows 请新开 PowerShell 或
+Windows Terminal 标签页。
 
 ### 2. 在要操作的仓库配置模型
 

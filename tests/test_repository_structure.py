@@ -174,9 +174,11 @@ def test_product_docs_lock_current_execution_and_support_contract():
 
     for text in (readme, architecture):
         assert "不是 OS sandbox" in " ".join(text.split())
-    assert "Windows 当前仍不在支持范围" in " ".join(readme.split())
-    assert "当前发布仍只支持 macOS/Linux" in " ".join(architecture.split())
-    assert "完整实机门禁前仍不受支持" in " ".join(verification.split())
+    assert "macOS、Linux 与 Windows 11 x64" in " ".join(readme.split())
+    assert "当前发布支持 macOS、Linux 与 Windows 11 x64" in " ".join(
+        architecture.split()
+    )
+    assert "Windows 11 x64 |" in verification
     assert "Windows Terminal Phase 5 实机验收" in verification
     assert "TUI import、单元测试或截图不能替代本清单" in " ".join(
         verification.split()
@@ -190,7 +192,7 @@ def test_product_docs_lock_current_execution_and_support_contract():
     assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(
         readme.split()
     )
-    assert "| OS | macOS、Linux |" in verification
+    assert "| OS | macOS、Linux、Windows 11 x64 |" in verification
 
 
 def test_current_python_and_console_surfaces_are_exact():

@@ -37,7 +37,7 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
-- Windows 原生一等平台进入分阶段实施：私有文件 identity/signature 上层合同已改为平台中立命名字段，并接入基于 `NtCreateFile`、当前用户 protected DACL、File ID、`ReplaceFileW` 与 `MoveFileExW` 的 production private-state/workspace-file backend 和 `LockFileEx` file-lock backend；Windows 3.11/3.12 CI 增加 private-state 的 create/read/append/replace/rollback/tree-hardening、workspace 的 anchored create/read/list/CAS/rollback/long-path，以及 file-lock 的 timeout/reentry/identity/share-mode probe，并保留 PowerShell、Win32/NT API surface 与 Job Object 语义 probe。无 `TERM` 的 Windows TUI gate、Git `os.devnull` 与无 `/bin/sh` 的 distribution smoke 已适配；完整 Windows 实机门禁前仍不声明支持。
+- Windows 11 x64 晋级为与 macOS/Linux 平级的一等发布平台：私有文件 identity/signature 上层合同使用平台中立字段，原生 backend 覆盖 `NtCreateFile` root-handle traversal、protected DACL、File ID、原子替换、`LockFileEx`、Job Object 与 PowerShell policy；3.11/3.12 CI、攻击 probe、完整发布门禁、clean-install 与 Windows Terminal Phase 5 共同约束每个 exact candidate。跨机器或跨 OS 复制 active Session 仍不在支持声明内。
 - Windows 普通 CI 与 `v*` Tag 发布共用同一 3.11/3.12 标准用户验证 workflow；发布 job 必须等待 Windows 完整门禁与原生
   probe，完整 pytest 会拒绝未知 skip/xfail，并输出 schema v1 的机器可读 skip 原因、数量和慢测试审计；Windows Terminal
   Phase 5 另以 exact candidate SHA 的 40/80/120 列实机清单留证，不能由 import、单元测试或截图替代。该 workflow 还会

@@ -3,7 +3,8 @@
 ## 支持范围
 
 - Python：3.11、3.12；package metadata 拒绝其他版本。
-- OS：macOS 与 Linux；两者进入 CI。Windows 当前仍不受支持；原生实现与晋级门禁见 [ADR-0050](adr/0050-windows-native-support.md)。
+- OS：macOS、Linux 与 Windows 11 x64；三者进入发布门禁。Windows 原生实现与边界见
+  [ADR-0050](adr/0050-windows-native-support.md)。
 - Runtime dependencies：一个直接依赖 `prompt-toolkit`；锁定环境中同时安装其传递依赖 `wcwidth`。
 - Host CLI：只在受信 Source Root 直接执行；Host 不是 OS sandbox。
 
@@ -14,6 +15,16 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install pony-code==1.0.0
+pony --version
+pony --help
+```
+
+Windows PowerShell 使用下列激活命令，其余安装命令相同：
+
+```powershell
+python -m venv .venv
+& .\.venv\Scripts\Activate.ps1
 python -m pip install pony-code==1.0.0
 pony --version
 pony --help
@@ -33,15 +44,15 @@ uv run pony --version
 
 `uv.lock` 是开发和 CI 的锁定真源。日常验证使用 `uv run ...`，不要向 runtime dependency 添加仅供测试或构建使用的包。
 
-### Windows 候选宿主准备
+### Windows 宿主准备
 
-Windows 晋级验收只接受 Windows 11 x64 的原生工具链，不以 WSL、Git Bash、MSYS2 或用户可写 shim 代替。先用厂商签名的
+Windows 11 x64 支持范围只接受原生工具链，不以 WSL、Git Bash、MSYS2 或用户可写 shim 代替。先用厂商签名的
 64 位安装程序把所需的 Python 3.11 或 3.12 与 Git for Windows 安装到 `%ProgramFiles%`，并选择
 all-users/machine-scope 安装；发布门禁会分别验证两个 Python minor。
 Python 用户态安装、WindowsApps alias 和用户可写 Git 目录不会被 Pony 当作受信 executable。
 
-`rg` 使用 WinGet 的 `BurntSushi.ripgrep.MSVC` 固定包，再复制到 protected DACL 的稳定机器目录。请从准备验收的 exact
-release tag 检出源码，并在管理员 Windows PowerShell 中运行：
+`rg` 使用 WinGet 的 `BurntSushi.ripgrep.MSVC` 固定包，再复制到 protected DACL 的稳定机器目录。请从准备使用或验收的
+exact release tag 检出源码，并在管理员 Windows PowerShell 中运行：
 
 ```powershell
 & .\scripts\windows\install_host_tools.ps1
@@ -58,8 +69,8 @@ rg --version
 pony doctor
 ```
 
-脚本只准备宿主工具，不安装 Pony、不修改仓库配置，也不把 Host 描述成 OS sandbox。当前公开支持状态仍以本页开头的支持
-范围和[验证文档](verification.md#windows-支持晋级门禁)为准。
+脚本只准备宿主工具，不安装 Pony、不修改仓库配置，也不把 Host 描述成 OS sandbox。若 machine-scope Python/Git、固定
+`rg` 或对应信任检查不成立，Pony 会明确 fail closed；不得通过放宽 executable trust 绕过。
 
 ## 项目初始化
 

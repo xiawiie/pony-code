@@ -135,8 +135,9 @@ flowchart LR
 绕过 trust、deny rule、schema、路径、secret、可信 executable、mutation lock 或 effect observation。
 
 当前产品只执行 Host 工具。Host 不是 OS sandbox，不能隔离恶意命令、依赖、编译器插件或测试进程；请只在受信仓库中运行。
-当前发布仍只支持 macOS/Linux。Windows 原生一等平台的实施边界由 [ADR-0050](adr/0050-windows-native-support.md) 冻结：
-上层合同不变，Windows 以原生文件、锁、进程树和 PowerShell 安全原语替换 POSIX backend；完整实机门禁前不声明支持。
+当前发布支持 macOS、Linux 与 Windows 11 x64。Windows 原生一等平台的边界由
+[ADR-0050](adr/0050-windows-native-support.md) 冻结：上层合同不变，Windows 以原生文件、锁、进程树和 PowerShell
+安全原语替换 POSIX backend，不依赖 POSIX 兼容层；无法满足安全等价前置时仍 fail closed。
 
 ## 状态、上下文与恢复
 

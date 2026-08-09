@@ -1,6 +1,6 @@
 # ADR-0050：Windows 原生一等平台支持
 
-- 状态：Accepted for implementation；尚未形成发布支持声明
+- 状态：Accepted and implemented；Windows 11 x64 已进入发布支持范围
 - 日期：2026-08-05
 
 ## 背景
@@ -89,11 +89,13 @@ Windows 平台可用性不能靠更改当前 Session 事实来冒充。若产品
 5. **Phase 4：Session portability（如需跨机器）**：logical identity 与 physical binding 的显式格式迁移。
 6. **Phase 5：Windows CI/实机**：3.11/3.12 全量测试、build、clean install、Windows Terminal TUI 和攻击回归。
 
-Windows classifier、README“支持 Windows”和 release support matrix 只能在 Phase 0-3 与 Phase 5 全部通过后添加；跨机器
-Session 支持声明还必须等待 Phase 4。不得用大面积 `skipif Windows`、WSL 结果或 Linux/macOS 测试替代 Windows 证据。
+Phase 0-3 与 Phase 5 已形成 Windows 11 x64 晋级证据，因此 package classifier、README 与 release support matrix 可声明
+Windows 本机支持。每个候选 tag 仍须在同一 exact HEAD 重跑自动门禁和 Phase 5；不得用大面积 `skipif Windows`、WSL
+结果或 Linux/macOS 测试替代 Windows 证据。跨机器或跨 OS 复制 active Session 仍不在声明范围，只有完成 Phase 4 后才能晋级。
 
 ## 后果
 
 - 用户从 PowerShell、cmd 或 Windows Terminal 启动时获得同一 Pony 产品，不需要学习或安装 Git Bash shell。
 - 工作量高于“让 CLI 能启动”，但路径、锁、进程和 shell 的安全边界不会因平台支持而下降。
-- 当前分支只是在实施该决策；在 Windows 实机、clean install 和完整离线门禁通过前，现有 macOS/Linux 支持声明保持不变。
+- Windows 11 x64 与 macOS/Linux 共享 CLI/TUI、Provider、权限、Tool、Session、Run、Memory、恢复与发布门禁合同；平台差异
+  仅位于原生安全 backend 和 shell policy。跨机器或跨 OS 复制 active Session 仍明确 fail closed。

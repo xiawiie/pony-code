@@ -34,8 +34,8 @@ G0-G6 与 G9 是 package 发布 mandatory gate。G8 需要用户拥有的账号�
 
 | 维度 | 1.0 声明 | 发布证据 |
 | --- | --- | --- |
-| Python | 3.11、3.12 | Linux 全量测试；macOS 3.12 安全与耐久性专项 |
-| OS | macOS、Linux | CI；Windows 原生支持正在按 [ADR-0050](adr/0050-windows-native-support.md) 实施，完整实机门禁前仍不受支持 |
+| Python | 3.11、3.12 | Linux 全量测试；macOS 3.12 安全与耐久性专项；Windows 3.11/3.12 完整门禁 |
+| OS | macOS、Linux、Windows 11 x64 | CI 与发布门禁；Windows 原生边界见 [ADR-0050](adr/0050-windows-native-support.md) |
 | Anthropic Messages | 实现支持 | 离线 wire contract；每个账号/model 的 G8 单独验收 |
 | OpenAI Responses | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
 | OpenAI Chat Completions | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
@@ -60,11 +60,8 @@ deny-delete、replace rollback、commit ambiguity rollback 与 long path；produ
 释放后重获、同线程重入拒绝、hardlink 拒绝、`require_existing` 零写，以及持锁期间禁止删除 leaf/重命名 parent；Job Object
 probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在根进程正常退出、timeout、output-limit 与关闭
 Job 后终止完整 descendant tree。
-Session、migration、memory 与 Git metadata 已有 Windows production-backend probe；剩余门禁主要是 clean-host Python 3.11/3.12
-矩阵、受保护 machine-scope Git/Python 上的 shell/evaluation、Windows Terminal 交互式 TUI 宽度回归，以及 clean exact HEAD 的
-完整一键门禁。
-Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
-全部成立后，才可增加 Windows classifier 和公开支持声明：
+Session、migration、memory 与 Git metadata 均有 Windows production-backend probe。Windows 11 x64 已进入公开支持范围；
+这不降低门禁，反而要求每个发布候选在同一 exact HEAD 重建以下证据，否则该候选不得发布：
 
 - Windows 11 x64 的 Python 3.11、3.12 全量 pytest、Ruff、build、distribution verifier 与 clean-install smoke 通过；
 - root-relative traversal、reparse point/junction、hardlink、ADS、DACL/File ID 漂移和 atomic-write fault injection 通过；
@@ -76,8 +73,8 @@ Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 `publish` job 必须等待该矩阵完成。完整 Windows pytest 通过显式 skip policy 拒绝未知 skip/xfail，并以 `-ra` 和
 `--durations=50` 输出按原因统计与慢测试证据；末尾的 `windows_skip_audit=<JSON>` 是 schema v1 的机器可读汇总，包含
 每个原因的实际数量、未知原因和总审核结论。数量只用于比较同一 exact candidate SHA 的 3.11/3.12 clean-host 结果，
-不得把 dirty worktree 或不受信宿主的本地数量冻结成发布阈值。该门禁结构本身不构成通过证据；仍须由候选 exact tag
-的实际结果和 Windows Terminal 实机验收完成 Phase 5。
+不得把 dirty worktree 或不受信宿主的本地数量冻结成发布阈值。Windows classifier 与支持声明不替代证据；每个候选
+exact tag 仍须以实际结果和 Windows Terminal 实机验收完成 Phase 5。
 
 Windows workflow 在切换到受控标准用户前，先从 `uv.lock` 导出仅运行时依赖，并通过隔离 primer 环境把对应归档写入共享
 uv cache；标准用户只在取得该 cache 的显式 ACL 后以 `UV_OFFLINE=1` 执行 distribution clean-install smoke。普通
@@ -167,7 +164,7 @@ wheel 环境中取得，只证明阻断项已复现并修复；它不是 clean e
 #### Windows Terminal Phase 5 实机验收
 
 此项是候选版本的人工发布门禁。TUI import、单元测试或截图不能替代本清单；任何必做项未执行、证据缺失或结果不一致，
-Phase 5 均为 `FAIL`，Windows 继续保持未支持。验收必须使用与自动门禁相同的 clean exact candidate SHA，不得从 WSL、
+Phase 5 均为 `FAIL`，该 Windows 候选不得发布。验收必须使用与自动门禁相同的 clean exact candidate SHA，不得从 WSL、
 Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
 
 准备条件：
