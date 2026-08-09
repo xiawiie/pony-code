@@ -33,7 +33,7 @@ Repository discovery 只把 Git marker 当作结构元数据使用，不读取�
 marker、root 与目标文件做 identity/类型后置验证；这些检查降低路径替换风险，但不能把校验后并发修改描述成绝对
 不可能。POSIX/macOS 使用 anchored dirfd、no-follow、link-count、mode、fsync 和 atomic-replace；Windows 11 x64 使用
 root-handle traversal、DACL/File ID、`LockFileEx`、Job Object 与 PowerShell policy 的原生等价 backend。两条路径都在
-所需安全原语不可用或事实不明时 fail closed，不能用普通路径检查或 POSIX 兼容层冒充同等保证。发布 metadata 明确列出
+所需安全原语不可用时 fail closed；事实不明时同样拒绝，不能用普通路径检查或 POSIX 兼容层冒充同等保证。发布 metadata 明确列出
 macOS、Linux 与 Windows 11，不声明 OS Independent；Windows 详细威胁模型和边界见
 [ADR-0050](adr/0050-windows-native-support.md)。
 
