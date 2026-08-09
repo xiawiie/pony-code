@@ -35,7 +35,9 @@ class _Stream:
 @pytest.mark.parametrize(
     ("stdin_tty", "stdout_tty", "term", "columns", "expected"),
     (
-        (True, True, "xterm-256color", 80, True),
+        (True, True, "xterm-256color", 80, False),
+        (True, True, "xterm-256color", 111, False),
+        (True, True, "xterm-256color", 112, True),
         (False, True, "xterm-256color", 80, False),
         (True, False, "xterm-256color", 80, False),
         (True, True, None, 80, False),
@@ -65,11 +67,22 @@ def test_tui_requires_a_capable_interactive_terminal(
 def test_windows_tui_does_not_require_term(monkeypatch):
     monkeypatch.setattr("pony.tui.app._WINDOWS", True)
 
-    assert should_use_tui(
+    enabled, reason = tui_app.tui_capability(
         stdin=_Stream(True),
         stdout=_Stream(True),
         environ={},
         columns=80,
+    )
+    assert not enabled
+    assert reason == (
+        "terminal width must be at least 112 columns for the required "
+        "full-size PONY CODE logo"
+    )
+    assert should_use_tui(
+        stdin=_Stream(True),
+        stdout=_Stream(True),
+        environ={},
+        columns=112,
     )
 
 
@@ -143,20 +156,17 @@ def test_tui_routes_normalized_non_bmp_text_to_the_turn(monkeypatch):
     assert received == ["中文 \U0001f434 English"]
 
 
-@pytest.mark.parametrize(
-    ("columns", "visible"),
-    ((40, False), (80, False), (111, False), (112, True), (120, True)),
-)
-def test_terminal_logo_only_exposes_the_full_size_asset(columns, visible):
+@pytest.mark.parametrize("columns", (40, 80, 111, 112, 120))
+def test_terminal_logo_only_exposes_the_full_size_asset(columns):
     rendered = logo_text(columns)
 
-    if not visible:
-        assert rendered == ""
-        return
     lines = rendered.splitlines()
     assert "⣿" in rendered and "█" in rendered
     assert len(lines) == 11
-    assert max(get_cwidth(line) for line in lines) < columns
+    if columns >= 112:
+        assert max(get_cwidth(line) for line in lines) < columns
+    else:
+        assert rendered == logo_text(112)
 
 
 def test_terminal_logo_default_is_the_full_size_asset():
@@ -180,17 +190,15 @@ def test_terminal_welcome_preserves_logo_and_status(columns, monkeypatch):
     renderer.header(agent, model="gpt-test", columns=columns)
 
     rendered = "".join(fragment[1] for fragment in output[0])
-    if columns >= 112:
-        assert "⣿" in rendered and "█" in rendered
-    else:
-        assert "⣿" not in rendered and "█" not in rendered
+    assert "⣿" in rendered and "█" in rendered
     assert "v1.2.3" in rendered
     assert "openai/gpt-test" in rendered
     if columns >= 64:
         assert "Local coding agent for repository-grounded work" in rendered
         assert "permission manual" in rendered
         assert "esc+enter newline" in rendered
-    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+    if columns >= 112:
+        assert all(get_cwidth(line) < columns for line in rendered.splitlines())
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -442,11 +450,9 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
     assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
     assert [columns for columns, _text in samples] == [120, 40, 80]
     for columns, rendered in samples:
+        assert "⣿" in rendered and "█" in rendered
         if columns >= 112:
-            assert "⣿" in rendered and "█" in rendered
-        else:
-            assert "⣿" not in rendered and "█" not in rendered
-        assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+            assert all(get_cwidth(line) < columns for line in rendered.splitlines())
     assert not any("⣿" in "".join(fragment[1] for fragment in value) for value in written)
 
 
@@ -508,7 +514,7 @@ def test_startup_resize_repaint_does_not_clear_other_platforms(monkeypatch):
 def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
     calls = []
     agent = SimpleNamespace()
-    monkeypatch.setattr("pony.tui.app.should_use_tui", lambda: True)
+    monkeypatch.setattr("pony.tui.app.tui_capability", lambda: (True, ""))
 
     def fake_run_tui(received, **options):
         assert received is agent
@@ -522,6 +528,28 @@ def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
 
     assert run_repl(agent, model="model", no_color=True) == 0
     assert calls == [("model", True, True)]
+
+
+def test_repl_refuses_a_narrow_tty_instead_of_opening_plain_repl(
+    monkeypatch,
+    capsys,
+):
+    agent = SimpleNamespace()
+    monkeypatch.setattr(
+        "pony.tui.app.tui_capability",
+        lambda: (
+            False,
+            "terminal width must be at least 112 columns for the required "
+            "full-size PONY CODE logo",
+        ),
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt="": pytest.fail("plain REPL started"),
+    )
+
+    assert run_repl(agent) == 2
+    assert "full-size PONY CODE logo" in capsys.readouterr().err
 
 
 def test_plain_repl_never_starts_tui(monkeypatch):

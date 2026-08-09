@@ -40,7 +40,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 - Windows 11 x64 晋级为与 macOS/Linux 平级的一等发布平台：私有文件 identity/signature 上层合同使用平台中立字段，原生 backend 覆盖 `NtCreateFile` root-handle traversal、protected DACL、File ID、原子替换、`LockFileEx`、Job Object 与 PowerShell policy；3.11/3.12 CI、攻击 probe、完整发布门禁、clean-install 与 Windows Terminal Phase 5 共同约束每个 exact candidate。跨机器或跨 OS 复制 active Session 仍不在支持声明内。
 - Windows 普通 CI 与 `v*` Tag 发布共用同一 3.11/3.12 标准用户验证 workflow；发布 job 必须等待 Windows 完整门禁与原生
   probe，完整 pytest 会拒绝未知 skip/xfail，并输出 schema v1 的机器可读 skip 原因、数量和慢测试审计；Windows Terminal
-  Phase 5 另以 exact candidate SHA 的 40/80/120 列实机清单留证，不能由 import、单元测试或截图替代。该 workflow 还会
+  Phase 5 另以 exact candidate SHA 的 80/111 列拒绝和 112/120 列完整大版实机清单留证，不能由 import、单元测试或
+  截图替代。该 workflow 还会
   在标准用户离线门禁前预热 `uv.lock` 的运行时依赖 cache，确保 clean-install smoke 验证包本身而非偶然命中宿主缓存。
 - Windows reparse-point 拒绝改为可识别的专用异常；private-state 与 file-lock 保持平台中立的 symlink 错误，Git marker、
   Git metadata 和 migration manifest 分别恢复既有领域错误，不再把 Win32 底层文本泄漏到稳定错误合同。
@@ -54,16 +55,17 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 - 裸 `pony` 现在直接进入交互 TUI；`pony repl` 保留为显式同义入口，`pony run <prompt...>` 与管理子命令继续使用
   生产分支的显式 CLI 合同。
-- 恢复并冻结完整尺寸马形 `PONY CODE` 欢迎页；112 列以下省略整个 Logo/字标区域，不显示缩小变体。纯文本 fallback
-  不显示 banner，`pony run` 只输出执行结果。
+- 恢复并冻结完整尺寸马形 `PONY CODE` 欢迎页；它成为 TUI 不可隐藏的唯一状态，`--quiet` 也不能抑制。交互 TTY 低于
+  112 列时返回稳定 usage error，不能进入无 Logo 的纯文本界面，也不显示缩小变体；非 TTY fallback 不显示 banner，
+  `pony run` 只输出执行结果。
 - TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
   smoke 在隔离环境中离线验证锁定依赖和 TUI import。
 - TUI 运行事件收束为瞬态 `Working…`、单行 Tool 摘要、一次性 permission prompt 和明确的失败/中断；自动 checkpoint
   不再进入对话区，footer 不再显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 与
   streaming 不属于 1.0 展示面。
 - Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
-  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中 120→40→80 缩放会清除旧宽行残影，首条输入后仍保留原生 inline
-  scrollback。
+  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时完整大版仍保持而不切换为无 Logo 状态，首条输入后仍保留
+  原生 inline scrollback。
 - Windows 候选宿主增加固定版本/哈希的 ripgrep 安装脚本；它把 WinGet 来源复制到 protected Program Files 工具根，拒绝
   reparse point、意外内容和 ACL 漂移，不把用户可写 package root 或符号链接加入受信 executable 集合。
 - 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`runtime`、`security`、`state`、

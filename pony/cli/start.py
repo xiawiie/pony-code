@@ -15,6 +15,7 @@ from pony.security import private_files
 from pony.tools.permissions import display_permission_mode, validate_permission_mode
 from pony.tools import registry as toolkit
 from pony.agent.messages import message_content_text
+from pony.cli.errors import CLI_EXIT_USAGE
 from pony.cli.input_queue import InputQueue, MAX_PENDING_INPUTS
 from pony.config.model import provider_family_for_protocol
 from pony.security.redaction import redact_text
@@ -732,9 +733,10 @@ def run_repl(
     with _cli_interrupt_boundary():
         try:
             if not plain:
-                from pony.tui.app import run_tui, should_use_tui
+                from pony.tui.app import run_tui, tui_capability
 
-                if should_use_tui():
+                tui_enabled, tui_error = tui_capability()
+                if tui_enabled:
                     return _finish_repl(
                         agent,
                         run_tui(
@@ -747,6 +749,9 @@ def run_repl(
                             prompt_history=prompt_history,
                         ),
                     )
+                if tui_error:
+                    print(f"error: {tui_error}", file=sys.stderr)
+                    return CLI_EXIT_USAGE
 
             def refresh_plain_history():
                 current = getattr(agent, "session", {})

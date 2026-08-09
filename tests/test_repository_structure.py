@@ -183,12 +183,14 @@ def test_product_docs_lock_current_execution_and_support_contract():
     assert "TUI import、单元测试或截图不能替代本清单" in " ".join(
         verification.split()
     )
-    assert "40、80、120 列" in verification
+    assert "80/111 列拒绝、112/120 列完整大版" in verification
     assert "exact candidate SHA" in verification
     assert "Phase 5 结论：PASS 或 FAIL" in verification
     assert "bounded synthetic" in readme
     assert "真实任务失败不 fallback" in readme
     assert "冻结的产品资产" in readme
+    assert "不可隐藏的唯一欢迎状态" in readme
+    assert "不会进入无 Logo" in readme
     assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(
         readme.split()
     )

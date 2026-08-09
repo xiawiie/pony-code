@@ -22,10 +22,9 @@ from pony.cli.help import SLASH_COMMANDS
 from pony.cli.input_queue import InputQueue
 from pony.runtime.resume import active_prompt_history
 from pony.tools.permissions import display_permission_mode
-from pony.tui.render import TuiRenderer
+from pony.tui.render import FULL_TUI_MINIMUM_COLUMNS, TuiRenderer
 
 
-_MINIMUM_COLUMNS = 40
 _WINDOWS = os.name == "nt"
 _DOUBLE_INTERRUPT_SECONDS = 1.5
 _MAX_EDITOR_LINES = 6
@@ -151,21 +150,38 @@ class _CompactPromptSession(PromptSession):
         return Dimension(min=lines, max=lines)
 
 
-def should_use_tui(*, stdin=None, stdout=None, environ=None, columns=None):
+def tui_capability(*, stdin=None, stdout=None, environ=None, columns=None):
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     environ = os.environ if environ is None else environ
     if not getattr(stdin, "isatty", lambda: False)():
-        return False
+        return False, ""
     if not getattr(stdout, "isatty", lambda: False)():
-        return False
+        return False, ""
     term = environ.get("TERM", "").strip()
     if term.casefold() == "dumb" or (not term and not _WINDOWS):
-        return False
+        return False, "terminal cannot display the required full-size PONY CODE logo"
     width = columns
     if width is None:
         width = shutil.get_terminal_size((80, 24)).columns
-    return width >= _MINIMUM_COLUMNS
+    if width < FULL_TUI_MINIMUM_COLUMNS:
+        return (
+            False,
+            "terminal width must be at least "
+            f"{FULL_TUI_MINIMUM_COLUMNS} columns for the required "
+            "full-size PONY CODE logo",
+        )
+    return True, ""
+
+
+def should_use_tui(*, stdin=None, stdout=None, environ=None, columns=None):
+    enabled, _reason = tui_capability(
+        stdin=stdin,
+        stdout=stdout,
+        environ=environ,
+        columns=columns,
+    )
+    return enabled
 
 
 class SlashCommandCompleter(Completer):

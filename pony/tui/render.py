@@ -51,7 +51,7 @@ _PIXEL_GLYPHS = {
     "E": ("####", "#   ", "### ", "#   ", "####"),
 }
 
-_LARGE_BANNER_COLUMNS = 112
+FULL_TUI_MINIMUM_COLUMNS = 112
 _COMPACT_STATUS_COLUMNS = 64
 _PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
 
@@ -128,9 +128,7 @@ def _wordmark_lines():
 
 
 def _banner_lines(columns):
-    if columns < _LARGE_BANNER_COLUMNS:
-        return ()
-    width = max(1, int(columns) - 1)
+    width = max(FULL_TUI_MINIMUM_COLUMNS - 1, int(columns) - 1)
     horse_lines = _HORSE_LINES
     wordmark_lines = _wordmark_lines()
     horse_width = max(get_cwidth(line) for line in horse_lines)
@@ -150,7 +148,7 @@ def _banner_lines(columns):
 
 
 def logo_text(columns=120):
-    """Return the full-size logo when the terminal can display it safely."""
+    """Return the single full-size welcome asset without a hidden variant."""
     return "\n".join(_banner_lines(columns))
 
 

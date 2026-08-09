@@ -132,7 +132,9 @@ pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
 
 `pony` 与 `pony repl` 是同一个交互会话；`pony run` 一次执行后退出。未知首 token 不会被静默当作 prompt。
-非 TTY、缺少/空白 `TERM`、`TERM=dumb` 或窄于 40 列时自动回退为纯文本 REPL；`pony run` 不显示装饰性 banner。
+完整 TUI 要求 stdin/stdout 为 TTY 且至少 112 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。交互 TTY 不满足能力或
+宽度要求时返回稳定 usage error，不会进入无 Logo 的纯文本界面；只有非 TTY 自动化输入才使用纯文本 REPL。
+`pony run` 不显示装饰性 banner。
 
 ## 配置与 Provider 路由
 
@@ -203,9 +205,9 @@ stateDiagram-v2
 | Skills | `/<skill-name> [prompt]` | 仅受信 `.claude/skills`、只读、当前 turn、不会执行脚本 |
 | Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
 
-完整 TUI 只保留截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标；112 列及以上显示完整大版，低于 112 列时省略整个
-Logo/字标区域，不显示缩小、micro 或单行替代版。完整大版和欢迎页布局是冻结的产品资产，除非用户明确要求，维护和重构
-不得修改。
+完整 TUI 只允许截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标；它是不可隐藏的唯一欢迎状态，`--quiet` 也不能抑制。
+终端启动宽度低于 112 列时直接要求扩宽，不会显示无 Logo、小版、micro、缩放或单行替代界面。完整大版和欢迎页布局是
+冻结的产品资产，除非用户明确要求，维护和重构不得修改。
 
 ## 并行 Worktree Agent
 
