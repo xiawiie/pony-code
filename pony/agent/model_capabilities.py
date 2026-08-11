@@ -73,6 +73,7 @@ class RequestTokenCount:
 # fallback.
 BUILTIN_MODEL_CAPABILITIES = {
     "deepseek-v4-flash": (DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT_TOKENS),
+    "gpt-5.6-luna": (1_050_000, 128_000),
 }
 
 
