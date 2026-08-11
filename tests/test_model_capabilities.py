@@ -80,6 +80,17 @@ def test_resolution_priority_and_unknown_warning():
     assert len(warnings) == 1
 
 
+def test_gpt_5_6_luna_uses_documented_builtin_limits():
+    capabilities = resolve_model_capabilities("gpt-5.6-luna")
+
+    assert capabilities == ModelCapabilities(
+        1_050_000,
+        128_000,
+        "provider_usage_or_estimate",
+        "builtin",
+    )
+
+
 def test_cjk_json_and_message_estimates_are_not_ascii_divide_by_four():
     assert estimate_text_tokens("上下文记忆管理") >= 7
     assert estimate_text_tokens("abcdefgh") == 2
