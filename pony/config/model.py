@@ -44,11 +44,7 @@ _PROTOCOL_SPECS = {
         "base_url": "https://api.openai.com/v1",
         "api_variant": "responses",
         "auth_mode": "bearer",
-        "official_capabilities": {
-            "strict_tools": True,
-            "parallel_tool_control": True,
-            "reasoning_replay": True,
-        },
+        "official_capabilities": {},
     },
     "openai_chat_completions": {
         "provider": "openai-chat",
@@ -57,10 +53,7 @@ _PROTOCOL_SPECS = {
         "base_url": "https://api.openai.com/v1",
         "api_variant": "chat_completions",
         "auth_mode": "bearer",
-        "official_capabilities": {
-            "strict_tools": True,
-            "parallel_tool_control": True,
-        },
+        "official_capabilities": {},
     },
     "ollama_chat": {
         "provider": "ollama",
@@ -72,9 +65,28 @@ _PROTOCOL_SPECS = {
         "official_capabilities": {},
     },
 }
+_EXACT_TARGET_CAPABILITIES = {
+    (
+        "openai_responses",
+        "https://api.openai.com/v1",
+        "gpt-5.4",
+    ): {
+        "strict_tools": True,
+        "parallel_tool_control": True,
+        "reasoning_replay": True,
+    },
+    (
+        "openai_chat_completions",
+        "https://api.openai.com/v1",
+        "gpt-5.4",
+    ): {
+        "strict_tools": True,
+        "parallel_tool_control": True,
+    },
+}
 _PROVIDER_PROTOCOLS = {
     "anthropic": ("anthropic_messages",),
-    "openai": ("openai_chat_completions", "openai_responses"),
+    "openai": ("openai_responses", "openai_chat_completions"),
     "openai-chat": ("openai_chat_completions",),
     "openai-responses": ("openai_responses",),
     "ollama": ("ollama_chat",),
@@ -183,10 +195,11 @@ def _known_protocol(base_url):
     return ""
 
 
-def _candidate(protocol, base_url):
+def _candidate(protocol, base_url, *, model):
     spec = _PROTOCOL_SPECS[protocol]
-    capabilities = (
-        spec["official_capabilities"] if base_url == spec["base_url"] else {}
+    capabilities = _EXACT_TARGET_CAPABILITIES.get(
+        (protocol, base_url, model),
+        spec["official_capabilities"] if base_url == spec["base_url"] else {},
     )
     return {
         "provider": spec["provider"],
@@ -205,12 +218,12 @@ def _candidate_protocols(provider, base_url):
         if _loopback_api_url(base_url):
             return (
                 "ollama_chat",
-                "openai_chat_completions",
                 "openai_responses",
+                "openai_chat_completions",
             ), ""
         return (
-            "openai_chat_completions",
             "openai_responses",
+            "openai_chat_completions",
         ), ""
     allowed = _PROVIDER_PROTOCOLS[provider]
     if (
@@ -281,18 +294,17 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
     if api_base["value"]:
         api_base["value"] = validate_api_base(api_base["value"])
 
-    candidates = []
+    protocols = ()
     resolution_source = ""
     if api_base["value"]:
         protocols, resolution_source = _candidate_protocols(
             provider_value,
             api_base["value"],
         )
-        candidates = [_candidate(protocol, api_base["value"]) for protocol in protocols]
 
     model_default = _config_default(provider_value, "model")
-    if not model_default and len(candidates) == 1:
-        model_default = _PROTOCOL_SPECS[candidates[0]["protocol"]]["model"]
+    if not model_default and len(protocols) == 1:
+        model_default = _PROTOCOL_SPECS[protocols[0]]["model"]
     model = _resolve_required_setting(
         MODEL_ENV_NAME,
         project_env,
@@ -300,14 +312,22 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
         required=required,
         default=model_default,
         default_name=(
-            f"{candidates[0]['provider']}_default_model"
-            if model_default and len(candidates) == 1
+            f"{_PROTOCOL_SPECS[protocols[0]]['provider']}_default_model"
+            if model_default and len(protocols) == 1
             else f"{provider_value}_default_model"
         ),
         missing_error="model_not_configured",
     )
     model_value = str(model["value"] or "")
     model["value"] = validate_model_name(model_value) if model_value else ""
+    candidates = [
+        _candidate(
+            protocol,
+            api_base["value"],
+            model=model["value"],
+        )
+        for protocol in protocols
+    ]
 
     configuration_error = ""
     if not api_base["value"]:
@@ -424,7 +444,7 @@ def resolve_session_provider_binding(config, binding):
     ):
         raise ValueError("model_session_mismatch")
 
-    selected = _candidate(protocol, base_url)
+    selected = _candidate(protocol, base_url, model=session_model)
     resolved = deepcopy(config)
     resolved["resolved_provider"] = _setting(selected["provider"], "session_binding", "")
     resolved["resolution_status"] = "resolved"

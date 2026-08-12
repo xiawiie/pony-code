@@ -206,8 +206,8 @@ def test_openai_family_requires_probe_for_a_generic_endpoint():
     assert resolved["auth_mode"]["value"] == "bearer"
     assert resolved["capabilities"] == {}
     assert [candidate["protocol"] for candidate in resolved["candidates"]] == [
-        "openai_chat_completions",
         "openai_responses",
+        "openai_chat_completions",
     ]
     assert all(not candidate["capabilities"] for candidate in resolved["candidates"])
 
@@ -227,8 +227,8 @@ def test_auto_provider_uses_bounded_generic_https_candidates(provider):
     assert resolved["provider"]["value"] == "auto"
     assert resolved["resolution_status"] == "probe_required"
     assert [candidate["protocol"] for candidate in resolved["candidates"]] == [
-        "openai_chat_completions",
         "openai_responses",
+        "openai_chat_completions",
     ]
 
 
@@ -244,8 +244,8 @@ def test_auto_provider_prefers_ollama_for_an_unknown_loopback_endpoint():
     assert resolved["resolution_status"] == "probe_required"
     assert [candidate["protocol"] for candidate in resolved["candidates"]] == [
         "ollama_chat",
-        "openai_chat_completions",
         "openai_responses",
+        "openai_chat_completions",
     ]
 
 
@@ -272,6 +272,98 @@ def test_auto_provider_resolves_known_origins(api_base, protocol, resolved_provi
     assert resolved["protocol"]["value"] == protocol
     assert resolved["resolution_status"] == "resolved"
     assert resolved["resolution_source"] == "known_origin"
+
+
+@pytest.mark.parametrize("provider", ("auto", "openai"))
+def test_openai_family_selection_uses_protocol_core_on_official_origin(provider):
+    resolved = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: provider,
+            API_BASE_ENV_NAME: "https://api.openai.com/v1",
+            MODEL_ENV_NAME: "future-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    assert resolved["protocol"]["value"] == "openai_responses"
+    assert resolved["resolved_provider"]["value"] == "openai-responses"
+    assert resolved["capabilities"] == {}
+
+
+@pytest.mark.parametrize("provider", ("openai-responses", "openai-chat"))
+def test_explicit_future_openai_target_uses_protocol_core(provider):
+    resolved = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: provider,
+            API_BASE_ENV_NAME: "https://api.openai.com/v1",
+            MODEL_ENV_NAME: "future-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    assert resolved["capabilities"] == {}
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    (
+        (
+            "openai-responses",
+            {
+                "strict_tools": True,
+                "parallel_tool_control": True,
+                "reasoning_replay": True,
+            },
+        ),
+        (
+            "openai-chat",
+            {
+                "strict_tools": True,
+                "parallel_tool_control": True,
+            },
+        ),
+    ),
+)
+def test_exact_openai_target_preserves_official_endpoint_contract(provider, expected):
+    resolved = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: provider,
+            API_BASE_ENV_NAME: "https://api.openai.com/v1",
+            MODEL_ENV_NAME: "gpt-5.4",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    assert resolved["capabilities"] == expected
+
+
+def test_openai_family_session_binding_keeps_protocol_core_on_official_origin():
+    api_base = "https://api.openai.com/v1"
+    config = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: "openai",
+            API_BASE_ENV_NAME: api_base,
+            MODEL_ENV_NAME: "future-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    resolved = resolve_session_provider_binding(
+        config,
+        {
+            "protocol_family": "openai_responses",
+            "model": "future-model",
+            "endpoint_hash": "sha256:" + hashlib.sha256(api_base.encode()).hexdigest(),
+        },
+    )
+
+    assert resolved["resolution_source"] == "session_binding"
+    assert resolved["protocol"]["value"] == "openai_responses"
+    assert resolved["capabilities"] == {}
 
 
 def test_generic_forced_protocol_has_no_unverified_optional_capabilities():
@@ -305,11 +397,7 @@ def test_generic_forced_protocol_has_no_unverified_optional_capabilities():
 
     assert generic["capabilities"] == {}
     assert noncanonical_official_path["capabilities"] == {}
-    assert official["capabilities"] == {
-        "strict_tools": True,
-        "parallel_tool_control": True,
-        "reasoning_replay": True,
-    }
+    assert official["capabilities"] == {}
 
 
 def test_probe_candidate_projects_a_complete_resolved_config():

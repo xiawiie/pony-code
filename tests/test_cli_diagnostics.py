@@ -576,14 +576,14 @@ def test_api_check_detects_unresolved_provider_and_allows_missing_usage(monkeypa
     result = check_api_connectivity(config)
 
     assert result["status"] == "ok"
-    assert result["detected_provider"] == "openai-responses"
-    assert result["protocol"] == "openai_responses"
+    assert result["detected_provider"] == "openai-chat"
+    assert result["protocol"] == "openai_chat_completions"
     assert result["usage_status"] == "degraded"
     assert result["model_calls"] == 3
     assert [call.args[0] for call in constructor.call_args_list] == [
+        "openai_responses",
         "openai_chat_completions",
-        "openai_responses",
-        "openai_responses",
+        "openai_chat_completions",
     ]
 
 

@@ -281,24 +281,72 @@ def test_auto_detection_uses_candidate_order_and_returns_first_success(monkeypat
 
     assert client is not None
     assert [protocol for protocol, _timeout in built] == [
+        "openai_responses",
         "openai_chat_completions",
-        "openai_responses",
-        "openai_responses",
+        "openai_chat_completions",
     ]
     assert all(timeout <= 30 for _protocol, timeout in built[:2])
     assert built[2][1] == 60
     assert client is clients[2]
     assert client is not clients[1]
-    assert resolved["resolved_provider"]["value"] == "openai-responses"
+    assert resolved["resolved_provider"]["value"] == "openai-chat"
     assert report["candidate_count"] == 2
     assert report["model_calls"] == 3
     assert report["usage_status"] == "degraded"
     assert client.provider_resolution_metadata == {
         "resolution_source": "probe",
-        "protocol": "openai_responses",
+        "protocol": "openai_chat_completions",
         "candidate_count": 2,
         "probe_model_calls": 3,
         "usage_status": "degraded",
+    }
+
+
+def test_auto_detection_prefers_responses_when_first_probe_succeeds(monkeypatch):
+    built = []
+    clients = []
+
+    def build(config, timeout):
+        built.append((config["protocol"]["value"], timeout))
+        client = SimpleNamespace(provider_metadata={})
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(probe_module, "_client_from_config", build)
+    monkeypatch.setattr(
+        probe_module,
+        "probe_model_client",
+        lambda _client: {
+            "status": "ok",
+            "stage": "complete",
+            "category": "ok",
+            "model_calls": 2,
+            "usage_status": "complete",
+        },
+    )
+
+    client, resolved, report = resolve_provider_client(
+        _auto_config(),
+        timeout=60,
+        verify_resolved=True,
+    )
+
+    assert [protocol for protocol, _timeout in built] == [
+        "openai_responses",
+        "openai_responses",
+    ]
+    assert all(timeout <= 30 for _protocol, timeout in built[:1])
+    assert built[1][1] == 60
+    assert client is clients[1]
+    assert resolved["resolved_provider"]["value"] == "openai-responses"
+    assert report["candidate_count"] == 1
+    assert report["model_calls"] == 2
+    assert client.provider_resolution_metadata == {
+        "resolution_source": "probe",
+        "protocol": "openai_responses",
+        "candidate_count": 1,
+        "probe_model_calls": 2,
+        "usage_status": "complete",
     }
 
 
@@ -323,7 +371,7 @@ def test_auto_auth_failure_does_not_probe_another_provider_family(monkeypatch):
             verify_resolved=True,
         )
 
-    assert built == ["openai_chat_completions"]
+    assert built == ["openai_responses"]
     assert caught.value.code == "http_4xx"
 
 

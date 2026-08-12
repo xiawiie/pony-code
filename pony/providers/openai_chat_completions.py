@@ -16,16 +16,21 @@ from .transport import (
     _resource_url,
     _validate_number,
 )
-from .openai_responses import OPENAI_USER_AGENT, _openai_tools, _system_instructions
+from .openai_wire import (
+    OPENAI_USER_AGENT,
+    drop_optional_null_arguments,
+    prepare_function_tools,
+    render_system_instructions,
+)
 from .response import Response, StopReason
 
 
 def _chat_tools(tools, *, strict):
-    prepared, optional_by_name = _openai_tools(tools, strict=strict)
+    prepared, optional_by_name = prepare_function_tools(tools, strict=strict)
     return [
         {
             "type": "function",
-            "function": {key: value for key, value in tool.items() if key != "type"},
+            "function": tool,
         }
         for tool in prepared
     ], optional_by_name
@@ -33,7 +38,7 @@ def _chat_tools(tools, *, strict):
 
 def _chat_messages(system, messages):
     output = []
-    instructions = _system_instructions(system)
+    instructions = render_system_instructions(system)
     if instructions:
         output.append({"role": "system", "content": instructions})
     for message in list(messages or []):
@@ -188,9 +193,7 @@ def _chat_content(data, optional_by_name):
                 stage="tool_call",
                 reason="tool_arguments_invalid",
             )
-        for argument in optional_by_name.get(name, set()):
-            if parsed.get(argument) is None:
-                parsed.pop(argument, None)
+        drop_optional_null_arguments(parsed, optional_by_name.get(name, set()))
         result.append(
             {
                 "type": "tool_use",
