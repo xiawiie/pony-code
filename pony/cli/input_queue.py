@@ -94,7 +94,7 @@ class InputQueue:
             request.answered.set()
             return True
 
-    def confirm(self, message):
+    def confirm(self, message, *, on_ready=lambda: None):
         request = _Confirmation(message=message, answered=threading.Event())
         with self._lock:
             if self._closing:
@@ -102,6 +102,11 @@ class InputQueue:
             if self._confirmation is not None:
                 return False
             self._confirmation = request
+        try:
+            on_ready()
+        except Exception:  # UI failure must leave the protected operation denied
+            self.answer_confirmation("")
+            return False
         self._on_wake()
         request.answered.wait()
         return request.accepted

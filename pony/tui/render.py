@@ -17,11 +17,11 @@ from pony.tools.permissions import display_permission_mode
 from pony.tui.markdown import render_markdown, sanitize_terminal_text
 
 
-_PROTOCOL_PROVIDERS = {
-    "anthropic_messages": "anthropic",
-    "openai_responses": "openai",
-    "openai_chat_completions": "openai",
-    "ollama_chat": "ollama",
+_PROTOCOL_LABELS = {
+    "anthropic_messages": "anthropic/messages",
+    "openai_responses": "openai/responses",
+    "openai_chat_completions": "openai/chat",
+    "ollama_chat": "ollama/chat",
 }
 
 _FAILURE_STATUSES = frozenset({"error", "partial_success", "rejected"})
@@ -52,7 +52,7 @@ _PIXEL_GLYPHS = {
 }
 
 FULL_TUI_MINIMUM_COLUMNS = 112
-_COMPACT_STATUS_COLUMNS = 64
+COMPACT_TUI_MINIMUM_COLUMNS = 80
 _PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
 
 _COLOR_STYLE = Style.from_dict(
@@ -61,7 +61,9 @@ _COLOR_STYLE = Style.from_dict(
         "meta": "#858585",
         "editor.prompt": "",
         "editor.border": "#777777",
-        "user": "bg:#30303d #f4f4f5",
+        "user": "#d7d7d7",
+        "user.label": "bold #f4f4f5",
+        "assistant.label": "bold #f4f4f5",
         "activity": "italic #858585",
         "tool": "#bdbdbd",
         "tool.error": "#ff4d4f",
@@ -90,6 +92,8 @@ _PLAIN_STYLE = Style.from_dict(
         "editor.prompt": "bold",
         "editor.border": "",
         "user": "",
+        "user.label": "bold",
+        "assistant.label": "bold",
         "activity": "italic",
         "tool": "",
         "tool.error": "bold",
@@ -192,13 +196,15 @@ def _product_version():
 
 
 def _bounded_json(value, limit=800):
-    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    rendered = sanitize_terminal_text(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    )
     if len(rendered) <= limit:
         return rendered
     return rendered[: limit - 1] + "…"
 
 
-def _provider_name(model_client):
+def _protocol_label(model_client):
     transport = getattr(model_client, "_inner", model_client)
     provider_metadata = getattr(transport, "provider_metadata", {})
     protocol = (
@@ -206,15 +212,16 @@ def _provider_name(model_client):
         if isinstance(provider_metadata, dict)
         else ""
     )
-    return _PROTOCOL_PROVIDERS.get(str(protocol), "")
+    protocol = str(protocol)
+    return _one_line(_PROTOCOL_LABELS.get(protocol, protocol))
 
 
 def _model_label(agent, model):
-    provider = _provider_name(getattr(agent, "model_client", None))
+    protocol = _protocol_label(getattr(agent, "model_client", None))
     transport = getattr(getattr(agent, "model_client", None), "_inner", None)
     transport = transport or getattr(agent, "model_client", None)
     safe_model = _one_line(getattr(transport, "model", model))
-    return f"{provider}/{safe_model}" if provider else safe_model
+    return f"{protocol}/{safe_model}" if protocol else safe_model
 
 
 def _formatted_lines(value):
@@ -235,17 +242,34 @@ def _line_width(line):
     return sum(get_cwidth(text) for _style, text in line)
 
 
-def _user_block(text, width):
+def _conversation_block(label, text, width, *, label_style, content_style=""):
     content_width = max(1, width - 2)
-    rendered = render_markdown(text, width=content_width, base_style="class:user")
-    fragments = [("", "\n"), ("class:user", " " * width + "\n")]
+    rendered = render_markdown(text, width=content_width, base_style=content_style)
+    fragments = [("", "\n"), (label_style, f"{label}\n")]
     for line in _formatted_lines(rendered):
-        used = min(content_width, _line_width(line))
-        fragments.append(("class:user", " "))
+        fragments.append((content_style, "  "))
         fragments.extend(line)
-        fragments.append(("class:user", " " * (width - used - 1) + "\n"))
-    fragments.append(("class:user", " " * width + "\n"))
+        fragments.append((content_style, "\n"))
     return FormattedText(fragments)
+
+
+def _user_block(text, width):
+    return _conversation_block(
+        "YOU",
+        text,
+        width,
+        label_style="class:user.label",
+        content_style="class:user",
+    )
+
+
+def _assistant_block(text, width):
+    return _conversation_block(
+        "PONY",
+        text,
+        width,
+        label_style="class:assistant.label",
+    )
 
 
 def _one_line(value):
@@ -297,8 +321,12 @@ class TuiRenderer:
 
     def __init__(self, *, no_color=False):
         self.style = _PLAIN_STYLE if no_color else _COLOR_STYLE
-        self._working_visible = False
-        self._working_width = 0
+        self._status = "Ready"
+        self._context_status = ""
+        self._activity_visible = False
+        self._activity_width = 0
+        self._activity_text = ""
+        self._active_tool = ""
 
     def _write(self, value, **kwargs):
         print_formatted_text(value, style=self.style, **kwargs)
@@ -306,41 +334,47 @@ class TuiRenderer:
     def welcome(self, agent, *, model, columns=None):
         columns = columns or shutil.get_terminal_size((80, 24)).columns
         width = max(1, columns - 1)
-        compact = columns < _COMPACT_STATUS_COLUMNS
-        description = (
-            "Repository-grounded coding agent" if compact else _PRODUCT_DESCRIPTION
-        )
+        compact = columns < FULL_TUI_MINIMUM_COLUMNS
         current_mode = getattr(agent, "current_permission_mode", None)
         permission_mode = display_permission_mode(
             current_mode()
             if callable(current_mode)
             else getattr(agent, "session", {}).get("permission_mode", "auto")
         )
-        model_summary = f"Using {_model_label(agent, model)}"
-        if not compact:
-            model_summary += f" · permission {permission_mode}"
-        shortcuts = (
-            "/ commands · ctrl+c twice exit"
-            if compact
-            else "/ commands · esc+enter newline · ctrl+c twice exit"
-        )
+        target = _model_label(agent, model)
+        if compact:
+            version_line = _truncate(
+                f"v{_product_version()} · {_PRODUCT_DESCRIPTION}",
+                width,
+            )
+            ready_line = _truncate(
+                f"Ready · {target} · permission {permission_mode}",
+                width,
+            )
+            return FormattedText(
+                [
+                    ("class:logo", "PONY CODE\n"),
+                    ("class:meta", f"{version_line}\n"),
+                    ("class:key", ready_line[: len("Ready")]),
+                    ("class:meta", f"{ready_line[len('Ready') :]}\n"),
+                ]
+            )
         return FormattedText(
             [
                 *_logo_fragments(columns),
+                ("class:meta", f"\n{_centered(f'v{_product_version()}', width)}\n"),
+                ("class:meta", f"{_centered(_PRODUCT_DESCRIPTION, width)}\n"),
                 (
                     "class:meta",
-                    f"\n{_centered(f'v{_product_version()}', width)}\n",
+                    f"{_centered(f'Ready · {target} · permission {permission_mode}', width)}\n",
                 ),
-                ("class:meta", f"{_centered(description, width)}\n"),
-                ("class:meta", f"{_centered(model_summary, width)}\n"),
-                ("class:meta", f"{_centered(shortcuts, width)}\n"),
             ]
         )
 
     def header(self, agent, *, model, columns=None):
         self._write(self.welcome(agent, model=model, columns=columns))
 
-    def toolbar(self, agent, *, model, columns=None):
+    def toolbar(self, agent, *, model, columns=None, busy=False, pending=0):
         width = _terminal_width(columns)
         branch = _one_line(getattr(agent.workspace, "branch", "-") or "-")
         workspace = _one_line(getattr(agent.workspace, "cwd", "-"))
@@ -353,16 +387,31 @@ class TuiRenderer:
             else getattr(agent, "session", {}).get("permission_mode", "auto")
         ) or "auto"
         permission_mode = display_permission_mode(permission_mode)
+        self._record_context(getattr(agent, "last_request_metadata", {}))
+        state = self._status
+        if pending:
+            state += f" · queue {pending}/5"
+        elif busy and state == "Ready":
+            state = "Working"
+        if self._context_status:
+            state += f" · {self._context_status}"
         right = f"{permission_mode} · {_model_label(agent, model)} "
-        gap = width - get_cwidth(left) - get_cwidth(right)
-        if gap < 1:
-            right = _truncate(right, max(1, min(get_cwidth(right), width * 2 // 3)))
-            left = _truncate(left, max(1, width - get_cwidth(right) - 1))
-            gap = max(1, width - get_cwidth(left) - get_cwidth(right))
+        middle = f"{state}"
+        candidates = (
+            f"{left} · {middle} | {right}",
+            f" {repository} · {middle} | {right}",
+            f"{middle} | {right}",
+            f"{self._status} | {right}",
+            right,
+        )
+        footer = next(
+            (candidate for candidate in candidates if get_cwidth(candidate) <= width),
+            _truncate(right, width),
+        )
         return FormattedText(
             [
                 ("class:editor.border", f"{'─' * width}\n"),
-                ("class:footer", f"{left}{' ' * gap}{right}"),
+                ("class:footer", footer),
             ]
         )
 
@@ -371,7 +420,7 @@ class TuiRenderer:
         return FormattedText(
             [
                 ("class:editor.border", f"\n{'─' * width}\n"),
-                ("class:editor.prompt", " "),
+                ("class:editor.prompt", "Message Pony\n› "),
             ]
         )
 
@@ -408,21 +457,26 @@ class TuiRenderer:
         return FormattedText([("class:activity", f"\n{safe_text}\n")])
 
     def resume(self, projection):
-        self._clear_working()
+        self._clear_activity()
         self._write(self.resume_card(projection))
 
     def user(self, text, *, columns=None):
-        self._clear_working()
+        self._clear_activity()
         self._write(_user_block(text, _terminal_width(columns)))
 
+    def turn_started(self, text, *, columns=None):
+        self.user(text, columns=columns)
+        self._status = "Preparing"
+        self._show_activity("PONY  Preparing context...")
+
     def answer(self, text, *, columns=None):
-        self._clear_working()
+        self._clear_activity()
         width = _terminal_width(columns)
-        markdown = render_markdown(text, width=width)
-        self._write(FormattedText([("", "\n"), *markdown]))
+        self._write(_assistant_block(text, width))
 
     def approval(self, name, args):
-        self._clear_working()
+        self._clear_activity()
+        self._status = "Waiting for approval"
         safe_name = _one_line(name)
         if safe_name == "exit_plan_mode" and isinstance(args, dict):
             plan = str(args.get("plan", ""))
@@ -444,8 +498,8 @@ class TuiRenderer:
             FormattedText(
                 [
                     ("class:warning", "\n  ╷ APPROVAL REQUIRED\n"),
-                    ("", f"  │ {safe_name}\n"),
-                    ("", f"  │ {_bounded_json(args)}\n"),
+                    ("", f"  │ action: {_tool_summary(safe_name, args, _terminal_width())}\n"),
+                    ("", f"  │ details: {_bounded_json(args)}\n"),
                     ("class:warning", "  ╵ default: deny\n"),
                 ]
             )
@@ -453,56 +507,124 @@ class TuiRenderer:
 
     def trace(self, envelope):
         event = str(envelope.get("event", ""))
-        if event == "model_requested":
-            self._show_working()
+        request_metadata = envelope.get("request_metadata", {})
+        if isinstance(request_metadata, dict):
+            self._record_context(request_metadata)
+        if event == "run_started":
+            self._status = "Preparing"
+        elif event == "prompt_built":
+            self._status = "Waiting for model"
+            self._show_activity("PONY  Waiting for model...")
+        elif event == "model_requested":
+            origin = str(envelope.get("attempt_origin", ""))
+            if origin in {"model_retry", "retry_action"}:
+                self._status = "Retrying"
+                self._show_activity("PONY  Retrying model request...")
+            elif origin in {"compaction", "split_compaction"}:
+                self._status = "Compacting"
+                self._show_activity("PONY  Compacting context...")
+            else:
+                self._status = "Waiting for model"
+                self._show_activity("PONY  Waiting for model...")
         elif event == "tool_started":
-            self._clear_working()
             width = _terminal_width()
             summary = _tool_summary(
                 envelope.get("name", "tool"),
                 envelope.get("args", {}),
                 width,
             )
-            self._write(FormattedText([("class:tool", f"› {summary}\n")]))
+            self._active_tool = summary
+            self._status = "Using tool"
+            self._show_activity(f"PONY  Using tool · {summary}...")
         elif event == "tool_executed":
+            self._clear_activity()
             status = str(envelope.get("tool_status", ""))
             if status in _FAILURE_STATUSES:
                 self._tool_failure(status, envelope.get("result", ""))
+            elif self._active_tool:
+                self._write(FormattedText([("class:tool", f"  ✓ {self._active_tool}\n")]))
+            self._active_tool = ""
+        elif event in {"context_compacted", "context_recovery"}:
+            self._clear_activity()
+            self._status = "Compacted"
+            self._write(FormattedText([("class:activity", "PONY  Context compacted\n")]))
+        elif event == "model_failed":
+            self._clear_activity()
+            self._status = (
+                "Interrupted"
+                if envelope.get("outcome") == "interrupted"
+                else "Failed"
+            )
+        elif event == "finalization_failed":
+            self._clear_activity()
+            self._status = "Failed"
         elif event == "tool_interrupted":
             self._tool_failure("interrupted", "")
+            self._active_tool = ""
+        elif event == "run_finished":
+            self._clear_activity()
+            status = str(envelope.get("status", ""))
+            stop_reason = str(envelope.get("stop_reason", ""))
+            if stop_reason == "interrupted":
+                self._status = "Interrupted"
+            elif status == "completed" and stop_reason == "final_answer_returned":
+                self._status = "Completed"
+            else:
+                self._status = "Failed"
 
     def notice(self, text, *, error=False):
-        self._clear_working()
+        self._clear_activity()
         style = "class:error" if error else "class:activity"
         prefix = "error: " if error else ""
         safe_text = sanitize_terminal_text(text).strip()
+        if error:
+            self._status = "Failed"
         self._write(FormattedText([(style, f"\n{prefix}{safe_text}\n")]))
 
     def close(self):
-        self._clear_working(newline=True)
+        self._clear_activity(newline=True)
 
-    def _show_working(self):
-        if self._working_visible:
+    def _show_activity(self, text):
+        if self._activity_visible and self._activity_text == text:
             return
-        text = "Working…"
-        self._working_visible = True
-        self._working_width = get_cwidth(text)
+        self._clear_activity()
+        self._activity_visible = True
+        self._activity_width = get_cwidth(text)
+        self._activity_text = text
         self._write(
             FormattedText([("class:activity", text)]),
             end="",
             flush=True,
         )
 
-    def _clear_working(self, *, newline=False):
-        if not self._working_visible:
+    def _clear_activity(self, *, newline=False):
+        if not self._activity_visible:
             return
         suffix = "\n" if newline else ""
-        sys.stdout.write(f"\r{' ' * self._working_width}\r{suffix}")
+        sys.stdout.write(f"\r{' ' * self._activity_width}\r{suffix}")
         sys.stdout.flush()
-        self._working_visible = False
-        self._working_width = 0
+        self._activity_visible = False
+        self._activity_width = 0
+        self._activity_text = ""
+
+    def _record_context(self, request_metadata):
+        if not isinstance(request_metadata, dict):
+            return
+        breakdown = request_metadata.get("context_breakdown", {})
+        budget = breakdown.get("budget", {}) if isinstance(breakdown, dict) else {}
+        used = budget.get("used") if isinstance(budget, dict) else None
+        limit = budget.get("input_limit") if isinstance(budget, dict) else None
+        if (
+            type(used) is int
+            and type(limit) is int
+            and used >= 0
+            and limit > 0
+        ):
+            percent = min(100, round(used * 100 / limit))
+            self._context_status = f"ctx {percent}%"
 
     def _tool_failure(self, status, result):
+        self._clear_activity()
         width = _terminal_width()
         detail = _one_line(result)
         message = f"{status}: {detail}" if detail else status

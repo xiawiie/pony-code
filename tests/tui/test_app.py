@@ -9,6 +9,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.utils import get_cwidth
 
 import pony.tui.app as tui_app
+from pony.agent.observability import project_trace_event
 from pony.cli.start import run_repl
 from pony.providers.transport import ProviderTransportError
 from pony.tui.app import (
@@ -35,15 +36,15 @@ class _Stream:
 @pytest.mark.parametrize(
     ("stdin_tty", "stdout_tty", "term", "columns", "expected"),
     (
-        (True, True, "xterm-256color", 80, False),
-        (True, True, "xterm-256color", 111, False),
+        (True, True, "xterm-256color", 80, True),
+        (True, True, "xterm-256color", 111, True),
         (True, True, "xterm-256color", 112, True),
         (False, True, "xterm-256color", 80, False),
         (True, False, "xterm-256color", 80, False),
         (True, True, None, 80, False),
         (True, True, " ", 80, False),
         (True, True, "dumb", 80, False),
-        (True, True, "xterm-256color", 39, False),
+        (True, True, "xterm-256color", 79, False),
     ),
 )
 def test_tui_requires_a_capable_interactive_terminal(
@@ -71,12 +72,12 @@ def test_windows_tui_does_not_require_term(monkeypatch):
         stdin=_Stream(True),
         stdout=_Stream(True),
         environ={},
-        columns=80,
+        columns=79,
     )
     assert not enabled
     assert reason == (
-        "terminal width must be at least 112 columns for the required "
-        "full-size PONY CODE logo"
+        "terminal width must be at least 80 columns for the PONY CODE "
+        "conversation interface"
     )
     assert should_use_tui(
         stdin=_Stream(True),
@@ -173,8 +174,8 @@ def test_terminal_logo_default_is_the_full_size_asset():
     assert logo_text() == logo_text(120)
 
 
-@pytest.mark.parametrize("columns", (40, 80, 120))
-def test_terminal_welcome_preserves_logo_and_status(columns, monkeypatch):
+@pytest.mark.parametrize("columns", (80, 111, 112, 140))
+def test_terminal_welcome_preserves_brand_and_status(columns, monkeypatch):
     output = []
     renderer = TuiRenderer(no_color=True)
     agent = SimpleNamespace(
@@ -190,15 +191,17 @@ def test_terminal_welcome_preserves_logo_and_status(columns, monkeypatch):
     renderer.header(agent, model="gpt-test", columns=columns)
 
     rendered = "".join(fragment[1] for fragment in output[0])
-    assert "⣿" in rendered and "█" in rendered
-    assert "v1.2.3" in rendered
-    assert "openai/gpt-test" in rendered
-    if columns >= 64:
-        assert "Local coding agent for repository-grounded work" in rendered
-        assert "permission manual" in rendered
-        assert "esc+enter newline" in rendered
     if columns >= 112:
-        assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+        assert "⣿" in rendered and "█" in rendered
+    else:
+        assert rendered.startswith("PONY CODE\n")
+        assert "⣿" not in rendered
+    assert "v1.2.3" in rendered
+    assert "Ready" in rendered
+    assert "openai/chat/gpt-test" in rendered
+    assert "Local coding agent for repository-grounded work" in rendered
+    assert "permission manual" in rendered
+    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -418,7 +421,7 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
 
         def prompt(self, message, *_args, **_kwargs):
             assert callable(message)
-            for columns in (120, 40, 80):
+            for columns in (140, 80, 111, 112):
                 current_columns["value"] = columns
                 samples.append(
                     (
@@ -448,11 +451,16 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
     )
 
     assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
-    assert [columns for columns, _text in samples] == [120, 40, 80]
+    assert [columns for columns, _text in samples] == [140, 80, 111, 112]
     for columns, rendered in samples:
-        assert "⣿" in rendered and "█" in rendered
         if columns >= 112:
+            assert "⣿" in rendered and "█" in rendered
             assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+        else:
+            assert "PONY CODE" in rendered
+            assert "⣿" not in rendered
+        assert "Ready" in rendered
+        assert "Message Pony" in rendered
     assert not any("⣿" in "".join(fragment[1] for fragment in value) for value in written)
 
 
@@ -539,8 +547,8 @@ def test_repl_refuses_a_narrow_tty_instead_of_opening_plain_repl(
         "pony.tui.app.tui_capability",
         lambda: (
             False,
-            "terminal width must be at least 112 columns for the required "
-            "full-size PONY CODE logo",
+            "terminal width must be at least 80 columns for the PONY CODE "
+            "conversation interface",
         ),
     )
     monkeypatch.setattr(
@@ -549,7 +557,7 @@ def test_repl_refuses_a_narrow_tty_instead_of_opening_plain_repl(
     )
 
     assert run_repl(agent) == 2
-    assert "full-size PONY CODE logo" in capsys.readouterr().err
+    assert "PONY CODE conversation interface" in capsys.readouterr().err
 
 
 def test_plain_repl_never_starts_tui(monkeypatch):
@@ -618,7 +626,7 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert "█" in header
     assert "v1.0.0" in header
     assert "Local coding agent for repository-grounded work" in header
-    assert "Using gpt-test · permission manual" in header
+    assert "Ready · gpt-test · permission manual" in header
 
 
 def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
@@ -689,7 +697,7 @@ def test_tui_accepts_a_queued_turn_while_the_worker_is_busy(monkeypatch):
 
     def write(value, **_kwargs):
         text = "".join(fragment[1] for fragment in value)
-        if "queued input: 1/5 pending" in text:
+        if "queued for next turn: 1/5 pending" in text:
             queued.set()
 
     def handle_input(_agent, text, **_kwargs):
@@ -724,6 +732,72 @@ def test_tui_accepts_a_queued_turn_while_the_worker_is_busy(monkeypatch):
     assert not thread.is_alive()
     assert outcome == [0]
     assert calls == ["first", "second"]
+
+
+def test_busy_ctrl_c_clears_queue_but_current_turn_continues(monkeypatch):
+    release = threading.Event()
+    current_finished = threading.Event()
+    notice_visible = threading.Event()
+    prompts = queue.Queue()
+    calls = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            value = prompts.get(timeout=3)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+
+    def write(value, **_kwargs):
+        text = "".join(fragment[1] for fragment in value)
+        if "request cancellation is unavailable" in text:
+            notice_visible.set()
+
+    def handle_input(_agent, text, **_kwargs):
+        if text == "/exit":
+            return 0
+        calls.append(text)
+        if text == "active":
+            assert release.wait(timeout=3)
+            current_finished.set()
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.tui.render.print_formatted_text", write)
+    outcome = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_tui(agent, model="gpt-test", no_color=True, handle_input=handle_input)
+        )
+    )
+    thread.start()
+
+    prompts.put("active")
+    while calls != ["active"]:
+        threading.Event().wait(0.01)
+    prompts.put("queued")
+    prompts.put(KeyboardInterrupt())
+    assert notice_visible.wait(timeout=3)
+    release.set()
+    assert current_finished.wait(timeout=3)
+    prompts.put("/exit")
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert outcome == [0]
+    assert calls == ["active"]
 
 
 def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
@@ -806,7 +880,7 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         ),
     )
 
-    for columns in (40, 80, 120):
+    for columns in (80, 111, 112, 140):
         rendered = "".join(
             fragment[1]
             for fragment in TuiRenderer(no_color=True).toolbar(
@@ -819,10 +893,10 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         assert all(get_cwidth(line) < columns for line in lines)
         footer = lines[-1]
         assert "acceptEdits" in footer
-        if columns >= 80:
+        assert "anthropic/messages/claude-sonnet-4-6" in footer
+        if columns >= 112:
             assert "project" in footer
-            assert "anthropic/claude-sonnet-4-6" in footer
-        if columns == 120:
+        if columns == 140:
             assert "feature/very-long-branch" in footer
         assert "/very/long" not in rendered
         assert "session-must-not-appear" not in rendered
@@ -850,8 +924,123 @@ def test_toolbar_reads_the_model_from_the_current_client():
         )
     )
 
-    assert "openai/gpt-next" in rendered
+    assert "openai/responses/gpt-next" in rendered
     assert "gpt-old" not in rendered
+
+
+def test_toolbar_projects_trace_state_queue_and_existing_context_metadata(monkeypatch):
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        model_client=SimpleNamespace(
+            model="gpt-test",
+            provider_metadata={"protocol_family": "openai_responses"},
+        ),
+        last_request_metadata={},
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    def footer(*, busy=False, pending=0):
+        rendered = renderer.toolbar(
+            agent,
+            model="gpt-test",
+            columns=140,
+            busy=busy,
+            pending=pending,
+        )
+        return "".join(fragment[1] for fragment in rendered).splitlines()[-1]
+
+    renderer.trace({"event": "run_started"})
+    assert "Preparing" in footer(busy=True, pending=1)
+    assert "queue 1/5" in footer(busy=True, pending=1)
+
+    metadata = {
+        "context_breakdown": {
+            "budget": {"used": 32_000, "input_limit": 128_000}
+        }
+    }
+    task_state = SimpleNamespace(
+        run_id="run_tui",
+        task_id="task_tui",
+        attempts=1,
+    )
+    prompt_built = project_trace_event(
+        task_state,
+        "prompt_built",
+        {"request_metadata": metadata},
+        created_at="now",
+    )
+    renderer.trace(prompt_built)
+    assert "Waiting for model" in footer(busy=True)
+    assert "ctx 25%" in footer(busy=True)
+
+    renderer.trace(
+        {"event": "model_requested", "attempt_origin": "model_retry"}
+    )
+    assert "Retrying" in footer(busy=True)
+
+    renderer.trace(
+        {"event": "tool_started", "name": "read_file", "args": {"path": "a.py"}}
+    )
+    assert "Using tool" in footer(busy=True)
+    renderer.trace({"event": "tool_executed", "tool_status": "ok"})
+
+    renderer.trace({"event": "context_compacted"})
+    assert "Compacted" in footer(busy=True)
+    renderer.trace(
+        {
+            "event": "run_finished",
+            "status": "completed",
+            "stop_reason": "final_answer_returned",
+        }
+    )
+    assert "Completed" in footer()
+
+    renderer.notice("provider request failed", error=True)
+    assert "Failed" in footer()
+
+    interrupted = project_trace_event(
+        task_state,
+        "model_failed",
+        {"outcome": "interrupted"},
+        created_at="now",
+    )
+    assert interrupted["outcome"] == "interrupted"
+    renderer.trace(interrupted)
+    assert "Interrupted" in footer()
+    renderer.trace(
+        {
+            "event": "run_finished",
+            "status": "stopped",
+            "stop_reason": "interrupted",
+        }
+    )
+    assert "Interrupted" in footer()
+
+
+def test_prompt_and_conversation_have_plain_text_identity_anchors(monkeypatch):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.user("Inspect the failure", columns=80)
+    renderer.answer("The failure is isolated.", columns=80)
+
+    rendered = "".join(
+        fragment[1] for value in output for fragment in value
+    )
+    prompt = "".join(fragment[1] for fragment in renderer.prompt(columns=80))
+    assert "YOU\n  Inspect the failure" in rendered
+    assert "PONY\n  The failure is isolated." in rendered
+    assert "Message Pony\n› " in prompt
 
 
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
@@ -867,7 +1056,9 @@ def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
     renderer.trace({"event": "model_requested"})
     renderer.trace({"event": "model_requested"})
     assert len(output) == 1
-    assert "Working…" in "".join(fragment[1] for fragment in output[0][0])
+    assert "PONY  Waiting for model..." in "".join(
+        fragment[1] for fragment in output[0][0]
+    )
     assert output[0][1]["end"] == ""
 
     renderer.trace(
@@ -878,11 +1069,11 @@ def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
         }
     )
     after_start = len(output)
-    assert terminal.getvalue() == "\r        \r"
+    assert "\r" in terminal.getvalue()
     renderer.trace({"event": "tool_finished", "tool_status": "ok"})
     renderer.trace({"event": "checkpoint_created", "checkpoint_id": "ckpt_hidden"})
     assert len(output) == after_start
-    assert "› search \"checkpoint\" in pony/" in "".join(
+    assert "PONY  Using tool · search \"checkpoint\" in pony/..." in "".join(
         fragment[1] for fragment in output[-1][0]
     )
 
@@ -913,5 +1104,4 @@ def test_user_block_has_padding_without_exposing_terminal_controls(monkeypatch):
     rendered = "".join(fragment[1] for fragment in output[0])
     lines = rendered.splitlines()
     assert "\x1b" not in rendered
-    assert len(lines) == 4  # outside spacing + top padding + content + bottom padding
-    assert all(get_cwidth(line) == 19 for line in lines[1:])
+    assert lines == ["", "YOU", "  你好 Pony[31m"]

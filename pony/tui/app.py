@@ -22,7 +22,7 @@ from pony.cli.help import SLASH_COMMANDS
 from pony.cli.input_queue import InputQueue
 from pony.runtime.resume import active_prompt_history
 from pony.tools.permissions import display_permission_mode
-from pony.tui.render import FULL_TUI_MINIMUM_COLUMNS, TuiRenderer
+from pony.tui.render import COMPACT_TUI_MINIMUM_COLUMNS, TuiRenderer
 
 
 _WINDOWS = os.name == "nt"
@@ -160,16 +160,16 @@ def tui_capability(*, stdin=None, stdout=None, environ=None, columns=None):
         return False, ""
     term = environ.get("TERM", "").strip()
     if term.casefold() == "dumb" or (not term and not _WINDOWS):
-        return False, "terminal cannot display the required full-size PONY CODE logo"
+        return False, "terminal cannot display the PONY CODE conversation interface"
     width = columns
     if width is None:
         width = shutil.get_terminal_size((80, 24)).columns
-    if width < FULL_TUI_MINIMUM_COLUMNS:
+    if width < COMPACT_TUI_MINIMUM_COLUMNS:
         return (
             False,
             "terminal width must be at least "
-            f"{FULL_TUI_MINIMUM_COLUMNS} columns for the required "
-            "full-size PONY CODE logo",
+            f"{COMPACT_TUI_MINIMUM_COLUMNS} columns for the PONY CODE "
+            "conversation interface",
         )
     return True, ""
 
@@ -458,13 +458,15 @@ def run_tui(
 
     input_queue = InputQueue(
         process_turn,
-        on_start=lambda text: call_ui(renderer.user, text),
+        on_start=lambda text: call_ui(renderer.turn_started, text),
         on_wake=wake_prompt,
     )
 
     def approve(name, args):
-        call_ui(renderer.approval, name, args)
-        return input_queue.confirm("  Approve once? [y/N] ")
+        return input_queue.confirm(
+            "  Approve once? [y/N] ",
+            on_ready=lambda: call_ui(renderer.approval, name, args),
+        )
 
     def process_local(user_input):
         return handle_input(
@@ -500,7 +502,12 @@ def run_tui(
                         if confirmation is not None
                         else prompt_message,
                         prompt_continuation=_continuation,
-                        bottom_toolbar=lambda: renderer.toolbar(agent, model=model),
+                        bottom_toolbar=lambda: renderer.toolbar(
+                            agent,
+                            model=model,
+                            busy=input_queue.busy,
+                            pending=input_queue.pending_count,
+                        ),
                     )
                 )
                 startup_visible = False
@@ -516,7 +523,8 @@ def run_tui(
                     removed = input_queue.clear()
                     call_ui(
                         renderer.notice,
-                        f"current turn continues; cleared {removed} pending"
+                        "current turn continues (request cancellation is unavailable); "
+                        f"cleared {removed} queued next-turn input(s)"
                     )
                     continue
                 if hasattr(exc, "signal_number"):

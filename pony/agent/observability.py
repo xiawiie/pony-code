@@ -32,6 +32,7 @@ _TRACE_STRING_FIELDS = {
     "reason",
     "kind",
     "origin",
+    "outcome",
     "attempt_origin",
     "action_type",
     "name",

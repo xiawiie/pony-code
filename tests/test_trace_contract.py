@@ -16,6 +16,26 @@ def test_trace_contract_is_enveloped_and_low_sensitivity():
     assert "secret" not in json.dumps(events)
 
 
+def test_model_failure_outcome_survives_the_safe_trace_projection():
+    state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
+
+    event = project_trace_event(
+        state,
+        "model_failed",
+        {"outcome": "interrupted"},
+        created_at="now",
+    )
+    terminal = project_trace_event(
+        state,
+        "run_finished",
+        {"status": "stopped", "stop_reason": "interrupted"},
+        created_at="now",
+    )
+
+    assert event["outcome"] == "interrupted"
+    assert validate_trace([event, terminal]) == [event, terminal]
+
+
 def test_trace_policy_decision_mapping_is_projected_and_readable():
     state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
     policy_decision = {

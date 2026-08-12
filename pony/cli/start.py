@@ -681,7 +681,8 @@ def _route_repl_input(
         render_user(user_input)
         removed = input_queue.clear()
         render_status(
-            f"current turn continues before exit; cleared {removed} pending"
+            "current turn continues before exit; "
+            f"cleared {removed} queued next-turn input(s)"
         )
         input_queue.close()
         terminal_result = _raise_or_return_terminal(input_queue)
@@ -697,7 +698,8 @@ def _route_repl_input(
     submitted = input_queue.submit(user_input)
     if submitted.status == "queued":
         render_status(
-            f"queued input: {submitted.pending}/{MAX_PENDING_INPUTS} pending"
+            "queued for next turn: "
+            f"{submitted.pending}/{MAX_PENDING_INPUTS} pending"
         )
     elif submitted.status == "full":
         render_error(f"input queue is full ({MAX_PENDING_INPUTS} pending)")
@@ -825,7 +827,11 @@ def run_repl(
                         if input_queue.busy and not hasattr(exc, "signal_number"):
                             input_queue.answer_confirmation("")
                             removed = input_queue.clear()
-                            print(f"\ncurrent turn continues; cleared {removed} pending")
+                            print(
+                                "\ncurrent turn continues "
+                                "(request cancellation is unavailable); "
+                                f"cleared {removed} queued next-turn input(s)"
+                            )
                             continue
                         raise
 

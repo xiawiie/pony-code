@@ -116,7 +116,19 @@ def test_plain_repl_executes_queued_turns_in_canonical_order(
         "first request",
         "second request",
     ]
-    assert "queued input: 1/5 pending" in capsys.readouterr().out
+    assert "queued for next turn: 1/5 pending" in capsys.readouterr().out
+
+
+def test_confirmation_ui_failure_denies_without_waiting():
+    input_queue = InputQueue(lambda _text: None)
+
+    accepted = input_queue.confirm(
+        "Approve once? [y/N] ",
+        on_ready=lambda: (_ for _ in ()).throw(RuntimeError("ui failed")),
+    )
+
+    assert accepted is False
+    assert input_queue.confirmation() is None
 
 
 def test_queue_commands_are_zero_write_and_clear_unstarted_turn(
