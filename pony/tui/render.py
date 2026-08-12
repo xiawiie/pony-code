@@ -183,6 +183,19 @@ def _truncate(text, width):
     return "".join(clipped) + "..."
 
 
+def _clip_cells(text, width):
+    text = str(text)
+    remaining = max(0, int(width))
+    clipped = []
+    for character in text:
+        character_width = get_cwidth(character)
+        if character_width > remaining:
+            break
+        clipped.append(character)
+        remaining -= character_width
+    return "".join(clipped)
+
+
 def _centered(text, width):
     text = _truncate(text, width)
     return " " * max(0, (width - get_cwidth(text)) // 2) + text
@@ -528,14 +541,27 @@ class TuiRenderer:
                 self._show_activity("PONY  Waiting for model...")
         elif event == "tool_started":
             width = _terminal_width()
-            summary = _tool_summary(
-                envelope.get("name", "tool"),
-                envelope.get("args", {}),
-                width,
+            activity_prefix = "PONY  Using tool · "
+            activity_suffix = "..."
+            summary_width = max(
+                0,
+                width
+                - get_cwidth(activity_prefix)
+                - get_cwidth(activity_suffix),
+            )
+            summary = _clip_cells(
+                _tool_summary(
+                    envelope.get("name", "tool"),
+                    envelope.get("args", {}),
+                    width,
+                ),
+                summary_width,
             )
             self._active_tool = summary
             self._status = "Using tool"
-            self._show_activity(f"PONY  Using tool · {summary}...")
+            self._show_activity(
+                f"{activity_prefix}{summary}{activity_suffix}"
+            )
         elif event == "tool_executed":
             self._clear_activity()
             status = str(envelope.get("tool_status", ""))

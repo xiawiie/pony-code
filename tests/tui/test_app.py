@@ -1023,6 +1023,97 @@ def test_toolbar_projects_trace_state_queue_and_existing_context_metadata(monkey
     assert "Interrupted" in footer()
 
 
+@pytest.mark.parametrize(
+    ("terminal_event", "expected"),
+    (
+        (
+            {
+                "event": "run_finished",
+                "status": "failed",
+                "stop_reason": "model_error",
+            },
+            "Failed",
+        ),
+        (
+            {
+                "event": "run_finished",
+                "status": "stopped",
+                "stop_reason": "interrupted",
+            },
+            "Interrupted",
+        ),
+    ),
+)
+def test_answer_does_not_override_durable_terminal_state(
+    monkeypatch,
+    terminal_event,
+    expected,
+):
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        model_client=SimpleNamespace(
+            model="gpt-test",
+            provider_metadata={"protocol_family": "openai_responses"},
+        ),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.trace(terminal_event)
+    renderer.answer("Runtime terminal message", columns=80)
+
+    footer = "".join(
+        fragment[1]
+        for fragment in renderer.toolbar(agent, model="gpt-test", columns=112)
+    ).splitlines()[-1]
+    assert expected in footer
+
+
+@pytest.mark.parametrize("columns", (80, 111, 112))
+@pytest.mark.parametrize(
+    ("name", "args"),
+    (
+        ("read_file", {"path": "deep/" + "nested-directory/" * 20 + "file.py"}),
+        ("run_shell", {"command": "python -m pytest " + "very-long-test-name " * 20}),
+    ),
+)
+def test_tool_activity_is_bounded_by_terminal_width(
+    monkeypatch,
+    columns,
+    name,
+    args,
+):
+    output = []
+    terminal = io.StringIO()
+    monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
+    monkeypatch.setattr(
+        "pony.tui.render.shutil.get_terminal_size",
+        lambda _fallback: SimpleNamespace(columns=columns),
+    )
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **kwargs: output.append((value, kwargs)),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.trace({"event": "tool_started", "name": name, "args": args})
+
+    activity = "".join(fragment[1] for fragment in output[0][0])
+    assert activity.startswith("PONY  Using tool · ")
+    assert activity.endswith("...")
+    assert get_cwidth(activity) < columns
+    assert output[0][1]["end"] == ""
+
+    renderer.trace({"event": "tool_executed", "tool_status": "ok"})
+    cleared = terminal.getvalue().split("\r")[1]
+    assert get_cwidth(cleared) == get_cwidth(activity)
+
+
 def test_prompt_and_conversation_have_plain_text_identity_anchors(monkeypatch):
     output = []
     monkeypatch.setattr(
