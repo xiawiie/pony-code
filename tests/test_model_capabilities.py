@@ -54,30 +54,33 @@ def test_invalid_small_window_is_rejected():
         build_model_budget(capabilities)
 
 
-def test_resolution_priority_and_unknown_warning():
-    warnings = []
+def test_resolution_priority_projects_mixed_sources():
     capabilities = resolve_model_capabilities(
-        "unknown-model",
         model_config={"context_window": 64_000, "output_limit": 8_000},
         context_window=96_000,
-        warning_sink=warnings.append,
     )
     assert capabilities == ModelCapabilities(
         96_000,
         8_000,
         "provider_usage_or_estimate",
-        "cli",
+        "context_window:cli,max_output_tokens:config",
     )
-    assert warnings == []
 
-    fallback = resolve_model_capabilities(
-        "unknown-model",
-        warning_sink=warnings.append,
+    defaults = resolve_model_capabilities()
+    assert defaults == ModelCapabilities(
+        128_000,
+        16_384,
+        "provider_usage_or_estimate",
+        "default",
     )
-    assert fallback.context_window == 128_000
-    assert fallback.max_output_tokens == 16_384
-    assert fallback.source == "fallback"
-    assert len(warnings) == 1
+
+
+def test_model_capability_resolution_has_no_model_catalog_or_warning(capsys):
+    capabilities = resolve_model_capabilities()
+
+    assert capabilities.context_window == 128_000
+    assert capabilities.max_output_tokens == 16_384
+    assert capsys.readouterr().err == ""
 
 
 def test_cjk_json_and_message_estimates_are_not_ascii_divide_by_four():

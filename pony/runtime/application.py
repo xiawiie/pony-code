@@ -8,7 +8,6 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 import os
-import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -372,13 +371,10 @@ class Pony:
             explicit_model_config["context_window"] = model_config["context_window"]
         if config_meta.get("model_output_explicit") is True:
             explicit_model_config["output_limit"] = model_config["output_limit"]
-        model_name = str(getattr(model_client, "model", "") or "")
         model_capabilities = resolve_model_capabilities(
-            model_name,
             model_config=explicit_model_config,
             context_window=options.context_window,
             max_output_tokens=options.max_output_tokens,
-            warning_sink=lambda message: print(message, file=sys.stderr),
         )
         context_config = project_config["context"]
         memory_config = project_config["memory"]

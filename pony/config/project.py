@@ -36,13 +36,24 @@ def _table(parent, key, path):
 
 
 def _bounded_int(parent, key, default, minimum, maximum, path):
+    return _bounded_int_setting(
+        parent,
+        key,
+        default,
+        minimum,
+        maximum,
+        path,
+    )[0]
+
+
+def _bounded_int_setting(parent, key, default, minimum, maximum, path):
     value = parent.get(key, _MISSING)
     if value is _MISSING:
-        return default
+        return default, False
     if type(value) is int and minimum <= value <= maximum:
-        return value
+        return value, True
     _warn_invalid_pony_toml_field(path)
-    return default
+    return default, False
 
 
 def _bounded_bool(parent, key, default, path):
@@ -70,10 +81,8 @@ def _bounded_float(parent, key, default, minimum, maximum, path):
 
 
 def _validated_model(model, context):
-    context_explicit = "context_window" in model
-    output_explicit = "output_limit" in model
-    if context_explicit:
-        context_window = _bounded_int(
+    if "context_window" in model:
+        context_window, context_explicit = _bounded_int_setting(
             model,
             "context_window",
             128000,
@@ -82,7 +91,7 @@ def _validated_model(model, context):
             "model.context_window",
         )
     elif "total_budget_hard_cap" in context:
-        context_window = _bounded_int(
+        context_window, context_explicit = _bounded_int_setting(
             context,
             "total_budget_hard_cap",
             128000,
@@ -90,9 +99,17 @@ def _validated_model(model, context):
             2_000_000,
             "context.total_budget_hard_cap",
         )
-        context_explicit = True
     else:
         context_window = 128000
+        context_explicit = False
+    output_limit, output_explicit = _bounded_int_setting(
+        model,
+        "output_limit",
+        16384,
+        1,
+        384000,
+        "model.output_limit",
+    )
     return {
         "_meta": {
             "model_context_explicit": context_explicit,
@@ -100,14 +117,7 @@ def _validated_model(model, context):
         },
         "model": {
             "context_window": context_window,
-            "output_limit": _bounded_int(
-                model,
-                "output_limit",
-                16384,
-                1,
-                384000,
-                "model.output_limit",
-            ),
+            "output_limit": output_limit,
         },
     }
 

@@ -147,6 +147,10 @@ digest_tokens = 256
         "inline_tokens": 4_096,
         "digest_tokens": 256,
     }
+    assert config["_meta"] == {
+        "model_context_explicit": False,
+        "model_output_explicit": False,
+    }
 
 
 def test_prepare_tool_result_uses_token_limits(tmp_path):

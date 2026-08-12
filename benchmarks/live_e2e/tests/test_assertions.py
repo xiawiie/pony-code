@@ -100,7 +100,6 @@ def test_live_fixture_uses_model_budget_and_compaction_contract():
     context = fixture["context"]
     compaction = context["compaction"]
     capabilities = resolve_model_capabilities(
-        "live-fixture",
         model_config=model,
     )
     budget = build_model_budget(

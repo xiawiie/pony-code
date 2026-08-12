@@ -91,6 +91,21 @@ def test_pony_constructor_uses_coding_agent_defaults(tmp_path):
     assert agent.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS == 16_384
 
 
+def test_runtime_model_budget_override_preserves_compaction_invariants(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        context_window=256_000,
+        max_output_tokens=32_768,
+    )
+
+    assert agent.model_capabilities.context_window == 256_000
+    assert agent.max_output_tokens == 32_768
+    assert agent.model_budget.reserve_tokens == 32_768
+    assert agent.model_budget.input_limit == 223_232
+    assert agent.model_capabilities.source == "cli"
+
+
 def test_new_runtime_persists_current_messages_only(tmp_path):
     agent = build_agent(tmp_path, ["done"])
 
@@ -184,6 +199,32 @@ def test_model_switch_persists_and_resumes_with_the_new_binding(tmp_path):
         ),
     )
     assert resumed.current_model_binding()["model"] == "gpt-next"
+
+
+def test_model_switch_accepts_unseen_model_without_budget_warning(tmp_path, capsys):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+
+    def factory(model):
+        return bound_fake_client([], model=model)
+
+    agent = Pony(
+        model_client=factory("initial-model"),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+    capsys.readouterr()
+
+    agent.set_model("vendor-future-model-2030")
+
+    assert agent.model_capabilities.context_window == 128_000
+    assert agent.max_output_tokens == 16_384
+    assert agent.model_capabilities.source == "default"
+    assert capsys.readouterr().err == ""
 
 
 def test_model_switch_rejects_session_change_during_client_factory(tmp_path):
