@@ -159,8 +159,12 @@ def _logo_fragments(columns):
     )
 
 
+def _terminal_columns():
+    return shutil.get_terminal_size((80, 24)).columns
+
+
 def _terminal_width(columns=None):
-    columns = columns or shutil.get_terminal_size((80, 24)).columns
+    columns = columns or _terminal_columns()
     return max(1, int(columns) - 1)
 
 
@@ -351,7 +355,7 @@ class TuiRenderer:
         print_formatted_text(value, style=self.style, **kwargs)
 
     def welcome(self, agent, *, model, columns=None):
-        columns = columns or shutil.get_terminal_size((80, 24)).columns
+        columns = columns or _terminal_columns()
         width = max(1, columns - 1)
         current_mode = getattr(agent, "current_permission_mode", None)
         permission_mode = display_permission_mode(

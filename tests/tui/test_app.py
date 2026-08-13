@@ -610,7 +610,11 @@ def test_tui_restores_runtime_hooks(monkeypatch):
 
     class FakeSession:
         def __init__(self, **_kwargs):
-            pass
+            self.app = SimpleNamespace(
+                output=SimpleNamespace(
+                    get_size=lambda: SimpleNamespace(columns=120),
+                ),
+            )
 
         def prompt(self, message, *_args, **_kwargs):
             if callable(message):
@@ -619,8 +623,8 @@ def test_tui_restores_runtime_hooks(monkeypatch):
 
     monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
     monkeypatch.setattr(
-        "pony.tui.render.shutil.get_terminal_size",
-        lambda _fallback: SimpleNamespace(columns=120),
+        "pony.tui.render._terminal_columns",
+        lambda: 120,
     )
     monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
@@ -1112,8 +1116,8 @@ def test_tool_activity_is_bounded_by_terminal_width(
     terminal = io.StringIO()
     monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
     monkeypatch.setattr(
-        "pony.tui.render.shutil.get_terminal_size",
-        lambda _fallback: SimpleNamespace(columns=columns),
+        "pony.tui.render._terminal_columns",
+        lambda: columns,
     )
     monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
@@ -1139,8 +1143,8 @@ def test_tool_activity_clear_uses_the_current_terminal_width(monkeypatch):
     current = SimpleNamespace(columns=140)
     monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
     monkeypatch.setattr(
-        "pony.tui.render.shutil.get_terminal_size",
-        lambda _fallback: current,
+        "pony.tui.render._terminal_columns",
+        lambda: current.columns,
     )
     monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
