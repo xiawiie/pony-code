@@ -22,7 +22,7 @@ from pony.cli.help import SLASH_COMMANDS
 from pony.cli.input_queue import InputQueue
 from pony.runtime.resume import active_prompt_history
 from pony.tools.permissions import display_permission_mode
-from pony.tui.render import COMPACT_TUI_MINIMUM_COLUMNS, TuiRenderer
+from pony.tui.render import FULL_TUI_MINIMUM_COLUMNS, TuiRenderer
 
 
 _WINDOWS = os.name == "nt"
@@ -164,12 +164,12 @@ def tui_capability(*, stdin=None, stdout=None, environ=None, columns=None):
     width = columns
     if width is None:
         width = shutil.get_terminal_size((80, 24)).columns
-    if width < COMPACT_TUI_MINIMUM_COLUMNS:
+    if width < FULL_TUI_MINIMUM_COLUMNS:
         return (
             False,
             "terminal width must be at least "
-            f"{COMPACT_TUI_MINIMUM_COLUMNS} columns for the PONY CODE "
-            "conversation interface",
+            f"{FULL_TUI_MINIMUM_COLUMNS} columns for the required "
+            "full-size PONY CODE logo",
         )
     return True, ""
 

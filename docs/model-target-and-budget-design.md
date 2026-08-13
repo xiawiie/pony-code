@@ -106,8 +106,8 @@ name 推断；strict、parallel 与 reasoning 等型号能力仍只授予有证�
 
 旧界面只有低对比用户块和 `Working…`，用户难以判断输入区、对话双方和运行阶段。本轮改为：
 
-- 80–111 列显示 compact `PONY CODE`；112+ 保留冻结的完整马形 Logo/块状字标；<80 稳定拒绝；
-- 输入区固定显示 `Message Pony`，消息以 `YOU` / `PONY` 锚定；Assistant 正文继续使用安全 Markdown renderer；
+- 80/111 列稳定拒绝，112+ 保留冻结的完整马形 Logo/块状字标，不提供 compact 替代版；
+- 输入区固定显示 `Message Pony`；用户消息为无标签低对比块，Assistant 使用 `PONY` 锚点和安全 Markdown renderer；
 - Ready、Preparing、Waiting for model、Retrying、Compacting、Using tool、approval、Completed、Interrupted、Failed 来自
   durable trace 后的 UI 副本，而非定时器猜测；
 - footer 复用已有 `context_breakdown` 投影 context 百分比，并显示 queue、permission 与具体 protocol/model；不重算 token，
@@ -137,6 +137,6 @@ stream 不执行 Tool；取消后 durable terminal state 与费用边界如实�
 | codec 边界 | 共享模块不含 endpoint/history/continuation/state |
 | strict tools | 嵌套 object/array/组合 schema nullable-required 与递归 null cleanup |
 | Chat output | generic compatible endpoint 使用 `max_tokens`；官方 Chat endpoint 使用 `max_completion_tokens` |
-| TUI | 80/111 compact、112/120 完整资产、YOU/PONY、Message Pony、真实状态和 context footer |
+| TUI | 80/111 拒绝、112/120 完整资产、无标签用户块、PONY、Message Pony、真实状态和 context footer |
 | cancel 语义 | queue clear/Ctrl+C 明确 current turn continues |
 | live | exact configured Target 的收费 tool-loop；不得用 offline contract 代替 |

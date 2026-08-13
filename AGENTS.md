@@ -83,15 +83,15 @@ CLI/TUI 合同：
   读取 HOME/plugin/`.agents` 兼容路径，不得执行 Skill 脚本、安装、注册工具或持久化 loaded state。
 - transient bypass capability 只进入冻结的 `RuntimeOptions`，不持久化；构造、resume、mode setter 与 Executor 都必须
   fail closed。`/plan open|share` 从非 Plan mode 调用时先进入 Plan；空 artifact 不打开 editor 或 share。
-- TUI 只在 stdin/stdout 为 TTY、终端能力可用且至少 80 列时启用；必须遵守 `NO_COLOR` / `--no-color`。Windows 不要求
+- TUI 只在 stdin/stdout 为 TTY、终端能力可用且至少 112 列时启用；必须遵守 `NO_COLOR` / `--no-color`。Windows 不要求
   `TERM`；其他平台拒绝缺失/空白或 `TERM=dumb` 的交互 TTY。
-- 112 列及以上只允许完整尺寸的马形 `PONY CODE` 欢迎资产；`--quiet` 也不能抑制它。80–111 列使用明确的
-  `PONY CODE` compact 欢迎状态，低于 80 列以稳定 usage error 要求扩宽，不能静默进入纯文本 REPL。只有非 TTY
-  自动化 fallback 和 `pony run` 不输出装饰性 banner。
+- 完整 TUI 只允许完整尺寸的马形 `PONY CODE` 欢迎资产；Logo/字标不可隐藏，`--quiet` 也不能抑制它。交互 TTY 低于
+  112 列时以稳定 usage error 要求扩宽，不能进入无 Logo 的纯文本 REPL，也不得恢复 medium、micro、缩放或单行替代版。
+  只有非 TTY 自动化 fallback 和 `pony run` 不输出装饰性 banner。
 - 完整尺寸的马形 Logo、块状字标、欢迎页布局和视觉语言是用户冻结的产品资产。只有用户明确要求修改设计时才可变更；
   重构、Claude Code/Codex 交互对齐、性能优化和代码精简都不是修改授权。允许修复宽度、裁切、颜色能力和字符兼容 bug，
-  并通过 80/111 列 compact、112/120 列完整大版和运行中缩放回归测试。
-- 用户与 Assistant 消息分别使用 `YOU` / `PONY` 对话锚点；正文使用内置、安全的 Markdown renderer，消息块之间只留
+  但必须保持“完整大版是唯一 TUI 状态”的视觉意图，并通过 80/111 列拒绝、112/120 列完整大版和运行中缩放回归测试。
+- 用户消息使用低对比块且不加角色标签；Assistant 使用 `PONY` 锚点和内置、安全的 Markdown renderer，消息块之间只留
   一个视觉间距。输入区必须显示 `Message Pony`，不能让用户猜测是否处于聊天状态。
 - Preparing、Waiting for model、Retrying、Compacting、Using tool、approval、Completed、Interrupted 与 Failed 都由
   真实 trace/queue 状态投影；瞬态 activity 必须可清除。自动 checkpoint 不进入对话区，成功 Tool 只显示一条语义摘要。

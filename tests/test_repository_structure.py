@@ -185,14 +185,14 @@ def test_product_docs_lock_current_execution_and_support_contract():
     assert "TUI import、单元测试或截图不能替代本清单" in " ".join(
         verification.split()
     )
-    assert "80/111 列 compact、112/120 列完整大版" in verification
+    assert "80/111 列拒绝、112/120 列完整大版" in verification
     assert "exact candidate SHA" in verification
     assert "Phase 5 结论：PASS 或 FAIL" in verification
     assert "bounded synthetic" in readme
     assert "真实任务失败不 fallback" in readme
     assert "完整资产本身保持冻结" in readme
-    assert "80–111 列使用 compact" in readme
-    assert "`YOU` / `PONY`" in readme
+    assert "80/111 列要求扩宽" in readme
+    assert "用户消息为无标签的低对比块" in readme
     assert "`Message Pony`" in readme
     assert "128,000 context / 16,384" in readme
     assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(

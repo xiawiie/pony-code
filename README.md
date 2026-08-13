@@ -133,9 +133,9 @@ pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
 
 `pony` 与 `pony repl` 是同一个交互会话；`pony run` 一次执行后退出。未知首 token 不会被静默当作 prompt。
-TUI 要求 stdin/stdout 为 TTY 且至少 80 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。80–111 列使用 compact
-`PONY CODE` 会话界面，112 列及以上显示完整马形 Logo 与块状字标；低于 80 列返回稳定 usage error，不会静默进入纯文本
-界面。只有非 TTY 自动化输入才使用纯文本 REPL。
+TUI 要求 stdin/stdout 为 TTY 且至少 112 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。低于 112 列返回稳定 usage
+error，不会静默进入纯文本或缩小版界面；112 列及以上只显示完整马形 Logo 与块状字标。只有非 TTY 自动化输入才使用纯文本
+REPL。
 `pony run` 不显示装饰性 banner。
 
 ## 配置与 Provider 路由
@@ -215,10 +215,10 @@ stateDiagram-v2
 | Skills | `/<skill-name> [prompt]` | 仅受信 `.claude/skills`、只读、当前 turn、不会执行脚本 |
 | Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
 
-112 列及以上继续使用截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标，完整资产本身保持冻结；80–111 列使用 compact
-品牌状态，低于 80 列要求扩宽。对话区以 `YOU` / `PONY` 标识双方，输入区显示 `Message Pony`；footer 展示真实运行状态、
-queue、已有 context 占用、permission 和具体 protocol/model。忙碌时的 Ctrl+C 只清除 queued next-turn input，并明确说明
-当前请求不会被取消；Pony 1.0 尚未实现 transport streaming/cancel。
+112 列及以上继续使用截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标，完整资产本身保持冻结；80/111 列要求扩宽，
+不显示 compact 替代版。用户消息为无标签的低对比块，Assistant 使用 `PONY` 锚点，输入区显示 `Message Pony`；footer
+展示真实运行状态、queue、已有 context 占用、permission 和具体 protocol/model。忙碌时的 Ctrl+C 只清除 queued
+next-turn input，并明确说明当前请求不会被取消；Pony 1.0 尚未实现 transport streaming/cancel。
 
 ## 并行 Worktree Agent
 

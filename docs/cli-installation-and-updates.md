@@ -141,8 +141,8 @@ Provider、protocol 与 model，`/model <model>` 保存新的 Session model。�
 opaque Provider state 的历史返回 `model_session_mismatch`。Pony 不维护模型目录，也不会为切换发起探测或在失败后
 fallback。
 
-TUI 需要 stdin/stdout 同时为 TTY 且终端至少 80 列；非 Windows 还要求 `TERM` 有效且不是 `dumb`。80–111 列显示 compact
-`PONY CODE` 会话状态，112 列及以上显示冻结的完整马形 Logo/字标；低于 80 列返回 usage error，不会进入纯文本 REPL。
+TUI 需要 stdin/stdout 同时为 TTY 且终端至少 112 列；非 Windows 还要求 `TERM` 有效且不是 `dumb`。低于 112 列返回
+usage error，不会进入纯文本 REPL 或 compact 替代版；112 列及以上显示冻结的完整马形 Logo/字标。
 颜色仍遵守 `--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；busy 时可排队最多五条 follow-up，`/queue [clear]` 查看或
 清空。idle 时 `Ctrl+D` 退出，`Ctrl+C` 清空输入并可再次按下退出；busy Ctrl+C 只清空 queued next-turn input，并明确
 当前 Provider/Tool 仍继续，不能当作 request cancellation。
@@ -289,5 +289,5 @@ terminal child 要显式加 `--discard`。执行阶段进程中断遗留的 `cre
 | `legacy_sandbox_session_unsupported` | 该 Session 绑定旧 Sandbox；检查历史后创建新的 Host Session |
 | `pony` 找不到 | 虚拟环境与 PATH 是否一致 |
 | 裸 `pony` 仍显示旧 help | `command -v pony` / `pony --version` 是否指向旧安装；从当前版本重新安装或使用 `uv run pony` |
-| TUI 因宽度被拒绝 | 将交互终端扩至至少 80 列；80–111 使用 compact，112+ 使用完整大版 |
+| TUI 因宽度被拒绝 | 将交互终端扩至至少 112 列；112+ 使用唯一完整大版 |
 | 没有 TUI 颜色或菜单 | 检查 stdin/stdout、`TERM`、`NO_COLOR` / `--no-color`；非 TTY 才使用纯文本模式 |

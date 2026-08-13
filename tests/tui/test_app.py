@@ -36,8 +36,8 @@ class _Stream:
 @pytest.mark.parametrize(
     ("stdin_tty", "stdout_tty", "term", "columns", "expected"),
     (
-        (True, True, "xterm-256color", 80, True),
-        (True, True, "xterm-256color", 111, True),
+        (True, True, "xterm-256color", 80, False),
+        (True, True, "xterm-256color", 111, False),
         (True, True, "xterm-256color", 112, True),
         (False, True, "xterm-256color", 80, False),
         (True, False, "xterm-256color", 80, False),
@@ -72,12 +72,12 @@ def test_windows_tui_does_not_require_term(monkeypatch):
         stdin=_Stream(True),
         stdout=_Stream(True),
         environ={},
-        columns=79,
+        columns=80,
     )
     assert not enabled
     assert reason == (
-        "terminal width must be at least 80 columns for the PONY CODE "
-        "conversation interface"
+        "terminal width must be at least 112 columns for the required "
+        "full-size PONY CODE logo"
     )
     assert should_use_tui(
         stdin=_Stream(True),
@@ -175,7 +175,7 @@ def test_terminal_logo_default_is_the_full_size_asset():
 
 
 @pytest.mark.parametrize("columns", (80, 111, 112, 140))
-def test_terminal_welcome_preserves_brand_and_status(columns, monkeypatch):
+def test_terminal_welcome_preserves_full_brand_and_status(columns, monkeypatch):
     output = []
     renderer = TuiRenderer(no_color=True)
     agent = SimpleNamespace(
@@ -191,17 +191,14 @@ def test_terminal_welcome_preserves_brand_and_status(columns, monkeypatch):
     renderer.header(agent, model="gpt-test", columns=columns)
 
     rendered = "".join(fragment[1] for fragment in output[0])
-    if columns >= 112:
-        assert "⣿" in rendered and "█" in rendered
-    else:
-        assert rendered.startswith("PONY CODE\n")
-        assert "⣿" not in rendered
+    assert "⣿" in rendered and "█" in rendered
     assert "v1.2.3" in rendered
     assert "Ready" in rendered
     assert "openai/chat/gpt-test" in rendered
     assert "Local coding agent for repository-grounded work" in rendered
     assert "permission manual" in rendered
-    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+    if columns >= 112:
+        assert all(get_cwidth(line) < columns for line in rendered.splitlines())
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -453,12 +450,9 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
     assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
     assert [columns for columns, _text in samples] == [140, 80, 111, 112]
     for columns, rendered in samples:
+        assert "⣿" in rendered and "█" in rendered
         if columns >= 112:
-            assert "⣿" in rendered and "█" in rendered
             assert all(get_cwidth(line) < columns for line in rendered.splitlines())
-        else:
-            assert "PONY CODE" in rendered
-            assert "⣿" not in rendered
         assert "Ready" in rendered
         assert "Message Pony" in rendered
     assert not any("⣿" in "".join(fragment[1] for fragment in value) for value in written)
@@ -547,8 +541,8 @@ def test_repl_refuses_a_narrow_tty_instead_of_opening_plain_repl(
         "pony.tui.app.tui_capability",
         lambda: (
             False,
-            "terminal width must be at least 80 columns for the PONY CODE "
-            "conversation interface",
+            "terminal width must be at least 112 columns for the required "
+            "full-size PONY CODE logo",
         ),
     )
     monkeypatch.setattr(
@@ -557,7 +551,7 @@ def test_repl_refuses_a_narrow_tty_instead_of_opening_plain_repl(
     )
 
     assert run_repl(agent) == 2
-    assert "PONY CODE conversation interface" in capsys.readouterr().err
+    assert "full-size PONY CODE logo" in capsys.readouterr().err
 
 
 def test_plain_repl_never_starts_tui(monkeypatch):
@@ -1190,7 +1184,7 @@ def test_approval_resolution_replaces_waiting_state(monkeypatch):
     assert "Waiting for approval" not in footer
 
 
-def test_prompt_and_conversation_have_plain_text_identity_anchors(monkeypatch):
+def test_prompt_and_assistant_have_identity_anchors(monkeypatch):
     output = []
     monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
@@ -1205,7 +1199,8 @@ def test_prompt_and_conversation_have_plain_text_identity_anchors(monkeypatch):
         fragment[1] for value in output for fragment in value
     )
     prompt = "".join(fragment[1] for fragment in renderer.prompt(columns=80))
-    assert "YOU\n  Inspect the failure" in rendered
+    assert "YOU" not in rendered
+    assert "Inspect the failure" in rendered
     assert "PONY\n  The failure is isolated." in rendered
     assert "Message Pony\n› " in prompt
 
@@ -1271,4 +1266,6 @@ def test_user_block_has_padding_without_exposing_terminal_controls(monkeypatch):
     rendered = "".join(fragment[1] for fragment in output[0])
     lines = rendered.splitlines()
     assert "\x1b" not in rendered
-    assert lines == ["", "YOU", "  你好 Pony[31m"]
+    assert len(lines) == 4
+    assert all(get_cwidth(line) == 19 for line in lines[1:])
+    assert "你好 Pony[31m" in rendered

@@ -52,7 +52,6 @@ _PIXEL_GLYPHS = {
 }
 
 FULL_TUI_MINIMUM_COLUMNS = 112
-COMPACT_TUI_MINIMUM_COLUMNS = 80
 _PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
 
 _COLOR_STYLE = Style.from_dict(
@@ -61,8 +60,7 @@ _COLOR_STYLE = Style.from_dict(
         "meta": "#858585",
         "editor.prompt": "",
         "editor.border": "#777777",
-        "user": "#d7d7d7",
-        "user.label": "bold #f4f4f5",
+        "user": "bg:#30303d #f4f4f5",
         "assistant.label": "bold #f4f4f5",
         "activity": "italic #858585",
         "tool": "#bdbdbd",
@@ -92,7 +90,6 @@ _PLAIN_STYLE = Style.from_dict(
         "editor.prompt": "bold",
         "editor.border": "",
         "user": "",
-        "user.label": "bold",
         "assistant.label": "bold",
         "activity": "italic",
         "tool": "",
@@ -273,13 +270,16 @@ def _conversation_block(label, text, width, *, label_style, content_style=""):
 
 
 def _user_block(text, width):
-    return _conversation_block(
-        "YOU",
-        text,
-        width,
-        label_style="class:user.label",
-        content_style="class:user",
-    )
+    content_width = max(1, width - 2)
+    rendered = render_markdown(text, width=content_width, base_style="class:user")
+    fragments = [("", "\n"), ("class:user", " " * width + "\n")]
+    for line in _formatted_lines(rendered):
+        used = min(content_width, _line_width(line))
+        fragments.append(("class:user", " "))
+        fragments.extend(line)
+        fragments.append(("class:user", " " * (width - used - 1) + "\n"))
+    fragments.append(("class:user", " " * width + "\n"))
+    return FormattedText(fragments)
 
 
 def _assistant_block(text, width):
@@ -353,7 +353,6 @@ class TuiRenderer:
     def welcome(self, agent, *, model, columns=None):
         columns = columns or shutil.get_terminal_size((80, 24)).columns
         width = max(1, columns - 1)
-        compact = columns < FULL_TUI_MINIMUM_COLUMNS
         current_mode = getattr(agent, "current_permission_mode", None)
         permission_mode = display_permission_mode(
             current_mode()
@@ -361,23 +360,6 @@ class TuiRenderer:
             else getattr(agent, "session", {}).get("permission_mode", "auto")
         )
         target = _model_label(agent, model)
-        if compact:
-            version_line = _truncate(
-                f"v{_product_version()} · {_PRODUCT_DESCRIPTION}",
-                width,
-            )
-            ready_line = _truncate(
-                f"Ready · {target} · permission {permission_mode}",
-                width,
-            )
-            return FormattedText(
-                [
-                    ("class:logo", "PONY CODE\n"),
-                    ("class:meta", f"{version_line}\n"),
-                    ("class:key", ready_line[: len("Ready")]),
-                    ("class:meta", f"{ready_line[len('Ready') :]}\n"),
-                ]
-            )
         return FormattedText(
             [
                 *_logo_fragments(columns),
