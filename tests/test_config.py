@@ -288,13 +288,13 @@ def test_openai_family_selection_uses_protocol_core_on_official_origin(provider)
 
     assert resolved["protocol"]["value"] == "openai_responses"
     assert resolved["resolved_provider"]["value"] == "openai-responses"
-    assert resolved["capabilities"] == {}
+    assert resolved["capabilities"] == {"reasoning_replay": True}
 
 
 @pytest.mark.parametrize(
     ("provider", "expected"),
     (
-        ("openai-responses", {}),
+        ("openai-responses", {"reasoning_replay": True}),
         ("openai-chat", {"output_token_field": "max_completion_tokens"}),
     ),
 )
@@ -387,7 +387,7 @@ def test_openai_family_session_binding_keeps_protocol_core_on_official_origin():
 
     assert resolved["resolution_source"] == "session_binding"
     assert resolved["protocol"]["value"] == "openai_responses"
-    assert resolved["capabilities"] == {}
+    assert resolved["capabilities"] == {"reasoning_replay": True}
 
 
 def test_generic_forced_protocol_has_no_unverified_optional_capabilities():
@@ -421,7 +421,7 @@ def test_generic_forced_protocol_has_no_unverified_optional_capabilities():
 
     assert generic["capabilities"] == {}
     assert noncanonical_official_path["capabilities"] == {}
-    assert official["capabilities"] == {}
+    assert official["capabilities"] == {"reasoning_replay": True}
 
 
 def test_probe_candidate_projects_a_complete_resolved_config():

@@ -1,10 +1,12 @@
 import pytest
 
+from pony.agent.context_manager import _build_tools_list
 from pony.providers.openai_wire import (
     drop_optional_null_arguments,
     prepare_function_tools,
     render_system_instructions,
 )
+from pony.tools.registry import WORKTREE_DELEGATE_TOOL_SPEC
 
 
 def _tool_schema():
@@ -63,7 +65,7 @@ def test_shared_function_schema_keeps_protocol_core_conservative():
     ) == {"pattern": "x"}
 
 
-def test_strict_function_schema_recurses_through_objects_arrays_and_alternatives():
+def test_strict_function_schema_recurses_through_objects_arrays_and_any_of():
     tool = {
         "name": "delegate_worktrees",
         "input_schema": {
@@ -75,7 +77,7 @@ def test_strict_function_schema_recurses_through_objects_arrays_and_alternatives
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "mode": {"type": "string"},
+                            "mode": {"type": "string", "default": "readonly"},
                             "options": {
                                 "anyOf": [
                                     {
@@ -129,6 +131,39 @@ def test_strict_function_schema_recurses_through_objects_arrays_and_alternatives
             {"name": "two", "mode": "write"},
         ]
     }
+
+
+@pytest.mark.parametrize("keyword", ("oneOf", "allOf"))
+def test_strict_function_schema_rejects_unsupported_composition(keyword):
+    tool = _tool_schema()
+    tool["input_schema"]["properties"]["path"] = {
+        keyword: [{"type": "string"}, {"type": "null"}]
+    }
+
+    with pytest.raises(ValueError, match="unsupported composition"):
+        prepare_function_tools([tool], strict=True)
+
+
+def test_strict_function_schema_rejects_root_any_of():
+    tool = _tool_schema()
+    tool["input_schema"] = {
+        "anyOf": [{"type": "object"}, {"type": "object"}]
+    }
+
+    with pytest.raises(ValueError, match="root must be an object"):
+        prepare_function_tools([tool], strict=True)
+
+
+def test_strict_function_schema_removes_defaults_from_real_worktree_tool():
+    canonical = _build_tools_list(
+        {"delegate_worktrees": WORKTREE_DELEGATE_TOOL_SPEC}
+    )
+
+    prepared, _optional_by_name = prepare_function_tools(canonical, strict=True)
+
+    task = prepared[0]["parameters"]["properties"]["tasks"]["items"]
+    assert "default" not in task["properties"]["mode"]["anyOf"][0]
+    assert "default" not in task["properties"]["max_steps"]["anyOf"][0]
 
 
 def test_shared_system_instructions_validate_canonical_blocks():

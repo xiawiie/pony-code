@@ -24,12 +24,13 @@ Chat Completions 虽属于同一产品 family，却有不同 endpoint、消息�
   回到默认但不标为显式来源。runtime 不根据 model name 自动换档。
 - 任意合法 model id 直接使用所选 Transport 的 Protocol Core。future/unknown model 不 warning、不强制 probe，也不获得
   未证明的 optional wire behavior。
-- protocol/endpoint 已证明的字段合同可以按 exact protocol/endpoint scope 应用；strict、reasoning、parallel 等型号增强只能
-  以有证据的 exact Target scope 应用。两者都只影响所属 adapter 的 serialization、parsing 或 opaque state replay，不参与
+- protocol/endpoint 已证明的字段与 continuation 合同可以按 exact protocol/endpoint scope 应用；strict、parallel 等型号增强
+  只能以有证据的 exact Target scope 应用。两者都只影响所属 adapter 的 serialization、parsing 或 opaque state replay，不参与
   Target 准入、Request Budget、probe、UI 推荐或 Session 切换边界。
 - OpenAI Responses 与 Chat Completions 可共享 User-Agent、canonical system 文本、function schema normalization 和
   optional-null cleanup；必须分别拥有 endpoint、request/response codec、tool continuation、opaque state 与未来 streaming
-  parser。strict schema normalization 递归覆盖 object、array 与组合 schema；只清除由 optional nullable 编码产生的 null。
+  parser。strict schema normalization 要求 object 根，递归覆盖 object、array 与 `anyOf`，移除不支持的 `default` 注解，
+  对无法安全转换的根 `anyOf` 与嵌套 `oneOf`/`allOf` fail closed，并只清除由 optional nullable 编码产生的 null。
   Chat 不再反向导入 Responses 私有 helper。
 - `openai`/`auto` 对不明确 OpenAI-compatible endpoint 按 Responses、Chat 顺序执行已有 bounded synthetic resolution；
   timeout、TLS、redirect、rate-limit、5xx 与认证失败停止；明确 protocol mismatch 或确定性非认证 4xx 可尝试下一
@@ -46,5 +47,5 @@ Chat Completions 虽属于同一产品 family，却有不同 endpoint、消息�
 - OpenAI 两套 adapter 删除了错误的私有依赖，但没有制造一个同时处理两种协议的条件分支 codec。
 - exact Target 型号增强不是 catalog：未命中仍正常使用 Protocol Core 与已证明的 endpoint 字段合同，不会被拒绝或改变预算。
 - Chat generic compatible endpoint 保守发送既有 `max_tokens`；官方 Chat endpoint 按当前协议使用
-  `max_completion_tokens`。字段选择不按 model name 猜测，也不会赋予未知 compatible endpoint 官方能力；strict、parallel 与
-  reasoning 等型号能力仍保持 exact Target scope。
+  `max_completion_tokens`。官方 Responses stateless reasoning continuation 保持 endpoint scope；这些选项都不按 model name
+  猜测，也不会赋予未知 compatible endpoint 官方能力；strict 与 parallel 型号能力仍保持 exact Target scope。

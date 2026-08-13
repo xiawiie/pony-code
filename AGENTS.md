@@ -138,8 +138,8 @@ PONY_MODEL
   CLI 和 `pony.toml` 可显式提高或降低完整预算，例如 256000 / 32768。不得根据 model name 静默换档。
 - OpenAI Responses 与 Chat Completions 可共享认证、User-Agent、system 文本和 function schema 原语，但必须保留独立
   endpoint、request/response codec、tool continuation、opaque state 和未来 streaming parser。协议字段可按 exact
-  protocol/endpoint 决定；strict、reasoning、parallel 等型号增强只能按有证据的 exact Target 收紧应用，不能按官方
-  endpoint 向未来型号放大。
+  protocol/endpoint 决定；官方 Responses 的 stateless reasoning continuation 属于 endpoint 合同，strict、parallel 等型号
+  增强只能按有证据的 exact Target 收紧应用，不能按官方 endpoint 向未来型号放大。
 - API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随
   redirect、不在失败后切换 Transport。
 - Session binding 的 protocol 或 endpoint 变化返回稳定的 `model_session_mismatch`。model 只能通过专用 Session writer

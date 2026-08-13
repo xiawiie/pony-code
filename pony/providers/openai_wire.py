@@ -16,6 +16,8 @@ _ARRAY_ITEM = "[]"
 def _normalized_schema(schema, *, strict, path, optional_paths):
     if not isinstance(schema, dict):
         raise ValueError("tool parameters must be an object")
+    if strict:
+        schema.pop("default", None)
     if schema.get("type") == "object":
         schema["additionalProperties"] = False
         properties = schema.get("properties", {})
@@ -49,6 +51,8 @@ def _normalized_schema(schema, *, strict, path, optional_paths):
             path=(*path, _ARRAY_ITEM),
             optional_paths=optional_paths,
         )
+    if strict and any(keyword in schema for keyword in ("oneOf", "allOf")):
+        raise ValueError("strict tool schema uses an unsupported composition")
     for keyword in ("anyOf", "oneOf", "allOf"):
         if keyword in schema:
             values = schema[keyword]
@@ -74,6 +78,10 @@ def _prepare_schema(schema, *, strict):
         path=(),
         optional_paths=optional_paths,
     )
+    if strict and (
+        normalized.get("type") != "object" or "anyOf" in normalized
+    ):
+        raise ValueError("strict tool schema root must be an object")
     return normalized, optional_paths
 
 

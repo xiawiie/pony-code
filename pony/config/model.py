@@ -40,7 +40,9 @@ _PROTOCOL_SPECS = {
         "base_url": "https://api.openai.com/v1",
         "api_variant": "responses",
         "auth_mode": "bearer",
-        "official_capabilities": {},
+        "official_capabilities": {
+            "reasoning_replay": True,
+        },
     },
     "openai_chat_completions": {
         "provider": "openai-chat",
@@ -80,7 +82,6 @@ _EXACT_TARGET_CAPABILITIES = {
     ): {
         "strict_tools": True,
         "parallel_tool_control": True,
-        "reasoning_replay": True,
     },
     (
         "openai_chat_completions",
@@ -205,9 +206,11 @@ def _known_protocol(base_url):
 
 def _candidate(protocol, base_url, *, model):
     spec = _PROTOCOL_SPECS[protocol]
-    capabilities = _EXACT_TARGET_CAPABILITIES.get(
-        (protocol, base_url, model),
-        spec["official_capabilities"] if base_url == spec["base_url"] else {},
+    capabilities = dict(
+        spec["official_capabilities"] if base_url == spec["base_url"] else {}
+    )
+    capabilities.update(
+        _EXACT_TARGET_CAPABILITIES.get((protocol, base_url, model), {})
     )
     return {
         "provider": spec["provider"],

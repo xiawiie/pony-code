@@ -91,7 +91,7 @@ def test_model_client_factory_rebuilds_the_resolved_transport():
     assert second.capabilities == first.capabilities
     assert replacement.model == "gpt-next"
     assert first.capabilities["reasoning_replay"] is True
-    assert replacement.capabilities == {}
+    assert replacement.capabilities == {"reasoning_replay": True}
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):

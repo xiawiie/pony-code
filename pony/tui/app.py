@@ -31,6 +31,28 @@ _MAX_EDITOR_LINES = 6
 _COMPLETION_ROWS = 5
 
 
+def _terminal_width_message():
+    return (
+        "Terminal too narrow\n"
+        f"Expand to at least {FULL_TUI_MINIMUM_COLUMNS} columns to continue.\n"
+    )
+
+
+def _application_terminal_columns(app):
+    output = getattr(app, "output", None)
+    get_size = getattr(output, "get_size", None)
+    if not callable(get_size):
+        return None
+    return get_size().columns
+
+
+def _session_terminal_columns(session):
+    columns = _application_terminal_columns(getattr(session, "app", None))
+    if columns is not None:
+        return columns
+    return shutil.get_terminal_size((80, 24)).columns
+
+
 def _normalize_prompt_text(value):
     text = str(value)
     if not any("\ud800" <= character <= "\udfff" for character in text):
@@ -165,11 +187,10 @@ def tui_capability(*, stdin=None, stdout=None, environ=None, columns=None):
     if width is None:
         width = shutil.get_terminal_size((80, 24)).columns
     if width < FULL_TUI_MINIMUM_COLUMNS:
-        return (
-            False,
+        return False, (
             "terminal width must be at least "
             f"{FULL_TUI_MINIMUM_COLUMNS} columns for the required "
-            "full-size PONY CODE logo",
+            "full-size PONY CODE logo"
         )
     return True, ""
 
@@ -226,6 +247,10 @@ def _key_bindings():
 
     @bindings.add("enter")
     def submit(event):
+        columns = _application_terminal_columns(getattr(event, "app", None))
+        if columns is not None and columns < FULL_TUI_MINIMUM_COLUMNS:
+            event.app.invalidate()
+            return
         buffer = event.current_buffer
         _flush_pending_prompt_text(buffer)
         if buffer.document.text_before_cursor.endswith("\\"):
@@ -419,14 +444,17 @@ def run_tui(
             session.default_buffer.history = history
 
     def prompt_message():
+        columns = _session_terminal_columns(session)
+        if columns < FULL_TUI_MINIMUM_COLUMNS:
+            return FormattedText([("class:warning", _terminal_width_message())])
         if not startup_visible:
-            return renderer.prompt()
+            return renderer.prompt(columns=columns)
         fragments = []
         if show_header:
-            fragments.extend(renderer.welcome(agent, model=model))
+            fragments.extend(renderer.welcome(agent, model=model, columns=columns))
         if resume_projection is not None:
             fragments.extend(renderer.resume_card(resume_projection))
-        fragments.extend(renderer.prompt())
+        fragments.extend(renderer.prompt(columns=columns))
         return FormattedText(fragments)
 
     input_queue = None

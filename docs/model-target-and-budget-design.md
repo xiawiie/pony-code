@@ -53,9 +53,9 @@ tool-result continuation 和有效终态。text-only 模型或私有 schema 需�
 - canonical system blocks 的校验与拼接；
 - function schema normalization、strict nullable encoding 与 optional-null cleanup。
 
-strict encoding 必须递归覆盖每层 object（含 array item 与 `anyOf`/`oneOf`/`allOf`），每层关闭
-`additionalProperties`，并把 optional 字段编码为 nullable + required。响应解析按记录的嵌套路径仅删除这类 synthetic null，
-不能删除用户明确传入的其他值。
+strict encoding 必须递归覆盖每层 object（含 array item 与 `anyOf`），每层关闭 `additionalProperties`，移除不支持的
+`default` 注解，并把 optional 字段编码为 nullable + required。根 schema 必须是 object；无法安全转换的根 `anyOf` 与嵌套
+`oneOf`/`allOf` 在本地 fail closed。响应解析按记录的嵌套路径仅删除这类 synthetic null，不能删除用户明确传入的其他值。
 
 必须独立：
 
@@ -67,8 +67,9 @@ strict encoding 必须递归覆盖每层 object（含 array item 与 `anyOf`/`on
 | opaque state | reasoning items/replay | chat reasoning compatibility |
 | streaming | typed semantic SSE events | chat-completion chunk sequence |
 
-因此 `openai_wire.py` 是小型共享原语模块，不是统一 adapter。future/unknown model 默认只得 Protocol Core；strict tools、
-parallel control 或 reasoning replay 只能在有合同的 exact Target 上启用，不能因 endpoint 是官方域名就向所有未来型号放大。
+因此 `openai_wire.py` 是小型共享原语模块，不是统一 adapter。future/unknown model 默认只得 Protocol Core；strict tools 与
+parallel control 只能在有合同的 exact Target 上启用。官方 Responses 的 stateless encrypted reasoning 请求、保存与回放属于
+endpoint-scoped continuation 合同，不按 model name 猜测；generic compatible endpoint 仍不自动获得该选项。
 
 ## 4. Context 与输出窗口
 
@@ -99,14 +100,14 @@ input limit 下第一次 no-progress 就直接失败。summary/split-summary har
 summary 自身挤满小窗口；默认和更大窗口仍保持 13,107/8,192。
 
 当前 token counting 仍采用 provider usage 或估算，不能把本地数字描述成远端 enforcement。generic compatible Chat 保守使用
-`max_tokens`；官方 Chat endpoint 按当前协议使用 `max_completion_tokens`。字段属于 endpoint-scoped wire option，不从 model
-name 推断；strict、parallel 与 reasoning 等型号能力仍只授予有证据的 exact Target。
+`max_tokens`；官方 Chat endpoint 按当前协议使用 `max_completion_tokens`。字段与官方 Responses 的 stateless reasoning replay
+属于 endpoint-scoped wire option，不从 model name 推断；strict 与 parallel 等型号能力仍只授予有证据的 exact Target。
 
 ## 5. TUI 对话闭环
 
 旧界面只有低对比用户块和 `Working…`，用户难以判断输入区、对话双方和运行阶段。本轮改为：
 
-- 80/111 列稳定拒绝，112+ 保留冻结的完整马形 Logo/块状字标，不提供 compact 替代版；
+- 启动和运行中 80/111 列都进入稳定的扩宽提示，112+ 保留冻结的完整马形 Logo/块状字标，不提供 compact 替代版；
 - 输入区固定显示 `Message Pony`；用户消息为无标签低对比块，Assistant 使用 `PONY` 锚点和安全 Markdown renderer；
 - Ready、Preparing、Waiting for model、Retrying、Compacting、Using tool、approval、Completed、Interrupted、Failed 来自
   durable trace 后的 UI 副本，而非定时器猜测；
@@ -135,7 +136,7 @@ stream 不执行 Tool；取消后 durable terminal state 与费用边界如实�
 | OpenAI future model | Protocol Core + 已证明的 endpoint 字段；不获得未证明的型号增强 |
 | OpenAI family resolution | Responses 首选；protocol mismatch 后 Chat；auth/transient stop |
 | codec 边界 | 共享模块不含 endpoint/history/continuation/state |
-| strict tools | 嵌套 object/array/组合 schema nullable-required 与递归 null cleanup |
+| strict tools | object 根、嵌套 object/array/anyOf、default 清理、unsupported composition 拒绝与递归 null cleanup |
 | Chat output | generic compatible endpoint 使用 `max_tokens`；官方 Chat endpoint 使用 `max_completion_tokens` |
 | TUI | 80/111 拒绝、112/120 完整资产、无标签用户块、PONY、Message Pony、真实状态和 context footer |
 | cancel 语义 | queue clear/Ctrl+C 明确 current turn continues |

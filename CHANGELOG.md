@@ -44,11 +44,14 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 - OpenAI Responses 与 Chat Completions 只共享 User-Agent、system/function schema 与 optional-null 原语；endpoint、codec、
   continuation 和 opaque state 继续独立。future/unknown model 使用 ProtocolCore，官方 optional wire behavior 不再向整个
   endpoint 的所有型号泄漏；OpenAI family 的不明确 endpoint 按 Responses-first 做 bounded resolution。
-- OpenAI strict tool schema 递归覆盖嵌套 object/array/组合结构；generic compatible Chat 保持 `max_tokens`，官方 Chat
-  endpoint 按当前协议使用 `max_completion_tokens`，不按未知 model name 猜测。
+- OpenAI strict tool schema 要求 object 根，递归覆盖嵌套 object/array/`anyOf`，并拒绝无法安全转换的组合结构；generic
+  compatible Chat 保持 `max_tokens`，官方 Chat endpoint 按当前协议使用 `max_completion_tokens`，官方 Responses 对 future
+  model 保持 stateless reasoning continuation；strict schema 不再把本地 `default` 注解发送给服务端，所有字段均不按未知
+  model name 猜测。
 - TUI 在 80/111 列稳定拒绝，112 列及以上保留冻结的完整马形资产；无标签用户块、`PONY`、`Message Pony`、真实
   trace 状态、queue/context/permission/protocol-model footer 让聊天与运行阶段可辨识。busy Ctrl+C 明确不取消当前请求，
-  approval UI 异常继续 fail closed；Provider streaming 与 transport cancel 仍未实现。
+  approval UI 异常继续 fail closed；运行中缩窄会暂停提交并保留输入，恢复宽度后继续，Provider streaming 与 transport cancel
+  仍未实现。
 - Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
   model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
   绕过用户配置的 output limit。
@@ -78,8 +81,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   摘要、一次性 permission prompt 和 fail-closed 审批；自动 checkpoint 不进入对话区，footer 不显示绝对路径、Session ID、
   API Base 或 checkpoint ID。Provider reasoning 与 streaming 不属于 1.0 展示面。
 - Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
-  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时仍保持唯一完整品牌资产，首条输入后仍保留原生 inline
-  scrollback。
+  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时进入有界扩宽提示且不绘制替代 Logo，首条输入后仍保留原生
+  inline scrollback。
 - Windows 候选宿主增加固定版本/哈希的 ripgrep 安装脚本；它把 WinGet 来源复制到 protected Program Files 工具根，拒绝
   reparse point、意外内容和 ACL 漂移，不把用户可写 package root 或符号链接加入受信 executable 集合。
 - 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`runtime`、`security`、`state`、

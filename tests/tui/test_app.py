@@ -371,6 +371,28 @@ def test_enter_binding_submits_or_inserts_an_explicit_newline(text, expected):
     assert calls == expected
 
 
+def test_enter_binding_preserves_input_while_terminal_is_too_narrow():
+    calls = []
+    buffer = SimpleNamespace(
+        document=SimpleNamespace(text_before_cursor="keep this input"),
+        validate_and_handle=lambda: calls.append("submit"),
+    )
+    app = SimpleNamespace(
+        output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=111)),
+        invalidate=lambda: calls.append("invalidate"),
+    )
+    enter = next(
+        binding
+        for binding in _key_bindings().bindings
+        if binding.handler.__name__ == "submit"
+    )
+
+    enter.handler(SimpleNamespace(current_buffer=buffer, app=app))
+
+    assert calls == ["invalidate"]
+    assert buffer.document.text_before_cursor == "keep this input"
+
+
 def test_slash_key_opens_command_menu_at_start_of_input():
     calls = []
     document = SimpleNamespace(text_before_cursor="")
@@ -414,7 +436,11 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
 
     class FakeSession:
         def __init__(self, **_kwargs):
-            pass
+            self.app = SimpleNamespace(
+                output=SimpleNamespace(
+                    get_size=lambda: SimpleNamespace(columns=current_columns["value"])
+                )
+            )
 
         def prompt(self, message, *_args, **_kwargs):
             assert callable(message)
@@ -439,10 +465,6 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
     )
     monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
     monkeypatch.setattr(
-        "pony.tui.render.shutil.get_terminal_size",
-        lambda _fallback: SimpleNamespace(columns=current_columns["value"]),
-    )
-    monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
         lambda value, **_kwargs: written.append(value),
     )
@@ -450,11 +472,15 @@ def test_tui_startup_reflows_welcome_with_current_terminal_width(monkeypatch):
     assert run_tui(agent, model="gpt-test", no_color=True, handle_input=lambda *_a, **_k: 0) == 0
     assert [columns for columns, _text in samples] == [140, 80, 111, 112]
     for columns, rendered in samples:
-        assert "⣿" in rendered and "█" in rendered
         if columns >= 112:
+            assert "⣿" in rendered and "█" in rendered
             assert all(get_cwidth(line) < columns for line in rendered.splitlines())
-        assert "Ready" in rendered
-        assert "Message Pony" in rendered
+            assert "Ready" in rendered
+            assert "Message Pony" in rendered
+        else:
+            assert "⣿" not in rendered and "█" not in rendered
+            assert "Expand to at least 112 columns to continue." in rendered
+            assert "Message Pony" not in rendered
     assert not any("⣿" in "".join(fragment[1] for fragment in value) for value in written)
 
 

@@ -190,8 +190,8 @@ Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
 4. 会话空闲时按一次 `Ctrl+C` 清空非空输入，再按两次 `Ctrl+C` 验证退出提示与退出；重新进入后以 `Ctrl+D` 退出。
    退出后键盘、光标和终端模式必须恢复，不能遗留输入 hook。
 5. 分别运行 `pony --no-color` 和设置 `NO_COLOR=1` 后运行 `pony`，确认布局与文本仍完整且没有 ANSI 颜色；清除环境变量后
-   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认始终没有 compact 或隐藏品牌状态，且没有旧
-   footer、菜单或消息残影。
+   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认窄宽时只显示有界扩宽提示并暂停提交，恢复后
+   重新显示唯一完整资产，且没有 compact、Logo 溢出、旧 footer、菜单或消息残影。
 
 验收记录至少包含以下字段，并作为候选 tag 的发布附件或 CI 关联 artifact 保存；截图必须先检查不含 Key、完整 API Base、
 私有 prompt、绝对私有路径或 Session 标识：
@@ -294,7 +294,8 @@ permission prompt 参数脱敏与 prompt fail closed 仍是阻断项；离线 co
 
 Model/Provider 回归还必须覆盖：任意 model id 零 warning 和 128K/16K 默认；256K/32K 显式 profile；32K/16K 自动
 compaction turn；非法 TOML 组合在 runtime 构造前回退；default/config/CLI/mixed source 在 delegate/worktree 中不漂移；
-OpenAI nested strict schema；generic compatible Chat `max_tokens` 与官方 Chat endpoint `max_completion_tokens`。聚焦入口是
+OpenAI nested strict schema、default 清理与 unsupported composition 拒绝；generic compatible Chat `max_tokens` 与官方 Chat
+endpoint `max_completion_tokens`。聚焦入口是
 `tests/test_model_capabilities.py`、`tests/test_pony_toml_end_to_end.py`、`tests/test_agent_loop.py`、
 `tests/test_provider_openai_wire.py` 和 `tests/test_provider_openai_chat_completions.py`。
 

@@ -120,7 +120,8 @@ model id 是不透明 Target 身份，不参与准入或预算推断。任意合
 OpenAI Responses 与 Chat Completions 是同一产品 family 的两个独立 Transport。`providers/openai_wire.py` 只拥有两者重复的
 User-Agent、system instructions、function schema 与 optional-null 原语；两个 adapter 分别拥有 endpoint、request/response
 codec、tool continuation、opaque state 与 error normalization。future/unknown model 使用 ProtocolCore；协议字段可由 exact
-protocol/endpoint 决定，strict、reasoning、parallel 等型号增强只在有合同的 exact Target 上启用。详见
+protocol/endpoint 决定，官方 Responses 的 stateless reasoning continuation 属于 endpoint 合同；strict、parallel 等型号增强
+只在有合同的 exact Target 上启用。详见
 [Model Target 与预算设计](model-target-and-budget-design.md)。
 
 ## Permission 与 Host 执行
