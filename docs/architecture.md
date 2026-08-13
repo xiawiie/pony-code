@@ -114,6 +114,15 @@ flowchart LR
 Provider、protocol、model 与 endpoint hash 会写入 Session binding。`auto`/OpenAI family 可在用户任务前做 bounded synthetic
 resolution；真实任务失败不 fallback，也不会跨协议重放 Session。
 
+model id 是不透明 Target 身份，不参与准入或预算推断。任意合法 model id 使用所选 protocol baseline；未显式配置预算时
+统一采用 128K/16K，不显示 unknown warning。`doctor --check-api` 只提供 exact Target 当次证据，不写 catalog。
+
+OpenAI Responses 与 Chat Completions 是同一产品 family 的两个独立 Transport。`providers/openai_wire.py` 只拥有两者重复的
+User-Agent、system instructions、function schema 与 optional-null 原语；两个 adapter 分别拥有 endpoint、request/response
+codec、tool continuation、opaque state 与 error normalization。future/unknown model 使用 ProtocolCore；协议字段可由 exact
+protocol/endpoint 决定，strict、reasoning、parallel 等型号增强只在有合同的 exact Target 上启用。详见
+[Model Target 与预算设计](model-target-and-budget-design.md)。
+
 ## Permission 与 Host 执行
 
 ```mermaid

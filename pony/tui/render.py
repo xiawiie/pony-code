@@ -217,6 +217,12 @@ def _bounded_json(value, limit=800):
     return rendered[: limit - 1] + "…"
 
 
+def _approval_detail(label, value, width):
+    prefix = f"  │ {label}: "
+    available = max(0, width - get_cwidth(prefix))
+    return prefix + _truncate(value, available) + "\n"
+
+
 def _protocol_label(model_client):
     transport = getattr(model_client, "_inner", model_client)
     provider_metadata = getattr(transport, "provider_metadata", {})
@@ -487,9 +493,10 @@ class TuiRenderer:
         width = _terminal_width(columns)
         self._write(_assistant_block(text, width))
 
-    def approval(self, name, args):
+    def approval(self, name, args, *, columns=None):
         self._clear_activity()
         self._status = "Waiting for approval"
+        width = _terminal_width(columns)
         safe_name = _one_line(name)
         if safe_name == "exit_plan_mode" and isinstance(args, dict):
             plan = str(args.get("plan", ""))
@@ -502,7 +509,7 @@ class TuiRenderer:
                     ]
                 )
             )
-            self._write(render_markdown(plan, width=_terminal_width()))
+            self._write(render_markdown(plan, width=width))
             self._write(
                 FormattedText([("class:warning", "\n  ╵ default: deny\n")])
             )
@@ -511,12 +518,25 @@ class TuiRenderer:
             FormattedText(
                 [
                     ("class:warning", "\n  ╷ APPROVAL REQUIRED\n"),
-                    ("", f"  │ action: {_tool_summary(safe_name, args, _terminal_width())}\n"),
-                    ("", f"  │ details: {_bounded_json(args)}\n"),
+                    (
+                        "",
+                        _approval_detail(
+                            "action",
+                            _tool_summary(safe_name, args, width),
+                            width,
+                        ),
+                    ),
+                    ("", _approval_detail("details", _bounded_json(args), width)),
                     ("class:warning", "  ╵ default: deny\n"),
                 ]
             )
         )
+
+    def approval_resolved(self, accepted):
+        self._clear_activity()
+        self._status = "Using tool" if accepted else "Approval denied"
+        if accepted and self._active_tool:
+            self._show_activity(f"PONY  Using tool · {self._active_tool}...")
 
     def trace(self, envelope):
         event = str(envelope.get("event", ""))
@@ -603,8 +623,6 @@ class TuiRenderer:
         style = "class:error" if error else "class:activity"
         prefix = "error: " if error else ""
         safe_text = sanitize_terminal_text(text).strip()
-        if error:
-            self._status = "Failed"
         self._write(FormattedText([(style, f"\n{prefix}{safe_text}\n")]))
 
     def close(self):
@@ -627,7 +645,8 @@ class TuiRenderer:
         if not self._activity_visible:
             return
         suffix = "\n" if newline else ""
-        sys.stdout.write(f"\r{' ' * self._activity_width}\r{suffix}")
+        clear_width = min(self._activity_width, _terminal_width())
+        sys.stdout.write(f"\r{' ' * clear_width}\r{suffix}")
         sys.stdout.flush()
         self._activity_visible = False
         self._activity_width = 0

@@ -16,6 +16,9 @@ from pony.cli.errors import CliError
 from pony.runtime.options import RuntimeOptions
 from pony.security.private_files import private_directory_identity
 from pony.runtime.worktree_agents import (
+    _build_child,
+    _prepare_worktree,
+    _remove_setup,
     cleanup_worktree_agent,
     inspect_worktree_agent_batch,
     list_worktree_agent_batches,
@@ -125,6 +128,34 @@ def test_worktree_delegate_schema_is_one_typed_batch_tool():
     task = converted["input_schema"]["properties"]["tasks"]["items"]
     assert task["required"] == ["name", "task"]
     assert task["additionalProperties"] is False
+
+
+def test_worktree_child_preserves_project_config_budget_provenance(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "pony.toml").write_text(
+        "[model]\ncontext_window = 90000\noutput_limit = 12000\n",
+        encoding="utf-8",
+    )
+    parent = _agent(repo, [])
+    git = _git_executable(parent)
+    base_commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    prepared = _prepare_worktree(
+        parent,
+        git,
+        {"name": "budget", "task": "inspect", "mode": "readonly", "max_steps": 1},
+        base_commit,
+        "batch-budget-test",
+    )
+    try:
+        child = _build_child(parent, prepared, FakeModelClient([]))
+
+        assert parent.model_capabilities.source == "config"
+        assert child.model_capabilities.source == "config"
+        assert child._model_runtime_options.context_window is None
+        assert child._model_runtime_options.max_output_tokens is None
+    finally:
+        _remove_setup(git, parent.source_root, prepared["manifest"])
+        shutil.rmtree(prepared["root"])
 
 
 def test_write_agent_changes_only_its_independent_worktree(tmp_path):

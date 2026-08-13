@@ -31,11 +31,7 @@ _PROTOCOL_SPECS = {
         "base_url": "https://api.anthropic.com/v1",
         "api_variant": "messages",
         "auth_mode": "x-api-key",
-        "official_capabilities": {
-            "prompt_cache": True,
-            "strict_tools": True,
-            "parallel_tool_control": True,
-        },
+        "official_capabilities": {},
     },
     "openai_responses": {
         "provider": "openai-responses",
@@ -53,7 +49,9 @@ _PROTOCOL_SPECS = {
         "base_url": "https://api.openai.com/v1",
         "api_variant": "chat_completions",
         "auth_mode": "bearer",
-        "official_capabilities": {},
+        "official_capabilities": {
+            "output_token_field": "max_completion_tokens",
+        },
     },
     "ollama_chat": {
         "provider": "ollama",
@@ -66,6 +64,15 @@ _PROTOCOL_SPECS = {
     },
 }
 _EXACT_TARGET_CAPABILITIES = {
+    (
+        "anthropic_messages",
+        "https://api.anthropic.com/v1",
+        "claude-sonnet-4-6",
+    ): {
+        "prompt_cache": True,
+        "strict_tools": True,
+        "parallel_tool_control": True,
+    },
     (
         "openai_responses",
         "https://api.openai.com/v1",
@@ -82,6 +89,7 @@ _EXACT_TARGET_CAPABILITIES = {
     ): {
         "strict_tools": True,
         "parallel_tool_control": True,
+        "output_token_field": "max_completion_tokens",
     },
 }
 _PROVIDER_PROTOCOLS = {
@@ -208,6 +216,15 @@ def _candidate(protocol, base_url, *, model):
         "auth_mode": spec["auth_mode"],
         "capabilities": dict(capabilities),
     }
+
+
+def capabilities_for_target(protocol, base_url, model):
+    """Return only optional wire behavior proven for one exact Target."""
+    if protocol not in _PROTOCOL_SPECS:
+        raise ValueError("provider_detection_failed")
+    canonical_base = validate_api_base(base_url)
+    validated_model = validate_model_name(model)
+    return dict(_candidate(protocol, canonical_base, model=validated_model)["capabilities"])
 
 
 def _candidate_protocols(provider, base_url):

@@ -131,6 +131,36 @@ def test_confirmation_ui_failure_denies_without_waiting():
     assert input_queue.confirmation() is None
 
 
+def test_confirmation_wake_failure_denies_and_clears_the_request():
+    input_queue = InputQueue(
+        lambda _text: None,
+        on_wake=lambda: (_ for _ in ()).throw(RuntimeError("wake failed")),
+    )
+
+    accepted = input_queue.confirm("Approve once? [y/N] ")
+
+    assert accepted is False
+    assert input_queue.confirmation() is None
+
+
+def test_terminal_wake_failure_does_not_replace_the_worker_outcome():
+    finished = threading.Event()
+
+    def process(_text):
+        finished.set()
+        return 7
+
+    input_queue = InputQueue(
+        process,
+        on_wake=lambda: (_ for _ in ()).throw(RuntimeError("wake failed")),
+    )
+    input_queue.submit("active")
+    assert finished.wait(timeout=3)
+    input_queue.close()
+
+    assert input_queue.terminal_outcome() == (True, 7, None)
+
+
 def test_queue_commands_are_zero_write_and_clear_unstarted_turn(
     tmp_path,
     monkeypatch,

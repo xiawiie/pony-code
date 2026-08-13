@@ -9,7 +9,11 @@ from pony.security.workspace_files import read_regular_bytes_anchored
 
 
 _PONY_TOML_WARNING = "warning: invalid pony.toml; using defaults"
+_PONY_TOML_BUDGET_WARNING = (
+    "warning: invalid pony.toml model/context budget; using defaults"
+)
 MAX_PONY_TOML_BYTES = 1024 * 1024
+_MIN_EFFECTIVE_INPUT_TOKENS = 16_384
 _MISSING = object()
 _REMOVED_CONTEXT_KEYS = (
     "history_soft_cap",
@@ -275,9 +279,22 @@ def _validated_pony_toml(raw):
     model = _table(raw, "model", "model")
     context = _table(raw, "context", "context")
     memory = _table(raw, "memory", "memory")
-    validated = _validated_model(model, context)
+    validated_model = _validated_model(model, context)
+    validated_context = _validated_context(context)
+    effective_reserve = max(
+        validated_model["model"]["output_limit"],
+        validated_context["compaction"]["reserve_tokens"],
+    )
+    if (
+        validated_model["model"]["context_window"] - effective_reserve
+        < _MIN_EFFECTIVE_INPUT_TOKENS
+    ):
+        print(_PONY_TOML_BUDGET_WARNING, file=sys.stderr)
+        validated_model = _validated_model({}, {})
+        validated_context["compaction"]["reserve_tokens"] = 16_384
+    validated = validated_model
     validated.update(
-        context=_validated_context(context),
+        context=validated_context,
         memory={
             "recall": _validated_recall(_table(memory, "recall", "memory.recall")),
             "retrieval": _validated_retrieval(

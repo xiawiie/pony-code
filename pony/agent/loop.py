@@ -18,6 +18,7 @@ from pony.state.checkpoint import (
 )
 from pony.agent.compaction import CompactionError, CompactionNoProgress
 from pony.agent.context_manager import ContextBudgetExceeded
+from pony.agent.model_capabilities import automatic_compaction_keep_recent
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
 from pony.security.command_policy import assess_command
@@ -739,9 +740,9 @@ def _build_attempt_request(
             )
             if not enabled or compaction_attempt >= 2:
                 raise
-            keep_recent = max(
-                1_024,
-                agent.model_budget.keep_recent_tokens // (2**compaction_attempt),
+            keep_recent = automatic_compaction_keep_recent(
+                agent.model_budget,
+                compaction_attempt,
             )
             try:
                 compaction_result = agent.compact_session(
@@ -751,7 +752,9 @@ def _build_attempt_request(
                     model_observer=compaction_observer,
                 )
                 session_guard["leaf_id"] = compaction_result.entry["id"]
-            except (CompactionError, CompactionNoProgress) as compaction_error:
+            except CompactionNoProgress:
+                continue
+            except CompactionError as compaction_error:
                 raise budget_error from compaction_error
             agent.emit_trace(
                 task_state,

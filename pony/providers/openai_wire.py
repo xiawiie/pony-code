@@ -10,27 +10,71 @@ except PackageNotFoundError:  # pragma: no cover - only an unpackaged source tre
     OPENAI_USER_AGENT = "pony/unknown"
 
 
-def _closed_object_schema(schema):
-    copied = deepcopy(schema)
-    if not isinstance(copied, dict):
+_ARRAY_ITEM = "[]"
+
+
+def _normalized_schema(schema, *, strict, path, optional_paths):
+    if not isinstance(schema, dict):
         raise ValueError("tool parameters must be an object")
-    if copied.get("type") == "object":
-        copied["additionalProperties"] = False
-        properties = copied.get("properties", {})
+    if schema.get("type") == "object":
+        schema["additionalProperties"] = False
+        properties = schema.get("properties", {})
         if not isinstance(properties, dict):
             raise ValueError("tool properties must be an object")
-        copied["properties"] = {
-            name: _closed_object_schema(value) for name, value in properties.items()
-        }
-    if copied.get("type") == "array" and "items" in copied:
-        copied["items"] = _closed_object_schema(copied["items"])
+        required = schema.get("required", [])
+        if not isinstance(required, list) or not all(
+            isinstance(value, str) for value in required
+        ):
+            raise ValueError("tool required must be a list of names")
+        required_names = set(required)
+        for name, value in list(properties.items()):
+            property_path = (*path, name)
+            normalized = _normalized_schema(
+                value,
+                strict=strict,
+                path=property_path,
+                optional_paths=optional_paths,
+            )
+            if name not in required_names:
+                optional_paths.add(property_path)
+                if strict:
+                    normalized = {"anyOf": [normalized, {"type": "null"}]}
+            properties[name] = normalized
+        if strict:
+            schema["required"] = list(properties)
+    if schema.get("type") == "array" and "items" in schema:
+        schema["items"] = _normalized_schema(
+            schema["items"],
+            strict=strict,
+            path=(*path, _ARRAY_ITEM),
+            optional_paths=optional_paths,
+        )
     for keyword in ("anyOf", "oneOf", "allOf"):
-        if keyword in copied:
-            values = copied[keyword]
+        if keyword in schema:
+            values = schema[keyword]
             if not isinstance(values, list):
                 raise ValueError("schema alternatives must be a list")
-            copied[keyword] = [_closed_object_schema(value) for value in values]
-    return copied
+            schema[keyword] = [
+                _normalized_schema(
+                    value,
+                    strict=strict,
+                    path=path,
+                    optional_paths=optional_paths,
+                )
+                for value in values
+            ]
+    return schema
+
+
+def _prepare_schema(schema, *, strict):
+    optional_paths = set()
+    normalized = _normalized_schema(
+        deepcopy(schema),
+        strict=strict,
+        path=(),
+        optional_paths=optional_paths,
+    )
+    return normalized, optional_paths
 
 
 def prepare_function_tools(tools, *, strict):
@@ -43,21 +87,11 @@ def prepare_function_tools(tools, *, strict):
         name = tool.get("name")
         if not isinstance(name, str) or not name:
             raise ValueError("tool name must be text")
-        parameters = _closed_object_schema(tool.get("input_schema") or {})
-        required = parameters.get("required", [])
-        properties = parameters.get("properties", {})
-        if not isinstance(required, list) or not all(
-            isinstance(value, str) for value in required
-        ):
-            raise ValueError("tool required must be a list of names")
-        optional = set(properties) - set(required)
-        optional_by_name[name] = optional
-        if strict:
-            for argument in sorted(optional):
-                properties[argument] = {
-                    "anyOf": [properties[argument], {"type": "null"}]
-                }
-            parameters["required"] = list(properties)
+        parameters, optional_paths = _prepare_schema(
+            tool.get("input_schema") or {},
+            strict=strict,
+        )
+        optional_by_name[name] = optional_paths
         item = {
             "name": name,
             "description": str(tool.get("description", "") or ""),
@@ -85,9 +119,27 @@ def render_system_instructions(system):
     return "\n\n".join(parts)
 
 
+def _drop_optional_null_path(value, path):
+    if not path:
+        return
+    segment, *remaining = path
+    if segment == _ARRAY_ITEM:
+        if isinstance(value, list):
+            for item in value:
+                _drop_optional_null_path(item, remaining)
+        return
+    if not isinstance(value, dict) or segment not in value:
+        return
+    if not remaining:
+        if value.get(segment) is None:
+            value.pop(segment, None)
+        return
+    _drop_optional_null_path(value[segment], remaining)
+
+
 def drop_optional_null_arguments(arguments, optional_arguments):
     """Restore omitted optional arguments after strict-schema nullable encoding."""
     for argument in optional_arguments:
-        if arguments.get(argument) is None:
-            arguments.pop(argument, None)
+        path = (argument,) if isinstance(argument, str) else tuple(argument)
+        _drop_optional_null_path(arguments, path)
     return arguments

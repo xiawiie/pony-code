@@ -6,6 +6,7 @@ from pathlib import Path
 from pony.config.environment import read_project_env
 from pony.config.model import (
     MODEL_ENV_NAME,
+    capabilities_for_target,
     resolve_model_config,
     resolve_session_provider_binding,
 )
@@ -92,7 +93,6 @@ def _model_client_factory(config, timeout):
     base_url = config.get("base_url", {}).get("value", "")
     api_key = config.get("api_key", {}).get("value", "")
     auth_mode = config.get("auth_mode", {}).get("value", "")
-    capabilities = config.get("capabilities", {})
     if (
         not isinstance(protocol, str)
         or not protocol
@@ -103,7 +103,6 @@ def _model_client_factory(config, timeout):
         or not isinstance(api_key, str)
         or type(timeout) not in {int, float}
         or not isinstance(auth_mode, str)
-        or not isinstance(capabilities, dict)
     ):
         raise ValueError("delegate model client factory is not configured")
     kwargs = {
@@ -111,11 +110,15 @@ def _model_client_factory(config, timeout):
         "api_key": api_key,
         "timeout": timeout,
         "auth_mode": auth_mode,
-        "capabilities": dict(capabilities),
     }
 
     def build_client(selected_model=model):
-        return build_transport_client(protocol, model=selected_model, **kwargs)
+        return build_transport_client(
+            protocol,
+            model=selected_model,
+            capabilities=capabilities_for_target(protocol, base_url, selected_model),
+            **kwargs,
+        )
 
     return build_client
 

@@ -10,8 +10,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   事实保留和 Provider failure 证据的 compaction 净 token/break-even 与非流式 Provider latency 测量。
 - 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
 - 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pony init`。
-- 参考 Pi 消息层级的行内 TUI：完整尺寸马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
-  可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
+- 参考 Pi 消息层级的行内 TUI：完整/compact `PONY CODE` 品牌状态、`YOU`/`PONY` 对话锚点、内置 Markdown、slash
+  command menu、可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
 - `pony --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
 - PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
 - Session v5 的 `manual|auto|acceptEdits|bypassPermissions|dontAsk|plan` permission mode、exact tool-name
@@ -37,13 +37,25 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- 任意合法 model id 现在零 catalog 接入，不再触发 unknown-model warning；统一默认预算保持 128K context / 16K output，
+  显式 256K/32K 等覆盖继续可用，非法 `pony.toml` 默认值不再冒充项目配置来源。
+- 预算组合在 config snapshot 边界联合校验；32K/16K 自动 compaction 会按 input limit 缩小 tail，child runtime 保留
+  default/config/CLI/mixed 来源，不把父级有效值误报成 CLI。
+- OpenAI Responses 与 Chat Completions 只共享 User-Agent、system/function schema 与 optional-null 原语；endpoint、codec、
+  continuation 和 opaque state 继续独立。future/unknown model 使用 ProtocolCore，官方 optional wire behavior 不再向整个
+  endpoint 的所有型号泄漏；OpenAI family 的不明确 endpoint 按 Responses-first 做 bounded resolution。
+- OpenAI strict tool schema 递归覆盖嵌套 object/array/组合结构；generic compatible Chat 保持 `max_tokens`，官方 Chat
+  endpoint 按当前协议使用 `max_completion_tokens`，不按未知 model name 猜测。
+- TUI 在 80–111 列提供 compact 会话界面，112 列及以上保留冻结的完整马形资产；`YOU` / `PONY`、`Message Pony`、真实
+  trace 状态、queue/context/permission/protocol-model footer 让聊天与运行阶段可辨识。busy Ctrl+C 明确不取消当前请求，
+  approval UI 异常继续 fail closed；Provider streaming 与 transport cancel 仍未实现。
 - Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
   model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
   绕过用户配置的 output limit。
 - Windows 11 x64 晋级为与 macOS/Linux 平级的一等发布平台：私有文件 identity/signature 上层合同使用平台中立字段，原生 backend 覆盖 `NtCreateFile` root-handle traversal、protected DACL、File ID、原子替换、`LockFileEx`、Job Object 与 PowerShell policy；3.11/3.12 CI、攻击 probe、完整发布门禁、clean-install 与 Windows Terminal Phase 5 共同约束每个 exact candidate。跨机器或跨 OS 复制 active Session 仍不在支持声明内。
 - Windows 普通 CI 与 `v*` Tag 发布共用同一 3.11/3.12 标准用户验证 workflow；发布 job 必须等待 Windows 完整门禁与原生
   probe，完整 pytest 会拒绝未知 skip/xfail，并输出 schema v1 的机器可读 skip 原因、数量和慢测试审计；Windows Terminal
-  Phase 5 另以 exact candidate SHA 的 80/111 列拒绝和 112/120 列完整大版实机清单留证，不能由 import、单元测试或
+  Phase 5 另以 exact candidate SHA 的 79 列拒绝、80/111 列 compact 和 112/120 列完整大版实机清单留证，不能由 import、单元测试或
   截图替代。该 workflow 还会
   在标准用户离线门禁前预热 `uv.lock` 的运行时依赖 cache，确保 clean-install smoke 验证包本身而非偶然命中宿主缓存。
 - Windows reparse-point 拒绝改为可识别的专用异常；private-state 与 file-lock 保持平台中立的 symlink 错误，Git marker、
@@ -58,17 +70,16 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 - 裸 `pony` 现在直接进入交互 TUI；`pony repl` 保留为显式同义入口，`pony run <prompt...>` 与管理子命令继续使用
   生产分支的显式 CLI 合同。
-- 恢复并冻结完整尺寸马形 `PONY CODE` 欢迎页；它成为 TUI 不可隐藏的唯一状态，`--quiet` 也不能抑制。交互 TTY 低于
-  112 列时返回稳定 usage error，不能进入无 Logo 的纯文本界面，也不显示缩小变体；非 TTY fallback 不显示 banner，
-  `pony run` 只输出执行结果。
+- 恢复并冻结 112 列及以上的完整尺寸马形 `PONY CODE` 欢迎页；80–111 列显示 compact 品牌状态，低于 80 列返回稳定
+  usage error。两种交互状态都不可隐藏，`--quiet` 也不能抑制；非 TTY fallback 不显示 banner，`pony run` 只输出执行结果。
 - TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
   smoke 在隔离环境中离线验证锁定依赖和 TUI import。
-- TUI 运行事件收束为瞬态 `Working…`、单行 Tool 摘要、一次性 permission prompt 和明确的失败/中断；自动 checkpoint
-  不再进入对话区，footer 不再显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 与
-  streaming 不属于 1.0 展示面。
+- TUI 运行事件投影为 Preparing、Waiting、Retrying、Compacting、Tool、Completed、Interrupted 与 Failed，保留单行 Tool
+  摘要、一次性 permission prompt 和 fail-closed 审批；自动 checkpoint 不进入对话区，footer 不显示绝对路径、Session ID、
+  API Base 或 checkpoint ID。Provider reasoning 与 streaming 不属于 1.0 展示面。
 - Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
-  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时完整大版仍保持而不切换为无 Logo 状态，首条输入后仍保留
-  原生 inline scrollback。
+  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中跨越 112 列阈值时在完整/compact 品牌状态之间切换，首条输入后仍
+  保留原生 inline scrollback。
 - Windows 候选宿主增加固定版本/哈希的 ripgrep 安装脚本；它把 WinGet 来源复制到 protected Program Files 工具根，拒绝
   reparse point、意外内容和 ACL 漂移，不把用户可写 package root 或符号链接加入受信 executable 集合。
 - 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`runtime`、`security`、`state`、

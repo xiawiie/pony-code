@@ -1,6 +1,7 @@
 import pytest
 
 from pony.agent.model_capabilities import (
+    automatic_compaction_keep_recent,
     build_model_budget,
     ModelCapabilities,
     resolve_model_capabilities,
@@ -10,12 +11,19 @@ from pony.agent.model_capabilities import (
 
 
 @pytest.mark.parametrize(
-    ("window", "input_limit", "system_cap", "source_pool"),
+    (
+        "window",
+        "input_limit",
+        "system_cap",
+        "source_pool",
+        "compaction_summary",
+        "split_summary",
+    ),
     [
-        (32_768, 16_384, 6_553, 4_096),
-        (128_000, 111_616, 24_576, 16_384),
-        (272_000, 255_616, 24_576, 16_384),
-        (1_000_000, 983_616, 24_576, 16_384),
+        (32_768, 16_384, 6_553, 4_096, 4_096, 2_048),
+        (128_000, 111_616, 24_576, 16_384, 13_107, 8_192),
+        (272_000, 255_616, 24_576, 16_384, 13_107, 8_192),
+        (1_000_000, 983_616, 24_576, 16_384, 13_107, 8_192),
     ],
 )
 def test_budget_scales_across_context_windows(
@@ -23,6 +31,8 @@ def test_budget_scales_across_context_windows(
     input_limit,
     system_cap,
     source_pool,
+    compaction_summary,
+    split_summary,
 ):
     capabilities = ModelCapabilities(window, 16_384, "estimate", "config")
     budget = build_model_budget(capabilities)
@@ -30,8 +40,9 @@ def test_budget_scales_across_context_windows(
     assert budget.input_limit == input_limit
     assert budget.system_tools_hard_cap == system_cap
     assert budget.source_pool_tokens == source_pool
-    assert budget.compaction_summary_tokens == 13_107
-    assert budget.split_turn_summary_tokens == 8_192
+    assert budget.keep_recent_tokens == 20_000
+    assert budget.compaction_summary_tokens == compaction_summary
+    assert budget.split_turn_summary_tokens == split_summary
     assert budget.branch_summary_tokens == 2_048
 
 
@@ -63,7 +74,7 @@ def test_resolution_priority_projects_mixed_sources():
         96_000,
         8_000,
         "provider_usage_or_estimate",
-        "context_window:cli,max_output_tokens:config",
+        "mixed",
     )
 
     defaults = resolve_model_capabilities()
@@ -74,13 +85,20 @@ def test_resolution_priority_projects_mixed_sources():
         "default",
     )
 
-
 def test_model_capability_resolution_has_no_model_catalog_or_warning(capsys):
     capabilities = resolve_model_capabilities()
 
     assert capabilities.context_window == 128_000
     assert capabilities.max_output_tokens == 16_384
     assert capsys.readouterr().err == ""
+
+
+def test_automatic_compaction_target_scales_with_small_input_capacity():
+    capabilities = ModelCapabilities(32_768, 16_384, "estimate", "config")
+    budget = build_model_budget(capabilities)
+
+    assert automatic_compaction_keep_recent(budget, 0) == 4_096
+    assert automatic_compaction_keep_recent(budget, 1) == 2_048
 
 
 def test_cjk_json_and_message_estimates_are_not_ascii_divide_by_four():

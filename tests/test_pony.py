@@ -954,6 +954,45 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
     assert secret not in json.dumps(safe)
 
 
+@pytest.mark.parametrize(
+    ("pony_toml", "runtime_overrides", "expected_source"),
+    [
+        ("", {}, "default"),
+        ("[model]\ncontext_window = 90000\noutput_limit = 12000\n", {}, "config"),
+        ("", {"context_window": 256_000, "max_output_tokens": 32_768}, "cli"),
+        ("", {"context_window": 256_000}, "mixed"),
+    ],
+)
+def test_delegate_preserves_model_budget_provenance(
+    tmp_path,
+    monkeypatch,
+    pony_toml,
+    runtime_overrides,
+    expected_source,
+):
+    if pony_toml:
+        (tmp_path / "pony.toml").write_text(pony_toml, encoding="utf-8")
+    children = []
+    agent = build_agent(
+        tmp_path,
+        [],
+        delegate_model_client_factory=lambda: FakeModelClient([]),
+        **runtime_overrides,
+    )
+
+    def fake_ask(child, _task):
+        children.append(child)
+        return "safe"
+
+    monkeypatch.setattr(Pony, "ask", fake_ask)
+
+    assert agent.spawn_delegate({"task": "inspect", "max_steps": 1}) == (
+        "delegate_result:\nsafe"
+    )
+    assert agent.model_capabilities.source == expected_source
+    assert children[0].model_capabilities.source == expected_source
+
+
 def test_supplied_legacy_session_is_rejected_outside_store_migration(
     tmp_path,
 ):

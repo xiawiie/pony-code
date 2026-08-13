@@ -463,10 +463,12 @@ def run_tui(
     )
 
     def approve(name, args):
-        return input_queue.confirm(
+        accepted = input_queue.confirm(
             "  Approve once? [y/N] ",
             on_ready=lambda: call_ui(renderer.approval, name, args),
         )
+        call_ui(renderer.approval_resolved, accepted)
+        return accepted
 
     def process_local(user_input):
         return handle_input(

@@ -39,11 +39,17 @@ class ModelBudget:
 
     @property
     def compaction_summary_tokens(self):
-        return math.floor(self.reserve_tokens * 0.8)
+        return min(
+            math.floor(self.reserve_tokens * 0.8),
+            max(1_024, math.floor(self.input_limit * 0.25)),
+        )
 
     @property
     def split_turn_summary_tokens(self):
-        return math.floor(self.reserve_tokens * 0.5)
+        return min(
+            math.floor(self.reserve_tokens * 0.5),
+            max(1_024, math.floor(self.input_limit * 0.125)),
+        )
 
     @property
     def branch_summary_tokens(self):
@@ -107,11 +113,7 @@ def resolve_model_capabilities(
         if max_output_tokens is not None
         else "config" if config_output is not None else "default"
     )
-    source = (
-        context_source
-        if context_source == output_source
-        else f"context_window:{context_source},max_output_tokens:{output_source}"
-    )
+    source = context_source if context_source == output_source else "mixed"
 
     return ModelCapabilities(
         context_window=resolved_context,
@@ -171,6 +173,16 @@ def build_model_budget(
         source_pool_tokens=scaled_source_pool,
         keep_recent_tokens=keep_recent_tokens,
     )
+
+
+def automatic_compaction_keep_recent(budget, attempt):
+    """Return a progressively smaller tail target bounded by input capacity."""
+    if type(attempt) is not int or attempt < 0:
+        raise ValueError("compaction_attempt must be a non-negative integer")
+    divisor = 2**attempt
+    configured_target = budget.keep_recent_tokens // divisor
+    capacity_target = budget.input_limit // (4 * divisor)
+    return max(1_024, min(configured_target, capacity_target))
 
 
 def _is_cjk(char):

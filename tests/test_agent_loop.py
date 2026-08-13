@@ -324,6 +324,54 @@ def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
     assert load_run_summary(agent.run_store.root, agent.current_task_state.run_id) == report
 
 
+def test_small_context_automatically_compacts_before_first_model_attempt(tmp_path):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[
+                    {
+                        "type": "text",
+                        "text": "# Goal\nContinue\n# Next Steps\nAnswer current request",
+                    }
+                ],
+                usage={"input_tokens": 12_000, "output_tokens": 32},
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={"input_tokens": 8_000, "output_tokens": 1},
+            ),
+        ]
+    )
+    agent = build_native_agent(
+        tmp_path,
+        provider,
+        context_window=32_768,
+        max_output_tokens=16_384,
+    )
+    for index in range(80):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    assert agent.ask("current request") == "done"
+
+    assert len(provider.calls) == 2
+    assert agent.model_budget.compaction_summary_tokens == 4_096
+    assert agent.model_budget.split_turn_summary_tokens == 2_048
+    assert provider.calls[0]["max_tokens"] == 16_384
+    assert any(
+        "<pony:session_summary>" in str(message.get("content", ""))
+        for message in provider.calls[1]["messages"]
+    )
+
+
 def test_failed_compaction_call_is_durable_run_evidence(tmp_path, monkeypatch):
     context_error = ProviderTransportError(
         "context_length_exceeded",

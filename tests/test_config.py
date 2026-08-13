@@ -291,13 +291,36 @@ def test_openai_family_selection_uses_protocol_core_on_official_origin(provider)
     assert resolved["capabilities"] == {}
 
 
-@pytest.mark.parametrize("provider", ("openai-responses", "openai-chat"))
-def test_explicit_future_openai_target_uses_protocol_core(provider):
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    (
+        ("openai-responses", {}),
+        ("openai-chat", {"output_token_field": "max_completion_tokens"}),
+    ),
+)
+def test_explicit_future_openai_target_uses_only_protocol_and_endpoint_baseline(
+    provider,
+    expected,
+):
     resolved = resolve_model_config(
         project_env={
             PROVIDER_ENV_NAME: provider,
             API_BASE_ENV_NAME: "https://api.openai.com/v1",
             MODEL_ENV_NAME: "future-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    assert resolved["capabilities"] == expected
+
+
+def test_explicit_future_anthropic_target_uses_protocol_core():
+    resolved = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: "anthropic",
+            API_BASE_ENV_NAME: "https://api.anthropic.com/v1",
+            MODEL_ENV_NAME: "future-claude-model",
             API_KEY_ENV_NAME: "test-key",
         },
         process_env={},
@@ -322,6 +345,7 @@ def test_explicit_future_openai_target_uses_protocol_core(provider):
             {
                 "strict_tools": True,
                 "parallel_tool_control": True,
+                "output_token_field": "max_completion_tokens",
             },
         ),
     ),

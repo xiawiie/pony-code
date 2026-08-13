@@ -66,7 +66,7 @@ Session、migration、memory 与 Git metadata 均有 Windows production-backend 
 - Windows 11 x64 的 Python 3.11、3.12 全量 pytest、Ruff、build、distribution verifier 与 clean-install smoke 通过；
 - root-relative traversal、reparse point/junction、hardlink、ADS、DACL/File ID 漂移和 atomic-write fault injection 通过；
 - `LockFileEx` 互斥/timeout/identity race 与 Job Object timeout/output-limit/完整进程树清理通过；
-- PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 80/111 列拒绝与 112/120 列完整大版回归通过；
+- PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 80/111 列 compact 与 112/120 列完整大版回归通过；
 - Windows 专项不是由 WSL、Git Bash 或大面积 `skipif Windows` 获得绿色结果。
 
 普通 CI 与 `v*` Tag 发布共用 `.github/workflows/windows-verification.yml` 的 Windows 3.11/3.12 标准用户矩阵；
@@ -142,9 +142,9 @@ wheel 环境中取得，只证明阻断项已复现并修复；它不是 clean e
   `session.prompt()` 返回边界保留第二层规范化。原生 `WriteConsoleInputW(KEY_EVENT_RECORD)` 把高、低 surrogate 作为两个
   独立记录注入后，输入框、用户块、Provider request 与 durable Session 均保留一个真实马 emoji。
 - 启动欢迎页改由首个 PromptSession live render 持有；startup 期间列数变化会使用 prompt-toolkit 原生 clear/invalidate
-  清理 Windows Terminal 旧宽行重排。该阶段曾验证 112 列以下隐藏 Logo，但这一视觉降级随后被用户明确否决，不属于现行
-  产品合同；现行 TUI 必须显示完整大版，启动宽度不足时直接拒绝进入交互界面。
-- 从最新 dirty wheel 完成一次 loopback Ollama-contract E2E：低对比用户块、瞬态 `Working…`、标题、列表、行内代码、代码块和
+  清理 Windows Terminal 旧宽行重排。112 列及以上保持冻结的完整大版；80–111 列使用 compact `PONY CODE` 状态，低于
+  80 列才拒绝进入交互界面。
+- 从最新 dirty wheel 完成一次 loopback Ollama-contract E2E：低对比 `YOU` 用户块、瞬态运行状态、标题、列表、行内代码、代码块和
   表格均可读；HTTP 为 `/api/chat`，Run 为 `completed/final_answer_returned`，trace 为 1 model request、0 retry。
 - 在用户明确授权后，以显式 `openai-chat`、标准 HTTPS endpoint 和 `deepseek-v4-flash` 完成一次收费 G8；resolution 为
   explicit、probe 为 0、transport attempt 为 1、retry 为 0，返回指定 Markdown、中文与真实马 emoji。该结果只适用于本次
@@ -180,17 +180,18 @@ Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
 
 1. 分别从 Windows Terminal 的 PowerShell 与 Command Prompt profile 直接运行 `pony --help`、`pony` 和 `pony repl`；两种
    交互入口必须进入同一 TUI，`/exit` 后终端输入、光标和按键处理恢复正常。不得只验证 CLI 帮助或 import。
-2. 在 PowerShell profile 中分别以 80、111、112、120 列重新启动 `pony` 并记录终端实际列数。80/111 列必须以 usage
-   error 明确要求至少 112 列，且不能进入纯文本 REPL 或无 Logo TUI；112/120 列必须显示同一个完整尺寸马形 Logo 与块状
-   `PONY CODE` 字标，不得出现 medium、micro、缩放、单行或隐藏版。可用宽度下不得裁切、重叠、残留重绘或水平滚动；
+2. 在 PowerShell profile 中分别以 79、80、111、112、120 列重新启动 `pony` 并记录终端实际列数。79 列必须以 usage
+   error 明确要求至少 80 列；80/111 列必须进入 compact `PONY CODE` 会话；112/120 列必须显示同一个完整尺寸马形 Logo 与
+   块状 `PONY CODE` 字标。两种品牌状态都不得隐藏，跨阈值缩放时不得裁切、重叠、残留重绘或水平滚动；
    footer 不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
 3. 在 120 列会话中输入 `/`，确认 completion 菜单最多五项；输入七行文本，确认输入框最多增长六行且光标/滚动正常；
-   输入中文、英文和 emoji，确认用户消息为无角色标签的低对比块。使用已授权 Provider 发送固定最小请求，要求返回标题、
-   列表、行内代码、代码块和表格，确认 Markdown 降级可读、控制字符不可见且 `Working…` 在正式输出前清除。
+   输入中文、英文和 emoji，确认用户消息为带 `YOU` 锚点的低对比块，Assistant 消息带 `PONY` 锚点，输入区显示
+   `Message Pony`。使用已授权 Provider 发送固定最小请求，要求返回标题、列表、行内代码、代码块和表格，确认 Markdown
+   降级可读、控制字符不可见，且瞬态 Preparing/Waiting/Tool 状态不会覆盖 Completed/Interrupted/Failed 终态。
 4. 会话空闲时按一次 `Ctrl+C` 清空非空输入，再按两次 `Ctrl+C` 验证退出提示与退出；重新进入后以 `Ctrl+D` 退出。
    退出后键盘、光标和终端模式必须恢复，不能遗留输入 hook。
 5. 分别运行 `pony --no-color` 和设置 `NO_COLOR=1` 后运行 `pony`，确认布局与文本仍完整且没有 ANSI 颜色；清除环境变量后
-   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认完整大版不会切换为无 Logo 状态，且没有旧
+   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认完整与 compact 品牌状态按阈值切换，且没有旧
    footer、菜单或消息残影。
 
 验收记录至少包含以下字段，并作为候选 tag 的发布附件或 CI 关联 artifact 保存；截图必须先检查不含 Key、完整 API Base、
@@ -202,7 +203,7 @@ Windows build / Windows Terminal version:
 Python / pony / profile / font / scaling:
 PowerShell launch: PASS 或 FAIL（证据）
 Command Prompt launch: PASS 或 FAIL（证据）
-80/111 列拒绝、112/120 列完整大版与运行中缩放: PASS 或 FAIL（证据）
+79 列拒绝、80/111 列 compact、112/120 列完整大版与运行中缩放: PASS 或 FAIL（证据）
 输入、completion、Markdown、中文与 emoji: PASS 或 FAIL（证据）
 Ctrl+C / Ctrl+D / hook 恢复: PASS 或 FAIL（证据）
 --no-color / NO_COLOR: PASS 或 FAIL（证据）
@@ -276,19 +277,27 @@ uv run pytest -q \
 ```
 
 必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、非 TTY fallback、交互 TTY 的
-`TERM=dumb`/80/111 列稳定拒绝、`NO_COLOR`、112/120 列完整尺寸马形 `PONY CODE` 欢迎页与精简 footer、五项 slash
+`TERM=dumb`/79 列稳定拒绝、`NO_COLOR`、80/111 列 compact、112/120 列完整尺寸马形 `PONY CODE` 欢迎页与精简 footer、五项 slash
 completion、六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
-欢迎页测试必须同时锁定 112 列最低宽度、完整尺寸马形 Logo、块状字标、版本、模型/permission 摘要和可用宽度上限，并证明
-窄交互 TTY 不会进入无 Logo fallback，运行中缩窄也不会隐藏 Logo；只有用户明确要求修改设计时才可更新这些断言，不能把
-门禁弱化为“包含任意 PONY 文本”。
+欢迎页测试必须同时锁定 80 列最低宽度、80/111 列 compact、112/120 列完整尺寸马形 Logo、块状字标、版本、
+模型/permission 摘要和可用宽度上限，并证明运行中跨阈值缩放不会隐藏品牌状态；只有用户明确要求修改设计时才可更新这些
+断言，不能把门禁弱化为“包含任意 PONY 文本”。
 
 Input queue 测试必须同时覆盖 plain/TUI：单 worker FIFO、五条 pending 上限、满队列拒绝、`/queue clear` 零 Session
 写、queued prompt 只在 dequeue 后按序进入 Canonical Messages、approval answer 由 UI 接收且不入队，以及 `/exit` 等待
-active turn 而不声称取消 Provider/Tool。聚焦入口是 `tests/test_input_queue.py` 与 `tests/tui/test_app.py`。
+active turn 而不声称取消 Provider/Tool。approval/wake 异常必须 deny 并清除 pending confirmation。聚焦入口是
+`tests/test_input_queue.py` 与 `tests/tui/test_app.py`。
 
-事件投影测试必须证明 `Working…` 会在正式输出前清除、自动 checkpoint 零输出、成功 Tool 只输出一行、失败与中断
-可见，并且 footer 不泄露绝对路径、Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
+事件投影测试必须证明 Preparing、Waiting、Retrying、Compacting 和 Tool 状态可清除，Completed 不覆盖 durable
+Failed/Interrupted 终态，自动 checkpoint 零输出、成功 Tool 只输出一行、失败与中断可见，并且 footer 不泄露绝对路径、
+Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
 permission prompt 参数脱敏与 prompt fail closed 仍是阻断项；离线 contract 不得描述为 Provider reasoning 或 streaming 验证。
+
+Model/Provider 回归还必须覆盖：任意 model id 零 warning 和 128K/16K 默认；256K/32K 显式 profile；32K/16K 自动
+compaction turn；非法 TOML 组合在 runtime 构造前回退；default/config/CLI/mixed source 在 delegate/worktree 中不漂移；
+OpenAI nested strict schema；generic compatible Chat `max_tokens` 与官方 Chat endpoint `max_completion_tokens`。聚焦入口是
+`tests/test_model_capabilities.py`、`tests/test_pony_toml_end_to_end.py`、`tests/test_agent_loop.py`、
+`tests/test_provider_openai_wire.py` 和 `tests/test_provider_openai_chat_completions.py`。
 
 Permission/Plan 合同还必须覆盖：Session v5 的 `auto` runtime 默认值；v1-v4 inspection 零写与 crash-safe explicit
 migration；六种公开 mode 与 `manual -> default` 边界；dangerous bypass 双开关、picker capability 与 resume preflight；

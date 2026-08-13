@@ -45,7 +45,7 @@ def test_shared_function_schema_is_wire_envelope_neutral():
             "strict": True,
         }
     ]
-    assert optional_by_name == {"search": {"path"}}
+    assert optional_by_name == {"search": {("path",)}}
     assert original == _tool_schema()
     assert "type" not in prepared[0]
     assert "function" not in prepared[0]
@@ -61,6 +61,74 @@ def test_shared_function_schema_keeps_protocol_core_conservative():
         {"pattern": "x", "path": None},
         optional_by_name["search"],
     ) == {"pattern": "x"}
+
+
+def test_strict_function_schema_recurses_through_objects_arrays_and_alternatives():
+    tool = {
+        "name": "delegate_worktrees",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "mode": {"type": "string"},
+                            "options": {
+                                "anyOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {"branch": {"type": "string"}},
+                                    },
+                                    {"type": "string"},
+                                ]
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                }
+            },
+            "required": ["tasks"],
+        },
+    }
+
+    prepared, optional_by_name = prepare_function_tools([tool], strict=True)
+
+    task_schema = prepared[0]["parameters"]["properties"]["tasks"]["items"]
+    assert task_schema["required"] == ["name", "mode", "options"]
+    assert task_schema["additionalProperties"] is False
+    assert task_schema["properties"]["mode"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    options_schema = task_schema["properties"]["options"]["anyOf"][0]
+    option_object = options_schema["anyOf"][0]
+    assert option_object["required"] == ["branch"]
+    assert option_object["additionalProperties"] is False
+    assert optional_by_name == {
+        "delegate_worktrees": {
+            ("tasks", "[]", "mode"),
+            ("tasks", "[]", "options"),
+            ("tasks", "[]", "options", "branch"),
+        }
+    }
+
+    arguments = {
+        "tasks": [
+            {"name": "one", "mode": None, "options": {"branch": None}},
+            {"name": "two", "mode": "write", "options": None},
+        ]
+    }
+    assert drop_optional_null_arguments(
+        arguments,
+        optional_by_name["delegate_worktrees"],
+    ) == {
+        "tasks": [
+            {"name": "one", "options": {}},
+            {"name": "two", "mode": "write"},
+        ]
+    }
 
 
 def test_shared_system_instructions_validate_canonical_blocks():

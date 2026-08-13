@@ -107,7 +107,11 @@ class InputQueue:
         except Exception:  # UI failure must leave the protected operation denied
             self.answer_confirmation("")
             return False
-        self._on_wake()
+        try:
+            self._on_wake()
+        except Exception:  # UI wake failure must leave the operation denied
+            self.answer_confirmation("")
+            return False
         request.answered.wait()
         return request.accepted
 
@@ -153,4 +157,7 @@ class InputQueue:
             self._pending.clear()
             self._busy = False
             self._idle.notify_all()
-        self._on_wake()
+        try:
+            self._on_wake()
+        except Exception:
+            pass

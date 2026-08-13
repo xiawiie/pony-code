@@ -62,6 +62,7 @@ mindmap
 | 使用项目规范 | 显式读取受信 `.claude/skills/<name>/SKILL.md`，仅作为当前 turn 的只读上下文 |
 | 并行处理任务 | 在隔离 Git worktree 中创建 child；审查后显式 `merge` 或有序 `merge-all` |
 | 切换模型或 Provider | 用单一 `.env` 配置；协议/endpoint 明确绑定，真实任务失败不 fallback |
+| 使用新型号 | 任意合法 model id 零登记进入既有协议；不查 catalog、不显示 unknown warning |
 
 ## 一次任务如何运行
 
@@ -132,8 +133,9 @@ pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
 
 `pony` 与 `pony repl` 是同一个交互会话；`pony run` 一次执行后退出。未知首 token 不会被静默当作 prompt。
-完整 TUI 要求 stdin/stdout 为 TTY 且至少 112 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。交互 TTY 不满足能力或
-宽度要求时返回稳定 usage error，不会进入无 Logo 的纯文本界面；只有非 TTY 自动化输入才使用纯文本 REPL。
+TUI 要求 stdin/stdout 为 TTY 且至少 80 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。80–111 列使用 compact
+`PONY CODE` 会话界面，112 列及以上显示完整马形 Logo 与块状字标；低于 80 列返回稳定 usage error，不会静默进入纯文本
+界面。只有非 TTY 自动化输入才使用纯文本 REPL。
 `pony run` 不显示装饰性 banner。
 
 ## 配置与 Provider 路由
@@ -178,6 +180,14 @@ flowchart LR
 真实任务失败不 fallback：Pony 不会在任务失败后切换 Provider 或协议并重放状态。每个 Provider/模型组合的 live 结果不能证明其他组合可用；
 四种 Transport 的实现有离线 wire-contract 测试，真实账号/endpoint/model 仍需分别验收。
 
+`PONY_MODEL` 是不透明路由值，不需要内置登记。未显式配置预算时，所有型号统一使用 Pony 的 128,000 context / 16,384
+output 请求策略；这不是对远端物理上限的声明。可在现有 CLI/`pony.toml` 中显式设置其他完整预算，例如
+256,000 / 32,768。Pony 不根据型号名称静默降档，也不把一次 `doctor --check-api` 结果写成永久 catalog。
+
+OpenAI Responses 与 Chat Completions 共用认证、HTTP 和 function schema 等原语，但 wire protocol 不合并：两者的 endpoint、
+消息结构、tool continuation、opaque reasoning state 及 streaming event 都不同。`openai`/`auto` 对不明确 endpoint 优先探测
+Responses，再探测 Chat；一旦真实用户任务开始就不再切换协议。
+
 ## 交互能力
 
 ```mermaid
@@ -205,9 +215,10 @@ stateDiagram-v2
 | Skills | `/<skill-name> [prompt]` | 仅受信 `.claude/skills`、只读、当前 turn、不会执行脚本 |
 | Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
 
-完整 TUI 只允许截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标；它是不可隐藏的唯一欢迎状态，`--quiet` 也不能抑制。
-终端启动宽度低于 112 列时直接要求扩宽，不会显示无 Logo、小版、micro、缩放或单行替代界面。完整大版和欢迎页布局是
-冻结的产品资产，除非用户明确要求，维护和重构不得修改。
+112 列及以上继续使用截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标，完整资产本身保持冻结；80–111 列使用 compact
+品牌状态，低于 80 列要求扩宽。对话区以 `YOU` / `PONY` 标识双方，输入区显示 `Message Pony`；footer 展示真实运行状态、
+queue、已有 context 占用、permission 和具体 protocol/model。忙碌时的 Ctrl+C 只清除 queued next-turn input，并明确说明
+当前请求不会被取消；Pony 1.0 尚未实现 transport streaming/cancel。
 
 ## 并行 Worktree Agent
 
@@ -295,6 +306,7 @@ flowchart LR
 | 领域术语、模块所有权与不变量 | [领域模型](docs/domain-model.md) |
 | 路径、secret、Host 与 permission 安全模型 | [安全](docs/security.md) |
 | Context、Session、compaction、fork 与 rewind | [Context 与 Session](docs/context-and-sessions.md) |
+| 任意型号、OpenAI wire 边界与请求预算 | [Model Target 与预算设计](docs/model-target-and-budget-design.md) |
 | Memory 行为 | [Memory](docs/memory.md) |
 | LongMemEval、PersonaMem 与 mem0 公开记忆评测 | [公开记忆基准](docs/public-memory-benchmark.md) |
 | Legacy artifact 与恢复边界 | [恢复](docs/recovery.md) |

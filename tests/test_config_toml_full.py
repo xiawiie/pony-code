@@ -315,11 +315,63 @@ history_soft_cap = 12345
 
     data = load_pony_toml(tmp_path)
 
-    assert data["model"]["context_window"] == 4096
+    assert data["model"]["context_window"] == 128_000
     assert data["context"]["system_tools_hard_cap"] == 50000
     assert "history_soft_cap" not in data["context"]
     assert capsys.readouterr().err == (
         "warning: [context].history_soft_cap was removed; use automatic compaction\n"
         "warning: [context].total_budget_hard_cap is deprecated; "
         "migrating it to [model].context_window\n"
+        "warning: invalid pony.toml model/context budget; using defaults\n"
+    )
+
+
+def test_incompatible_model_and_reserve_budget_falls_back_before_runtime(
+    tmp_path,
+    capsys,
+):
+    (tmp_path / "pony.toml").write_text(
+        "[model]\ncontext_window = 64000\noutput_limit = 60000\n"
+        "[context.compaction]\nenabled = false\nreserve_tokens = 62000\n"
+        "keep_recent_tokens = 7000\n",
+        encoding="utf-8",
+    )
+
+    data = load_pony_toml(tmp_path)
+
+    assert data["model"] == {
+        "context_window": 128_000,
+        "output_limit": 16_384,
+    }
+    assert data["context"]["compaction"] == {
+        "enabled": False,
+        "reserve_tokens": 16_384,
+        "keep_recent_tokens": 7_000,
+    }
+    assert capsys.readouterr().err == (
+        "warning: invalid pony.toml model/context budget; using defaults\n"
+    )
+
+
+def test_extreme_individually_valid_model_budget_uses_same_combined_fallback(
+    tmp_path,
+    capsys,
+):
+    (tmp_path / "pony.toml").write_text(
+        "[model]\ncontext_window = 4096\noutput_limit = 384000\n",
+        encoding="utf-8",
+    )
+
+    data = load_pony_toml(tmp_path)
+
+    assert data["model"] == {
+        "context_window": 128_000,
+        "output_limit": 16_384,
+    }
+    assert data["_meta"] == {
+        "model_context_explicit": False,
+        "model_output_explicit": False,
+    }
+    assert capsys.readouterr().err == (
+        "warning: invalid pony.toml model/context budget; using defaults\n"
     )

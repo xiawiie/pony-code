@@ -15,7 +15,10 @@
 | Provider | 用户选择或 Pony 在发送真实任务前解析出的服务家族 | 内部 Transport |
 | API Variant | Provider 家族内的 wire API，例如 `responses` 或 `chat_completions` | Provider 品牌 |
 | Transport | `anthropic_messages`、`openai_responses`、`openai_chat_completions`、`ollama_chat` | Provider 品牌 |
-| Capability Profile | strict tools、parallel control、prompt cache、reasoning replay 等可选 wire 能力 | 必需 tool contract |
+| Model Target | `protocol_family + model + endpoint_hash` 标识的 exact runtime 目标 | 型号 catalog 或 Provider 品牌 |
+| Protocol Core | 一个 Transport 对任意合法 model id 提供的最小 wire/tool loop 合同 | 可选型号增强 |
+| Wire Options | strict tools、parallel control、prompt cache、reasoning replay 等 scoped 可选 wire 行为 | context/output 请求预算 |
+| Request Budget | Pony 的 context、output、reserve 与输入分配策略 | 远端物理上限或型号认证 |
 | Resolved Provider Target | 当前 endpoint/model 最终绑定的 Provider、Transport、认证和保守能力集合 | 自动 fallback |
 | Provider Resolution | 发送用户任务前，以显式值、known origin、Session binding 或 bounded synthetic probe 产生 Target | 重放用户任务 |
 | Session Model Selection | 在相同 protocol 与 endpoint 下，以专用 writer 替换当前 Session binding 的 model | Provider registry 或 model catalog |
@@ -54,6 +57,10 @@ missing/auto 与 OpenAI family 可在发送用户任务前执行 fixed synthetic
 Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。resume 以 Session model 为准，并继续校验
 protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 model。含 opaque Provider state 的 Session 拒绝
 模型切换；任何跨协议或跨 endpoint 重放都返回 `model_session_mismatch`。
+
+model id 是不透明路由值，不查 catalog，也不决定 Request Budget。未显式配置时所有 Target 使用 128K/16K；CLI 和
+`pony.toml` 按字段覆盖。OpenAI Responses/Chat 只共享 wire-neutral function/system 原语，各自保留 codec、continuation 和
+state。exact Target 的可选 Wire Options 不参与准入、预算、probe 或 UI 推荐。
 
 ## Permission 与 Plan 合同
 

@@ -1001,8 +1001,8 @@ def test_toolbar_projects_trace_state_queue_and_existing_context_metadata(monkey
     )
     assert "Completed" in footer()
 
-    renderer.notice("provider request failed", error=True)
-    assert "Failed" in footer()
+    renderer.notice("local command failed", error=True)
+    assert "Completed" in footer()
 
     interrupted = project_trace_event(
         task_state,
@@ -1112,6 +1112,82 @@ def test_tool_activity_is_bounded_by_terminal_width(
     renderer.trace({"event": "tool_executed", "tool_status": "ok"})
     cleared = terminal.getvalue().split("\r")[1]
     assert get_cwidth(cleared) == get_cwidth(activity)
+
+
+def test_tool_activity_clear_uses_the_current_terminal_width(monkeypatch):
+    terminal = io.StringIO()
+    current = SimpleNamespace(columns=140)
+    monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
+    monkeypatch.setattr(
+        "pony.tui.render.shutil.get_terminal_size",
+        lambda _fallback: current,
+    )
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+    renderer = TuiRenderer(no_color=True)
+    renderer.trace(
+        {
+            "event": "tool_started",
+            "name": "run_shell",
+            "args": {"command": "pytest " + "long-test " * 40},
+        }
+    )
+
+    current.columns = 80
+    renderer.trace({"event": "tool_executed", "tool_status": "ok"})
+
+    cleared = terminal.getvalue().split("\r")[1]
+    assert get_cwidth(cleared) == 79
+
+
+@pytest.mark.parametrize("columns", (80, 112))
+def test_approval_details_are_bounded_by_terminal_width(monkeypatch, columns):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+
+    TuiRenderer(no_color=True).approval(
+        "run_shell",
+        {"command": "测试路径/" * 200},
+        columns=columns,
+    )
+
+    rendered = "".join(fragment[1] for value in output for fragment in value)
+    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+
+
+def test_approval_resolution_replaces_waiting_state(monkeypatch):
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        model_client=SimpleNamespace(
+            model="gpt-test",
+            provider_metadata={"protocol_family": "openai_responses"},
+        ),
+    )
+    renderer = TuiRenderer(no_color=True)
+    renderer.trace(
+        {"event": "tool_started", "name": "write_file", "args": {"path": "a.py"}}
+    )
+    renderer.approval("write_file", {"path": "a.py"}, columns=80)
+
+    renderer.approval_resolved(True)
+
+    footer = "".join(
+        fragment[1]
+        for fragment in renderer.toolbar(agent, model="gpt-test", columns=112)
+    )
+    assert "Using tool" in footer
+    assert "Waiting for approval" not in footer
 
 
 def test_prompt_and_conversation_have_plain_text_identity_anchors(monkeypatch):

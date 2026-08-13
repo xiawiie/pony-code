@@ -74,12 +74,11 @@ def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="defau
 
 def test_model_client_factory_rebuilds_the_resolved_transport():
     config = {
-        "protocol": {"value": "openai_chat_completions"},
-        "model": {"value": "gpt-test"},
-        "base_url": {"value": "https://api.example/v1"},
+        "protocol": {"value": "openai_responses"},
+        "model": {"value": "gpt-5.4"},
+        "base_url": {"value": "https://api.openai.com/v1"},
         "api_key": {"value": "test-key"},
         "auth_mode": {"value": "bearer"},
-        "capabilities": {"strict_tools": True},
     }
 
     factory = _model_client_factory(config, 30)
@@ -91,6 +90,8 @@ def test_model_client_factory_rebuilds_the_resolved_transport():
     assert second.provider_binding == first.provider_binding
     assert second.capabilities == first.capabilities
     assert replacement.model == "gpt-next"
+    assert first.capabilities["reasoning_replay"] is True
+    assert replacement.capabilities == {}
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):

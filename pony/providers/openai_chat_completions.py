@@ -293,9 +293,12 @@ class OpenAIChatCompletionsModelClient:
         payload = {
             "model": self.model,
             "messages": _chat_messages(system, messages),
-            "max_tokens": max_tokens,
             "stream": False,
         }
+        output_token_field = self.capabilities.get("output_token_field", "max_tokens")
+        if output_token_field not in {"max_tokens", "max_completion_tokens"}:
+            raise ValueError("unsupported Chat output token field")
+        payload[output_token_field] = max_tokens
         if prepared_tools:
             payload["tools"] = prepared_tools
         if self.temperature is not None:
