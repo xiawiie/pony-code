@@ -340,7 +340,7 @@ def test_parse_args_accepts_auto_target_without_network(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
-def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
+def test_project_env_uses_protocol_baseline_for_unknown_model(tmp_path, provider):
     base_url = f"https://api.{provider}.com/v1"
     lines = [
         f"PONY_PROVIDER={provider}",
@@ -365,9 +365,7 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
     assert settings["model"] == (f"{provider}-test-model")
     assert settings["base_url"] == base_url
     assert settings["auth_mode"] == expected_auth_mode
-    assert settings["capabilities"].get("prompt_cache", False) is (
-        provider == "anthropic"
-    )
+    assert settings["capabilities"] == {}
 
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
