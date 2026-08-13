@@ -365,7 +365,10 @@ def test_project_env_uses_protocol_baseline_for_unknown_model(tmp_path, provider
     assert settings["model"] == (f"{provider}-test-model")
     assert settings["base_url"] == base_url
     assert settings["auth_mode"] == expected_auth_mode
-    assert settings["capabilities"] == {}
+    expected_capabilities = (
+        {} if provider == "anthropic" else {"reasoning_replay": True}
+    )
+    assert settings["capabilities"] == expected_capabilities
 
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
