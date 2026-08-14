@@ -106,12 +106,12 @@ def resolve_model_capabilities(
     context_source = (
         "cli"
         if context_window is not None
-        else "config" if config_context is not None else "default"
+        else "project" if config_context is not None else "default"
     )
     output_source = (
         "cli"
         if max_output_tokens is not None
-        else "config" if config_output is not None else "default"
+        else "project" if config_output is not None else "default"
     )
     source = context_source if context_source == output_source else "mixed"
 

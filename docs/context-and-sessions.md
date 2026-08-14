@@ -17,7 +17,7 @@ ModelCapabilities(
     context_window=...,
     max_output_tokens=...,
     token_counter_mode=...,
-    source="cli|config|default|mixed",
+    source="cli|project|default|mixed",
 )
 ```
 

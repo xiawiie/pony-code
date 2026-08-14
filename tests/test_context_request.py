@@ -75,6 +75,9 @@ def test_build_request_returns_system_tools_messages():
     assert "input_schema" in tools_by_name["read_file"]
     # risky flag 迁移到 description
     assert "approval" in tools_by_name["write_file"]["description"].lower()
+    model = metadata["context_breakdown"]["model"]
+    assert model["policy_source"] == "test"
+    assert "capabilities_source" not in model
 
 
 def test_build_request_uses_persisted_current_user_message():

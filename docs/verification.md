@@ -294,7 +294,7 @@ checkpoint 零输出、成功 Tool 只输出一行、分页/截断/失败与中�
 permission prompt 参数脱敏与 prompt fail closed 仍是阻断项；离线 contract 不得描述为 Provider reasoning 或 streaming 验证。
 
 Model/Provider 回归还必须覆盖：任意 model id 零 warning 和 128K/16K 默认；256K/32K 显式 profile；32K/16K 自动
-compaction turn；非法 TOML 组合在 runtime 构造前回退；default/config/CLI/mixed source 在 delegate/worktree 中不漂移；
+compaction turn；非法 TOML 组合在 runtime 构造前回退；default/project/CLI/mixed source 在 delegate/worktree 中不漂移；
 OpenAI nested strict schema、default 清理与 unsupported composition 拒绝；generic compatible Chat `max_tokens` 与官方 Chat
 endpoint `max_completion_tokens`。聚焦入口是
 `tests/test_model_capabilities.py`、`tests/test_pony_toml_end_to_end.py`、`tests/test_agent_loop.py`、

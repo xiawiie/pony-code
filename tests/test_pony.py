@@ -958,7 +958,7 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
     ("pony_toml", "runtime_overrides", "expected_source"),
     [
         ("", {}, "default"),
-        ("[model]\ncontext_window = 90000\noutput_limit = 12000\n", {}, "config"),
+        ("[model]\ncontext_window = 90000\noutput_limit = 12000\n", {}, "project"),
         ("", {"context_window": 256_000, "max_output_tokens": 32_768}, "cli"),
         ("", {"context_window": 256_000}, "mixed"),
     ],
