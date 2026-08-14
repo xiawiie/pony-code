@@ -394,8 +394,11 @@ def test_trace_reader_rejects_streaming_state_regression_within_attempt():
         validate_trace([terminal, regressed])
 
 
-@pytest.mark.parametrize("attempt", (None, 0, True))
-def test_trace_reader_requires_a_positive_streaming_attempt(attempt):
+@pytest.mark.parametrize(
+    ("attempt", "error"),
+    ((None, "has no attempt"), (0, "has no attempt"), (True, "unsafe metadata")),
+)
+def test_trace_reader_requires_a_positive_streaming_attempt(attempt, error):
     state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
     event = project_trace_event(
         state,
@@ -417,5 +420,5 @@ def test_trace_reader_requires_a_positive_streaming_attempt(attempt):
     else:
         event["attempt"] = attempt
 
-    with pytest.raises(RunArtifactError, match="has no attempt"):
+    with pytest.raises(RunArtifactError, match=error):
         validate_trace([event])
