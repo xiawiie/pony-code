@@ -317,11 +317,12 @@ TOOL_PAGE_FIXTURE_REL = Path(
 )
 TOOL_PAGE_FIXTURE_TEXT = "".join(f"p{index:04d}\n" for index in range(3_000))
 _TOOL_PAGE_PROMPT = (
-    "Call the API-provided native read_file tool first with only the path argument "
-    f"set to {TOOL_PAGE_FIXTURE_REL.as_posix()}. Then call read_file exactly once "
-    "more using the exact continuation arguments returned by the first result. "
-    "After the second result, do not call any tool again; return a concise final "
-    "summary. Do not emit XML tool text."
+    "Call the API-provided native read_file tool for the full file starting at line "
+    f"1, with path set to {TOOL_PAGE_FIXTURE_REL.as_posix()}. Use only path, or path "
+    "plus start=1; omit end. Then call read_file exactly once more using the exact "
+    "continuation arguments returned by the first result. After the second result, "
+    "do not call any tool again; return a concise final summary. Do not emit XML "
+    "tool text."
 )
 PONY_TOML_REL = Path("pony.toml")
 BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pony.toml.bak")
@@ -1334,14 +1335,20 @@ class AssertionEngine:
 
         exact_tool_inputs = bool(
             len(tool_inputs) == 2
-            and tool_inputs[0] == {"path": TOOL_PAGE_FIXTURE_REL.as_posix()}
+            and tool_inputs[0]
+            in (
+                {"path": TOOL_PAGE_FIXTURE_REL.as_posix()},
+                {"path": TOOL_PAGE_FIXTURE_REL.as_posix(), "start": 1},
+            )
             and tool_inputs[1] == first_continuation
         )
         out.append(
             Assertion(
                 name="read_file_inputs_follow_exact_continuation",
                 passed=exact_tool_inputs,
-                expected="path-only first call followed by exact continuation input",
+                expected=(
+                    "line-1 full-file read followed by exact continuation input"
+                ),
                 actual=str(tool_inputs),
             )
         )
@@ -1379,24 +1386,6 @@ class AssertionEngine:
             )
         )
 
-        expected_views = (
-            {
-                "delivery": "page",
-                "truncated": False,
-                "start_line": 1,
-                "end_line": 2_000,
-                "total_lines": 3_000,
-                "next_start": 2_001,
-                "reasons": ["lines"],
-            },
-            {
-                "delivery": "page",
-                "truncated": False,
-                "start_line": 2_001,
-                "end_line": 3_000,
-                "total_lines": 3_000,
-            },
-        )
         metadata_exact = bool(
             len(tool_result_metadata) == 2
             and len(tool_result_ids) == len(tool_use_ids) == 2
@@ -1406,10 +1395,9 @@ class AssertionEngine:
                 and meta.get("tool_status") == "ok"
                 and meta.get("effect_class") == "read_only"
                 and meta.get("tool_use_id") == result_id == use_id
-                and meta.get("result_view") == expected_view
-                for meta, expected_view, result_id, use_id in zip(
+                and "result_view" not in meta
+                for meta, result_id, use_id in zip(
                     tool_result_metadata,
-                    expected_views,
                     tool_result_ids,
                     tool_use_ids,
                 )
@@ -1419,7 +1407,9 @@ class AssertionEngine:
             Assertion(
                 name="paged_result_metadata_exact",
                 passed=metadata_exact,
-                expected="lossless page result_view with no digest source hash",
+                expected=(
+                    "successful canonical page metadata omits presentation result_view"
+                ),
                 actual=str(tool_result_metadata),
             )
         )

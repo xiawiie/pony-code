@@ -560,7 +560,7 @@ def test_tool_page_prompt_requires_exact_continuation():
     prompt = run_live_session._TOOL_PAGE_PROMPT
 
     assert run_live_session.TOOL_PAGE_FIXTURE_REL.as_posix() in prompt
-    assert "with only the path argument" in prompt
+    assert "Use only path, or path plus start=1; omit end" in prompt
     assert "exact continuation arguments" in prompt
     assert "exactly once more" in prompt
 
@@ -1587,22 +1587,6 @@ def _pony_stub_with_paged_messages(run_dir: Path):
         f"[page] {json.dumps(second_header, separators=(',', ':'))}\n"
         + "".join(fixture_lines[2_000:])
     )
-    first_view = {
-        "delivery": "page",
-        "truncated": False,
-        "start_line": 1,
-        "end_line": 2_000,
-        "total_lines": 3_000,
-        "next_start": 2_001,
-        "reasons": ["lines"],
-    }
-    second_view = {
-        "delivery": "page",
-        "truncated": False,
-        "start_line": 2_001,
-        "end_line": 3_000,
-        "total_lines": 3_000,
-    }
     messages = [
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "earlier"},
@@ -1633,7 +1617,6 @@ def _pony_stub_with_paged_messages(run_dir: Path):
                 "tool_use_id": "t1",
                 "tool_status": "ok",
                 "effect_class": "read_only",
-                "result_view": first_view,
             },
         },
         {
@@ -1662,7 +1645,6 @@ def _pony_stub_with_paged_messages(run_dir: Path):
                 "tool_use_id": "t2",
                 "tool_status": "ok",
                 "effect_class": "read_only",
-                "result_view": second_view,
             },
         },
         {"role": "assistant", "content": "done"},
@@ -1681,6 +1663,19 @@ def test_check_turn_2_pages_passes_on_valid_state(tmp_path):
     assert all(a.passed for a in asserts), [
         (a.name, a.actual) for a in asserts if not a.passed
     ]
+
+
+def test_check_turn_2_pages_accepts_explicit_first_start(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    pony.session["messages"][3]["content"][0]["input"]["start"] = 1
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert next(
+        item
+        for item in assertions
+        if item.name == "read_file_inputs_follow_exact_continuation"
+    ).passed
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai", "ollama"])
