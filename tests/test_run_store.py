@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import stat
@@ -8,7 +9,7 @@ import pytest
 
 import pony.state.run_store as run_store_module
 from pony.security import private_files as security_module
-from pony.state.run_store import RunStore
+from pony.state.run_store import MAX_TOOL_RESULT_BYTES, RunStore, ToolResultStoreError
 from pony.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
 
@@ -52,7 +53,11 @@ def test_run_store_writes_tool_result_through_private_atomic_backend(
 
     monkeypatch.setattr(run_store_module, "write_private_bytes_atomic", record_write)
 
-    path = store.write_tool_result("run_001", "0123456789abcdef", "raw result")
+    state = TaskState.create(
+        run_id="run_001", task_id="task_001", user_request="Retain a result."
+    )
+    source_hash = hashlib.sha256(b"raw result").hexdigest()
+    path = store.write_tool_result(state, source_hash, "raw result")
 
     assert path.read_text(encoding="utf-8") == "raw result"
     assert calls == [
@@ -63,6 +68,8 @@ def test_run_store_writes_tool_result_through_private_atomic_backend(
                 "trusted_root": store.root,
                 "trusted_root_identity": store._root_identity,
                 "error": "raw tool result changed",
+                "max_existing_bytes": MAX_TOOL_RESULT_BYTES,
+                "require_absent": True,
             },
         )
     ]
@@ -71,9 +78,12 @@ def test_run_store_writes_tool_result_through_private_atomic_backend(
 @pytest.mark.parametrize("source_hash", ("", "../outside", "A" * 16, "a" * 15))
 def test_run_store_rejects_invalid_tool_result_hash(tmp_path, source_hash):
     store = RunStore(tmp_path / ".pony" / "runs")
+    state = TaskState.create(
+        run_id="run_001", task_id="task_001", user_request="Retain a result."
+    )
 
-    with pytest.raises(ValueError, match="invalid tool result hash"):
-        store.write_tool_result("run_001", source_hash, "raw result")
+    with pytest.raises(ToolResultStoreError, match="tool_result_retention_failed"):
+        store.write_tool_result(state, source_hash, "raw result")
 
 
 def test_run_store_appends_trace_jsonl(tmp_path):

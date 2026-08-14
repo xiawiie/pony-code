@@ -64,10 +64,14 @@ def test_read_tool_provider_contract_explains_bounded_paging(tmp_path, tool_name
 
     assert read_tool["input_schema"]["required"] == ["path"]
     assert read_tool["input_schema"]["properties"]["start"] == {"type": "integer"}
-    assert read_tool["input_schema"]["properties"]["end"] == {"type": "integer"}
-    assert "1-based inclusive" in read_tool["description"]
-    assert "Omit start and end to read lines 1-200" in read_tool["description"]
-    assert "end - start + 1 <= 200" in read_tool["description"]
+    assert read_tool["input_schema"]["properties"]["end"] == {
+        "type": ["integer", "null"],
+        "minimum": 1,
+        "default": None,
+    }
+    assert "one bounded page" in read_tool["description"]
+    assert "Omit end to read toward EOF" in read_tool["description"]
+    assert "exact continuation arguments" in read_tool["description"]
 
 
 def test_update_plan_is_absent_from_native_tool_schema(tmp_path):

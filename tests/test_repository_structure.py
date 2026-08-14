@@ -194,7 +194,8 @@ def test_product_docs_lock_current_execution_and_support_contract():
     assert "完整资产本身保持冻结" in readme
     assert "80/111 列要求扩宽" in readme
     assert "用户消息为无标签的低对比块" in readme
-    assert "`Message Pony`" in readme
+    assert "Assistant Answer 使用 `Pony` 锚点" in readme
+    assert "`Message Pony`" not in readme
     assert "128,000 context / 16,384" in readme
     assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(
         readme.split()
