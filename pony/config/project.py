@@ -13,6 +13,7 @@ _PONY_TOML_BUDGET_WARNING = (
     "warning: invalid pony.toml model/context budget; using defaults"
 )
 MAX_PONY_TOML_BYTES = 1024 * 1024
+MAX_MODEL_OUTPUT_TOKENS = 384_000
 _MIN_EFFECTIVE_INPUT_TOKENS = 16_384
 _MISSING = object()
 _REMOVED_CONTEXT_KEYS = (
@@ -111,7 +112,7 @@ def _validated_model(model, context):
         "output_limit",
         16384,
         1,
-        384000,
+        MAX_MODEL_OUTPUT_TOKENS,
         "model.output_limit",
     )
     return {

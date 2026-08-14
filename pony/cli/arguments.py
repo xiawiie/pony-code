@@ -4,6 +4,7 @@ import argparse
 from importlib.metadata import PackageNotFoundError, version
 
 from pony.config.model import validate_model_name
+from pony.config.project import MAX_MODEL_OUTPUT_TOKENS
 from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 
 from .commands import ROOT_HELP
@@ -56,7 +57,7 @@ def _max_output_tokens_argument(value):
         value,
         name="max output tokens",
         minimum=1,
-        maximum=32768,
+        maximum=MAX_MODEL_OUTPUT_TOKENS,
     )
 
 

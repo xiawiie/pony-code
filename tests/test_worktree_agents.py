@@ -149,8 +149,8 @@ def test_worktree_child_preserves_project_config_budget_provenance(tmp_path):
     try:
         child = _build_child(parent, prepared, FakeModelClient([]))
 
-        assert parent.model_capabilities.source == "config"
-        assert child.model_capabilities.source == "config"
+        assert parent.model_capabilities.source == "project"
+        assert child.model_capabilities.source == "project"
         assert child._model_runtime_options.context_window is None
         assert child._model_runtime_options.max_output_tokens is None
     finally:

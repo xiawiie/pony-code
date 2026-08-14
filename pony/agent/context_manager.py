@@ -347,7 +347,7 @@ class ContextManager:
             "model": {
                 "context_window": capabilities.context_window,
                 "max_output_tokens": capabilities.max_output_tokens,
-                "capabilities_source": capabilities.source,
+                "policy_source": capabilities.source,
             },
             "budget": {
                 "output": budget.output_tokens,
