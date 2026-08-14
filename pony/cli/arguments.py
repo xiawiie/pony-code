@@ -199,4 +199,9 @@ def build_arg_parser():
     parser.add_argument(
         "--no-input", action="store_true", help="Disable interactive prompts."
     )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream safe text previews in the interactive TUI.",
+    )
     return parser

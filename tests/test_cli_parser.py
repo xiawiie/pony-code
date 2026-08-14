@@ -88,6 +88,12 @@ def test_parse_repl_command():
     assert invocation.command_args == []
 
 
+def test_parse_stream_for_repl():
+    invocation = parse_cli_invocation(["--stream", "repl"], build_arg_parser())
+
+    assert invocation.runtime_args.stream is True
+
+
 def test_parse_bare_pony_as_interactive_repl():
     invocation = parse_cli_invocation([], build_arg_parser())
 

@@ -94,6 +94,38 @@ class EvidenceScriptProvider:
         return outcome
 
 
+class StreamingScriptProvider:
+    supports_prompt_cache = False
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+        self.last_transport_attempts = 0
+
+    def complete(self, **_kwargs):
+        raise AssertionError("final-only complete must not be called")
+
+    def complete_stream(
+        self,
+        *,
+        system,
+        tools,
+        messages,
+        max_tokens,
+        cache_breakpoints=None,
+        on_stream_committed,
+        on_text_delta,
+    ):
+        self.last_transport_attempts = 1
+        self.calls.append(copy.deepcopy(messages))
+        outcome = self.outcomes.pop(0)
+        if callable(outcome):
+            return outcome(on_stream_committed, on_text_delta)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
 def build_native_agent(tmp_path, provider, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -175,6 +207,28 @@ def test_agent_loop_runs_same_control_flow_as_pony_ask(tmp_path):
     assert answer == "Done."
     assert agent.current_task_state.status == "completed"
     assert agent.run_store.report_path(agent.current_task_state.run_id).exists()
+
+
+def test_final_only_client_shape_and_metadata_remain_unchanged(tmp_path):
+    agent = build_agent(tmp_path, ["done"])
+
+    assert agent.ask("final only") == "done"
+
+    assert len(agent.model_client.requests) == 1
+    assert set(agent.model_client.requests[0]) == {
+        "system",
+        "tools",
+        "messages",
+        "max_tokens",
+        "cache_breakpoints",
+    }
+    events = read_trace(agent)
+    for event in events:
+        request_metadata = event.get("request_metadata")
+        if isinstance(request_metadata, dict):
+            assert "streaming" not in request_metadata
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert "streaming" not in report["context"]
 
 
 def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
@@ -547,6 +601,208 @@ def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
     assert caught.value is failure
     assert len(provider.calls) == 1
     sleep.assert_not_called()
+
+
+def test_streaming_preview_metadata_is_initial_then_terminal(tmp_path):
+    def stream(committed, text_delta):
+        committed()
+        text_delta("PREVIEW_ONLY_SENTINEL\nsecond\n")
+        return Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "final"}],
+            usage={"input_tokens": 2, "output_tokens": 1},
+        )
+
+    provider = StreamingScriptProvider([stream])
+    agent = build_native_agent(tmp_path, provider, stream=True)
+    committed = []
+    previews = []
+    listener_events = []
+    agent._trace_listener = listener_events.append
+    agent._stream_committed_callback = lambda: committed.append(True)
+    agent._stream_preview_callback = lambda text: previews.append(text) or True
+
+    assert agent.ask("stream") == "final"
+
+    assert committed == [True]
+    assert previews == [
+        "PREVIEW_ONLY_SENTINEL",
+        "PREVIEW_ONLY_SENTINEL\nsecond",
+    ]
+    events = read_trace(agent)
+    requested = next(event for event in events if event["event"] == "model_requested")
+    turn = next(event for event in events if event["event"] == "model_turn")
+    assert requested["request_metadata"]["streaming"] == {
+        "requested": True,
+        "committed": False,
+        "preview_emitted": False,
+        "first_preview_ms": None,
+    }
+    assert turn["request_metadata"]["streaming"]["committed"] is True
+    assert turn["request_metadata"]["streaming"]["preview_emitted"] is True
+    assert type(turn["request_metadata"]["streaming"]["first_preview_ms"]) is int
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["context"]["streaming"] == turn["request_metadata"]["streaming"]
+    assert "PREVIEW_ONLY_SENTINEL" not in agent.session_path.read_text(
+        encoding="utf-8"
+    )
+    assert "PREVIEW_ONLY_SENTINEL" not in agent.run_store.trace_path(
+        agent.current_task_state
+    ).read_text(encoding="utf-8")
+    assert "PREVIEW_ONLY_SENTINEL" not in json.dumps(report)
+    assert "PREVIEW_ONLY_SENTINEL" not in json.dumps(listener_events)
+
+
+def test_streaming_metadata_restarts_for_each_tool_followup_attempt(tmp_path):
+    def tool_turn(committed, _text_delta):
+        committed()
+        return Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "read-1",
+                    "name": "read_file",
+                    "input": {"path": "README.md"},
+                }
+            ],
+            usage={},
+        )
+
+    def final_turn(committed, _text_delta):
+        committed()
+        return Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={},
+        )
+
+    provider = StreamingScriptProvider([tool_turn, final_turn])
+    agent = build_native_agent(tmp_path, provider, stream=True)
+
+    assert agent.ask("read then answer") == "done"
+
+    events = read_trace(agent)
+    requested = [event for event in events if event["event"] == "model_requested"]
+    turns = [event for event in events if event["event"] == "model_turn"]
+    assert [event["attempt"] for event in requested] == [1, 2]
+    assert all(
+        event["request_metadata"]["streaming"]
+        == {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        }
+        for event in requested
+    )
+    assert [event["attempt"] for event in turns] == [1, 2]
+    assert all(
+        event["request_metadata"]["streaming"]["committed"] is True
+        for event in turns
+    )
+    load_run_summary(agent.run_store.root, agent.current_task_state.run_id)
+
+
+@pytest.mark.parametrize("code", ("context_length_exceeded", "timeout"))
+def test_committed_stream_failure_is_never_retried(tmp_path, monkeypatch, code):
+    failure = ProviderTransportError(code, code=code, retryable=True)
+
+    def stream(committed, _text_delta):
+        committed()
+        raise failure
+
+    provider = StreamingScriptProvider([stream])
+    agent = build_native_agent(tmp_path, provider, stream=True)
+    monkeypatch.setattr(
+        agent_loop_module,
+        "_sleep",
+        lambda _delay: pytest.fail("committed stream must not retry"),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        agent.ask("do not replay")
+
+    assert caught.value is failure
+    assert len(provider.calls) == 1
+    assert not any(
+        event["event"] == "context_recovery" for event in read_trace(agent)
+    )
+    failed = next(
+        event for event in read_trace(agent) if event["event"] == "model_failed"
+    )
+    assert failed["request_metadata"]["streaming"]["committed"] is True
+
+
+def test_committed_malformed_stream_response_is_not_retried(tmp_path):
+    def malformed(committed, _text_delta):
+        committed()
+        return Response(
+            stop_reason=StopReason.UNKNOWN,
+            content=[{"type": "text", "text": "malformed"}],
+            usage={},
+        )
+
+    provider = StreamingScriptProvider([malformed])
+    provider.provider_metadata = {
+        "streaming": {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        }
+    }
+    agent = build_native_agent(tmp_path, provider, stream=True)
+
+    answer = agent.ask("do not replay malformed output")
+
+    assert answer.startswith("Stopped after a malformed streamed response")
+    assert len(provider.calls) == 1
+    terminal = next(
+        event for event in read_trace(agent) if event["event"] == "model_turn"
+    )
+    assert terminal["request_metadata"]["streaming"]["committed"] is True
+
+
+def test_precommit_stream_failure_keeps_existing_agent_retry(tmp_path, monkeypatch):
+    failure = ProviderTransportError("timeout", code="timeout", retryable=True)
+
+    def recovered(committed, _text_delta):
+        committed()
+        return Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "recovered"}],
+            usage={},
+        )
+
+    provider = StreamingScriptProvider([failure, recovered])
+    agent = build_native_agent(tmp_path, provider, stream=True)
+    monkeypatch.setattr(agent_loop_module, "_sleep", lambda _delay: None)
+
+    assert agent.ask("retry before commit") == "recovered"
+    assert len(provider.calls) == 2
+
+
+def test_malformed_preview_text_does_not_change_terminal_response(tmp_path):
+    previews = []
+
+    def stream(committed, text_delta):
+        committed()
+        text_delta("unsafe \ud800\n")
+        text_delta("safe later\n")
+        return Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "authoritative final"}],
+            usage={},
+        )
+
+    provider = StreamingScriptProvider([stream])
+    agent = build_native_agent(tmp_path, provider, stream=True)
+    agent._stream_preview_callback = lambda text: previews.append(text) or True
+
+    assert agent.ask("surrogate") == "authoritative final"
+    assert previews == []
+    assert len(provider.calls) == 1
 
 
 def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):

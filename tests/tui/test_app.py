@@ -593,6 +593,95 @@ def test_runtime_resize_reprojects_the_full_activity_source(monkeypatch):
     assert renderer._activity_source == f"Reading {long_path}..."
 
 
+def test_stream_preview_reuses_activity_and_reprojects_full_snapshot(monkeypatch):
+    output = []
+    terminal = io.StringIO()
+    monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append("".join(part[1] for part in value)),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.stream_committed()
+    assert output[-1] == "Receiving..."
+    assert renderer.stream_preview("first\nsecond", columns=30) is True
+    assert output[-1].startswith("Pony - first second")
+    renderer.notice("queue: 1 pending; turn active", restore_activity=True)
+    assert renderer._activity_source == "Pony - first second"
+    renderer.resize(120)
+
+    assert renderer._activity_source == "Pony - first second"
+    renderer.answer("Authoritative final", columns=120)
+    assert renderer._activity_visible is False
+    rendered = "".join(output)
+    assert rendered.count("Pony\n") == 1
+    assert rendered.count("Authoritative final") == 1
+
+
+def test_stream_preview_does_not_acknowledge_only_a_truncation_ellipsis(monkeypatch):
+    output = []
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append("".join(part[1] for part in value)),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.stream_committed()
+
+    assert renderer.stream_preview("界界界", columns=12) is False
+    assert output == ["Receiving..."]
+
+
+def test_preview_coalescer_synchronizes_first_then_keeps_latest_slot():
+    now = {"value": 10.0}
+    first = []
+    later = []
+    scheduled = []
+    coalescer = tui_app._PreviewCoalescer(
+        lambda value: first.append(value) or True,
+        lambda value: later.append(value) or True,
+        lambda delay, callback: scheduled.append((delay, callback)) or True,
+        clock=lambda: now["value"],
+    )
+
+    coalescer.begin()
+    assert coalescer.submit("first") is True
+    now["value"] = 10.02
+    assert coalescer.submit("second") is True
+    assert coalescer.submit("latest") is True
+
+    assert first == ["first"]
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == pytest.approx(0.08)
+    now["value"] = 10.1
+    scheduled.pop()[1]()
+    assert later == ["latest"]
+
+    coalescer.finish()
+    assert coalescer.submit("too late") is False
+
+
+def test_preview_coalescer_discards_a_delayed_preview_after_finish():
+    later = []
+    scheduled = []
+    coalescer = tui_app._PreviewCoalescer(
+        lambda _value: True,
+        lambda value: later.append(value) or True,
+        lambda _delay, callback: scheduled.append(callback) or True,
+        clock=lambda: 10.0,
+    )
+
+    coalescer.begin()
+    assert coalescer.submit("first") is True
+    assert coalescer.submit("late") is True
+    coalescer.finish()
+    scheduled[0]()
+
+    assert later == []
+
+
 def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
     calls = []
     agent = SimpleNamespace()
@@ -634,6 +723,22 @@ def test_repl_refuses_a_narrow_tty_instead_of_opening_plain_repl(
     assert "full-size PONY CODE logo" in capsys.readouterr().err
 
 
+def test_streaming_repl_race_returns_stable_unavailable_error(monkeypatch, capsys):
+    agent = SimpleNamespace(
+        stream_enabled=True,
+        model_client=SimpleNamespace(complete_stream=lambda: None),
+        session={"messages": []},
+        redact_artifact=lambda value: value,
+    )
+    monkeypatch.setattr(
+        "pony.tui.app.tui_capability",
+        lambda: (False, "terminal changed"),
+    )
+
+    assert run_repl(agent, stream=True) == 2
+    assert capsys.readouterr().err == "error: streaming_unavailable\n"
+
+
 def test_plain_repl_never_starts_tui(monkeypatch):
     agent = SimpleNamespace()
     monkeypatch.setattr(
@@ -652,12 +757,19 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     output = []
     previous_listener = object()
     previous_prompt = object()
+    previous_committed = object()
+    previous_preview = object()
+    previous_finished = object()
     agent = SimpleNamespace(
         _trace_listener=previous_listener,
         _approval_prompt=previous_prompt,
+        _stream_committed_callback=previous_committed,
+        _stream_preview_callback=previous_preview,
+        _stream_finished_callback=previous_finished,
+        stream_enabled=True,
         current_permission_mode=lambda: "default",
         docker_sandbox=False,
-        model_client=SimpleNamespace(provider="openai"),
+        model_client=SimpleNamespace(provider="openai", complete_stream=lambda: None),
         workspace=SimpleNamespace(cwd="/repo", branch="main"),
         session={"id": "session-id"},
     )
@@ -688,6 +800,9 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     def handle_input(received, text, **_kwargs):
         assert received._trace_listener is not previous_listener
         assert received._approval_prompt is not previous_prompt
+        assert received._stream_committed_callback is not previous_committed
+        assert received._stream_preview_callback is not previous_preview
+        assert received._stream_finished_callback is not previous_finished
         assert text == "/exit"
         return 0
 
@@ -699,6 +814,9 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     ) == 0
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
+    assert agent._stream_committed_callback is previous_committed
+    assert agent._stream_preview_callback is previous_preview
+    assert agent._stream_finished_callback is previous_finished
     header = "".join(fragment[1] for fragment in output[0])
     assert "⣿" in header
     assert "█" in header
@@ -710,12 +828,19 @@ def test_tui_restores_runtime_hooks(monkeypatch):
 def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
     previous_listener = object()
     previous_prompt = object()
+    previous_committed = object()
+    previous_preview = object()
+    previous_finished = object()
     agent = SimpleNamespace(
         _trace_listener=previous_listener,
         _approval_prompt=previous_prompt,
+        _stream_committed_callback=previous_committed,
+        _stream_preview_callback=previous_preview,
+        _stream_finished_callback=previous_finished,
+        stream_enabled=True,
         current_permission_mode=lambda: "default",
         docker_sandbox=False,
-        model_client=SimpleNamespace(provider="openai"),
+        model_client=SimpleNamespace(provider="openai", complete_stream=lambda: None),
         workspace=SimpleNamespace(cwd="/repo", branch="main"),
         session={"id": "session-id"},
     )
@@ -746,6 +871,52 @@ def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
 
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
+    assert agent._stream_committed_callback is previous_committed
+    assert agent._stream_preview_callback is previous_preview
+    assert agent._stream_finished_callback is previous_finished
+
+
+def test_streaming_tui_restores_hooks_after_keyboard_interrupt(monkeypatch):
+    previous = (object(), object(), object())
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        _stream_committed_callback=previous[0],
+        _stream_preview_callback=previous[1],
+        _stream_finished_callback=previous[2],
+        stream_enabled=True,
+        current_permission_mode=lambda: "default",
+        model_client=SimpleNamespace(complete_stream=lambda: None),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"id": "session-id", "messages": []},
+    )
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            self.app = SimpleNamespace(
+                output=SimpleNamespace(
+                    get_size=lambda: SimpleNamespace(columns=120),
+                )
+            )
+
+        def prompt(self, *_args, **_kwargs):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert run_tui(
+        agent,
+        model="gpt-test",
+        no_color=True,
+        handle_input=lambda *_args, **_kwargs: None,
+    ) == 130
+    assert agent._stream_committed_callback is previous[0]
+    assert agent._stream_preview_callback is previous[1]
+    assert agent._stream_finished_callback is previous[2]
 
 
 def test_tui_accepts_a_queued_turn_while_the_worker_is_busy(monkeypatch):

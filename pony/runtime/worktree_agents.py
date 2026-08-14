@@ -497,6 +497,7 @@ def _build_child(parent, prepared, client):
             max_steps=int(item.get("max_steps", 6)),
             max_output_tokens=parent._model_runtime_options.max_output_tokens,
             context_window=parent._model_runtime_options.context_window,
+            stream=False,
             depth=parent.depth + 1,
             max_depth=parent.depth + 1,
             read_only=manifest["mode"] == "readonly",

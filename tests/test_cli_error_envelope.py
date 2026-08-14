@@ -43,6 +43,17 @@ class _InterruptAgent:
         return None
 
 
+def test_one_shot_rejects_stream_enabled_runtime(capsys):
+    class Agent:
+        stream_enabled = True
+
+        def ask(self, _prompt):
+            pytest.fail("one-shot request must not be sent")
+
+    assert run_agent_once(Agent(), ["inspect"]) == 2
+    assert capsys.readouterr().err == "error: streaming_unavailable\n"
+
+
 class _FinalizingFailureAgent(_FailingAgent):
     def __init__(self, error):
         super().__init__(error)

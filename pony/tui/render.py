@@ -13,8 +13,9 @@ from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
+from pony.security.text import sanitize_terminal_line, sanitize_terminal_text
 from pony.tools.permissions import display_permission_mode
-from pony.tui.markdown import render_markdown, sanitize_terminal_text
+from pony.tui.markdown import render_markdown
 
 
 _PROTOCOL_LABELS = {
@@ -505,6 +506,27 @@ class TuiRenderer:
         self._clear_activity()
         width = _terminal_width(columns)
         self._write(_assistant_block(text, width))
+
+    def stream_committed(self):
+        self._show_activity("Receiving...")
+
+    def stream_preview(self, snapshot, *, columns=None):
+        safe_text = sanitize_terminal_line(snapshot)
+        if not safe_text:
+            return False
+        prefix = "Pony - "
+        width = _terminal_width(columns)
+        available = width - get_cwidth(prefix)
+        if available <= 3:
+            return False
+        projected = _truncate(safe_text, available)
+        if get_cwidth(safe_text) > available and projected == "...":
+            return False
+        self._show_activity(prefix + safe_text, columns=columns)
+        return True
+
+    def stream_finished(self):
+        self._clear_activity()
 
     def approval(self, name, args, *, columns=None):
         self._clear_activity()

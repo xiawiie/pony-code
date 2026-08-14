@@ -417,6 +417,55 @@ def test_invalid_no_input_repl_is_rejected_before_agent_build(
     assert "--no-input cannot be used" in capsys.readouterr().err
 
 
+def test_stream_rejects_run_before_agent_build(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--stream", "run", "inspect"]) == 2
+    assert "Streaming is only available" in capsys.readouterr().err
+
+
+def test_stream_rejects_non_tui_before_agent_build(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+    monkeypatch.setattr("pony.tui.app.tui_capability", lambda: (False, "not a TTY"))
+
+    assert main(["--cwd", str(tmp_path), "--stream", "repl"]) == 2
+    assert "Streaming requires the full interactive TUI" in capsys.readouterr().err
+
+
+def test_streaming_client_preflight_does_not_create_fresh_session_store(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent
+    from pony.cli.errors import CliError
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    args = build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--stream", "repl"]
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: (SimpleNamespace(), {}),
+    )
+
+    with pytest.raises(CliError) as caught:
+        _build_agent(args, workspace)
+
+    assert caught.value.code == "streaming_unavailable"
+    assert not (tmp_path / ".pony" / "sessions").exists()
+
+
 @pytest.mark.parametrize(
     ("extra", "expected"),
     (([], True), (["--format", "json"], False)),

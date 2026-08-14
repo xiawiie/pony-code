@@ -310,3 +310,112 @@ def test_trace_reader_accepts_finite_float_metadata():
     )
 
     assert validate_trace([event]) == [event]
+
+
+@pytest.mark.parametrize(
+    "streaming",
+    (
+        {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+            "extra": 1,
+        },
+        {
+            "requested": False,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        },
+        {
+            "requested": True,
+            "committed": 1,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        },
+        {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": True,
+            "first_preview_ms": 1,
+        },
+        {
+            "requested": True,
+            "committed": True,
+            "preview_emitted": False,
+            "first_preview_ms": 1,
+        },
+    ),
+)
+def test_trace_reader_rejects_invalid_streaming_metadata(streaming):
+    state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
+    event = project_trace_event(state, "model_turn", {}, created_at="now")
+    event["request_metadata"] = {"streaming": streaming}
+
+    with pytest.raises(RunArtifactError, match="unsafe metadata"):
+        validate_trace([event])
+
+
+def test_trace_reader_rejects_streaming_state_regression_within_attempt():
+    state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
+    terminal = project_trace_event(
+        state,
+        "model_turn",
+        {
+            "request_metadata": {
+                "streaming": {
+                    "requested": True,
+                    "committed": True,
+                    "preview_emitted": True,
+                    "first_preview_ms": 10,
+                }
+            }
+        },
+        created_at="now",
+    )
+    regressed = project_trace_event(
+        state,
+        "action_decoded",
+        {
+            "request_metadata": {
+                "streaming": {
+                    "requested": True,
+                    "committed": False,
+                    "preview_emitted": False,
+                    "first_preview_ms": None,
+                }
+            }
+        },
+        created_at="now",
+    )
+
+    with pytest.raises(RunArtifactError, match="not monotonic"):
+        validate_trace([terminal, regressed])
+
+
+@pytest.mark.parametrize("attempt", (None, 0, True))
+def test_trace_reader_requires_a_positive_streaming_attempt(attempt):
+    state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
+    event = project_trace_event(
+        state,
+        "model_turn",
+        {
+            "request_metadata": {
+                "streaming": {
+                    "requested": True,
+                    "committed": True,
+                    "preview_emitted": False,
+                    "first_preview_ms": None,
+                }
+            }
+        },
+        created_at="now",
+    )
+    if attempt is None:
+        event.pop("attempt")
+    else:
+        event["attempt"] = attempt
+
+    with pytest.raises(RunArtifactError, match="has no attempt"):
+        validate_trace([event])
