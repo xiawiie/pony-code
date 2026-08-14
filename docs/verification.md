@@ -554,7 +554,7 @@ Live harness 的每个 designed turn 必须由 task state、report 与 trace 一
 
 Harness 仅暴露 `read_file` 与 `memory_read` 两个只读工具：前者验证 workspace tool round-trip，后者允许模型按
 已注入的 Memory 索引读取命中笔记。每 turn 最多三个 tool step，为“读取 Memory、读取 workspace、返回结论”保留
-完成路径。Memory recall turn 固定为一次 `memory_read` 后返回结论；workspace tool round-trip 由独立 digest turn
+完成路径。Memory recall turn 固定为一次 `memory_read` 后返回结论；workspace tool round-trip 由独立 paged-read turn
 验证。它不暴露写入、shell、delegate 或 Memory 写入能力。
 
 Live report 不应保存 prompt、answer、raw response、Key、header 或完整 URL；只记录 Provider、模型、exact SHA、固定 caps、

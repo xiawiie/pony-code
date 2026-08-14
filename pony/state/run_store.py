@@ -5,10 +5,13 @@ Session JSONL Tree 负责保存“可恢复的会话状态”；RunStore 负责�
 """
 
 from copy import deepcopy
+import hashlib
 import json
 import re
+import stat
 
 from pony.state import file_lock
+from pony.security import workspace_files
 from pony.agent.observability import (
     MAX_RUN_ARTIFACT_BYTES,
     _decode_json,
@@ -19,13 +22,24 @@ from pony.security.private_files import (
     ensure_private_dir,
     harden_private_tree,
     private_directory_identity,
+    read_private_bytes,
     read_private_text,
     write_private_bytes_atomic,
 )
 
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_TOOL_RESULT_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+_TOOL_RESULT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_TOOL_RESULT_ID_RE = re.compile(r"^tool_result:([0-9a-f]{64})$")
+MAX_TOOL_RESULT_BYTES = 4 * 1024 * 1024
+MAX_RUN_TOOL_RESULT_BYTES = 8 * 1024 * 1024
+MAX_RUN_TOOL_RESULT_FILES = 100
+
+
+class ToolResultStoreError(ValueError):
+    def __init__(self, code):
+        self.code = str(code)
+        super().__init__(self.code)
 
 
 def _run_id(value):
@@ -66,6 +80,9 @@ class RunStore:
 
     def trace_lock_path(self, run_id):
         return self.run_dir(run_id) / ".trace.lock"
+
+    def tool_result_lock_path(self, run_id):
+        return self.run_dir(run_id) / ".tool-results.lock"
 
     def tool_result_path(self, run_id, source_hash):
         if not _TOOL_RESULT_HASH_RE.fullmatch(str(source_hash or "")):
@@ -117,15 +134,109 @@ class RunStore:
         return path
 
     def write_tool_result(self, task_state, source_hash, content):
+        data = str(content).encode("utf-8")
+        if len(data) > MAX_TOOL_RESULT_BYTES:
+            raise ToolResultStoreError("tool_result_retention_failed")
+        if hashlib.sha256(data).hexdigest() != str(source_hash):
+            raise ToolResultStoreError("tool_result_retention_failed")
         path = self.tool_result_path(task_state, source_hash)
         ensure_private_dir(path.parent)
-        return write_private_bytes_atomic(
+        with file_lock.locked_file(
+            self.tool_result_lock_path(task_state),
+            require_lock=True,
+        ):
+            try:
+                count, total = self._tool_result_usage(task_state)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ToolResultStoreError("tool_result_retention_failed") from exc
+            if path.exists():
+                existing = self._read_tool_result_bytes(path)
+                if existing != data:
+                    raise ToolResultStoreError("tool_result_retention_failed")
+                return path
+            if (
+                count >= MAX_RUN_TOOL_RESULT_FILES
+                or total + len(data) > MAX_RUN_TOOL_RESULT_BYTES
+            ):
+                raise ToolResultStoreError("tool_result_retention_failed")
+            try:
+                return write_private_bytes_atomic(
+                    path,
+                    data,
+                    trusted_root=self.root,
+                    trusted_root_identity=self._root_identity,
+                    error="raw tool result changed",
+                    max_existing_bytes=MAX_TOOL_RESULT_BYTES,
+                    require_absent=True,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ToolResultStoreError("tool_result_retention_failed") from exc
+
+    def read_tool_result(self, task_state, tool_result_id):
+        if getattr(task_state, "status", None) != "running":
+            raise ToolResultStoreError("tool_result_expired")
+        match = _TOOL_RESULT_ID_RE.fullmatch(str(tool_result_id or ""))
+        if match is None:
+            raise ToolResultStoreError("tool_result_unavailable")
+        path = self.tool_result_path(task_state, match.group(1))
+        try:
+            self._tool_result_usage(task_state)
+            data = self._read_tool_result_bytes(path)
+            text = data.decode("utf-8")
+        except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+            raise ToolResultStoreError("tool_result_unavailable") from exc
+        if hashlib.sha256(data).hexdigest() != match.group(1):
+            raise ToolResultStoreError("tool_result_unavailable")
+        return text
+
+    def _read_tool_result_bytes(self, path):
+        return read_private_bytes(
             path,
-            str(content).encode("utf-8"),
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
-            error="raw tool result changed",
+            max_bytes=MAX_TOOL_RESULT_BYTES,
         )
+
+    def _tool_result_usage(self, task_state):
+        if private_directory_identity(self.root) != self._root_identity:
+            raise ToolResultStoreError("tool_result_unavailable")
+        directory = self.run_dir(task_state) / "tool_results"
+        try:
+            directory_mode = directory.lstat().st_mode
+        except FileNotFoundError:
+            return 0, 0
+        if not stat.S_ISDIR(directory_mode) or stat.S_ISLNK(directory_mode):
+            raise ToolResultStoreError("tool_result_unavailable")
+        try:
+            relative = directory.relative_to(self.root).as_posix()
+            listing = workspace_files.list_directory_names_anchored(
+                self.root,
+                relative,
+                max_entries=MAX_RUN_TOOL_RESULT_FILES + 1,
+                expected_root_identity=self._root_identity,
+            )
+            if listing["unsafe_count"]:
+                raise ToolResultStoreError("tool_result_unavailable")
+            count = len(listing["entries"])
+            total = 0
+            for entry in listing["entries"]:
+                name = entry["name"]
+                if not re.fullmatch(r"[0-9a-f]{64}\.txt", name):
+                    raise ToolResultStoreError("tool_result_unavailable")
+                if (
+                    not stat.S_ISREG(entry["mode"])
+                    or entry["size"] > MAX_TOOL_RESULT_BYTES
+                ):
+                    raise ToolResultStoreError("tool_result_unavailable")
+                total += entry["size"]
+                if (
+                    count > MAX_RUN_TOOL_RESULT_FILES
+                    or total > MAX_RUN_TOOL_RESULT_BYTES
+                ):
+                    raise ToolResultStoreError("tool_result_unavailable")
+            return count, total
+        except workspace_files.WorkspaceIOError as exc:
+            raise ToolResultStoreError("tool_result_unavailable") from exc
 
     def load_task_state(self, task_id):
         return _decode_json(

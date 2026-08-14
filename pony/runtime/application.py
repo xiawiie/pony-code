@@ -39,6 +39,7 @@ from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from pony.context.skills import discover_project_skills
 from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
+from pony.tools.result_view import ResultPagePolicy, project_result_view
 from pony.tools import registry as toolkit
 from pony.tools.permissions import PermissionMode, validate_permission_mode
 from pony.tools.validation import SensitiveToolError
@@ -820,6 +821,11 @@ class Pony:
         self._permission_turn = {
             "mode": mode,
             "tools": self._visible_tools_for(mode),
+            "result_page_policy": ResultPagePolicy(
+                max_tokens=self.context_config["tool_results"]["inline_tokens"],
+                token_counter=self.token_accounting.count_text,
+                redact_text=self.redact_text,
+            ),
         }
 
     def end_permission_turn(self):
@@ -831,7 +837,16 @@ class Pony:
         mode = self.session["permission_mode"]
         if mode == PermissionMode.PLAN.value:
             raise RuntimeError("plan_mode_still_active")
-        self._permission_turn = {"mode": mode, "tools": self._visible_tools_for(mode)}
+        self._permission_turn = {
+            **self._permission_turn,
+            "mode": mode,
+            "tools": self._visible_tools_for(mode),
+        }
+
+    def current_result_page_policy(self):
+        if self._permission_turn is None:
+            raise RuntimeError("permission_turn_inactive")
+        return self._permission_turn["result_page_policy"]
 
     def set_permission_mode(self, mode):
         result = self.update_permissions(mode=mode)
@@ -1090,6 +1105,11 @@ class Pony:
                     listener_event["args"] = deepcopy(redacted_payload["args"])
                 elif event == "tool_executed" and "result" in redacted_payload:
                     listener_event["result"] = deepcopy(redacted_payload["result"])
+                    result_view = project_result_view(
+                        redacted_payload.get("result_view")
+                    )
+                    if result_view is not None:
+                        listener_event["result_view"] = result_view
                 self._trace_listener(listener_event)
             except Exception:  # noqa: BLE001 - optional UI cannot break durable trace
                 pass
@@ -1246,6 +1266,12 @@ class Pony:
         )
         self._last_tool_result_metadata = dict(safe_result.metadata)
         return safe_result
+
+    def read_current_tool_result(self, tool_result_id):
+        return self.run_store.read_tool_result(
+            self.current_task_state,
+            tool_result_id,
+        )
 
     def run_tool(self, name, args):
         """执行一次工具调用，并在执行前后套上完整护栏。
@@ -1435,6 +1461,7 @@ class Pony:
             redaction_env=self.redaction_env,
             secret_env_names=self.secret_env_names,
             workspace_root_identity=self.workspace_root_identity,
+            read_current_tool_result=self.read_current_tool_result,
         )
 
     def spawn_delegate(self, args):

@@ -33,7 +33,7 @@ def test_model_and_context_defaults(tmp_path):
             "reserve_tokens": 16_384,
             "keep_recent_tokens": 20_000,
         },
-        "tool_results": {"inline_tokens": 4_096, "digest_tokens": 512},
+        "tool_results": {"inline_tokens": 16_384, "digest_tokens": 512},
     }
 
 
@@ -144,7 +144,7 @@ digest_tokens = 256
     }
     assert config["context"]["source_pool_tokens"] == 16_384
     assert config["context"]["tool_results"] == {
-        "inline_tokens": 4_096,
+        "inline_tokens": 16_384,
         "digest_tokens": 256,
     }
     assert config["_meta"] == {
@@ -161,7 +161,7 @@ def test_prepare_tool_result_uses_token_limits(tmp_path):
         current_task_state="r1",
         current_run_dir=run_store.run_dir("r1"),
         run_store=run_store,
-        context_config={"tool_results": {"inline_tokens": 20, "digest_tokens": 64}},
+        context_config={"tool_results": {"inline_tokens": 20, "digest_tokens": 128}},
         token_accounting=TokenAccounting(),
         redact_text=str,
     )
@@ -173,9 +173,9 @@ def test_prepare_tool_result_uses_token_limits(tmp_path):
         tool_args={"path": "a.py"},
     )
 
-    assert "[digest]" in content
+    assert "[preview] output truncated" in content
     assert metadata["digest_applied"] is True
-    assert agent.token_accounting.count_text(content) <= 64
+    assert agent.token_accounting.count_text(content) <= 128
 
 
 def test_system_tools_hard_cap_fails_loudly_instead_of_truncating(tmp_path):

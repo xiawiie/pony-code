@@ -65,7 +65,8 @@ recent recall 列表是可重建 cache，不属于 canonical Session entry。Com
 ## 工具与 CLI
 
 - `memory_list`：列出两个 scope 的安全 metadata；
-- `memory_read`：按 canonical path 与 1-based inclusive 行范围读取，默认读取 1-200 行，单次最多 200 行；
+- `memory_read`：按 canonical path 与 1-based inclusive 行范围读取，单页最多 2,000 行、50 KiB UTF-8 和配置的
+  inline token budget；未完成时返回带 source hash 的 continuation；
 - `memory_search`：返回 BM25 排序结果和 bounded snippets；
 - `memory_save`：在当前显式授权下追加 Agent Note；
 - `pony memory list|show|search|review`：不启动模型的只读检查入口。

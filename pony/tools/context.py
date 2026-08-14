@@ -22,6 +22,7 @@ class ToolContext:
     secret_env_names: tuple[str, ...] = ()
     workspace_root_identity: Optional[tuple[int, int]] = None
     spawn_worktree_agents: Optional[Callable[[dict], str]] = None
+    read_current_tool_result: Optional[Callable[[str], str]] = None
 
     def __post_init__(self):
         self.trusted_executables = MappingProxyType(dict(self.trusted_executables))

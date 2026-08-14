@@ -170,7 +170,7 @@ decay = 1.1
             "keep_recent_tokens": 20000,
         },
         "tool_results": {
-            "inline_tokens": 4096,
+            "inline_tokens": 16384,
             "digest_tokens": 512,
         },
     }

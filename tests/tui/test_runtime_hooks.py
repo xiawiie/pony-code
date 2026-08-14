@@ -70,14 +70,47 @@ def test_trace_listener_gets_redacted_tool_details_without_persisting_them(tmp_p
             "tool_use_id": "tool_1",
             "tool_status": "error",
             "result": "failed with secret-value",
+            "result_view": {
+                "delivery": "preview",
+                "truncated": True,
+                "reasons": ["tokens"],
+                "recoverable": False,
+            },
         },
     )
 
     assert received[-1]["result"] == "failed with <redacted>"
+    assert received[-1]["result_view"]["recoverable"] is False
     persisted = json.loads(
         agent.run_store.trace_path(state).read_text(encoding="utf-8").splitlines()[-1]
     )
     assert "result" not in persisted
+    assert "result_view" not in persisted
+
+
+def test_trace_listener_drops_malformed_result_view(tmp_path):
+    agent = _agent(tmp_path)
+    state = TaskState.create("task1", "inspect", run_id="run1")
+    agent.run_store.start_run(state)
+    received = []
+    agent._trace_listener = received.append
+
+    agent.emit_trace(
+        state,
+        "tool_executed",
+        {
+            "name": "read_file",
+            "tool_status": "ok",
+            "result": "safe",
+            "result_view": {
+                "delivery": "page",
+                "truncated": False,
+                "path": "must-not-reach-listener.txt",
+            },
+        },
+    )
+
+    assert "result_view" not in received[-1]
 
 
 def test_approval_prompt_is_used_when_installed(tmp_path):

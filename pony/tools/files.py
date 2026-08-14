@@ -6,6 +6,7 @@ from pony.security import paths as security_paths
 from pony.security import workspace_files as workspace_files
 from pony.workspace.context import IGNORED_PATH_NAMES
 
+from .result_view import ResultPagePolicy, page_text
 from .validation import (
     MAX_WORKSPACE_DIRECTORY_ENTRIES,
     MAX_WORKSPACE_FILE_BYTES,
@@ -60,20 +61,21 @@ def tool_list_files(context, args):
     return "\n".join(lines) or "(empty)"
 
 
-def tool_read_file(context, args):
+def tool_read_file(context, args, *, page_policy: ResultPagePolicy):
     relative, state = _read_workspace_file(context, args["path"])
-    start = int(args.get("start", 1))
-    end = int(args.get("end", 200))
-    if start < 1 or end < start:
-        raise ValueError("invalid line range")
-    if end - start + 1 > 200:
-        raise ValueError("read_file accepts at most 200 lines")
-    lines = _decode_workspace_utf8(state["data"]).splitlines()
-    body = "\n".join(
-        f"{number:>4}: {line}"
-        for number, line in enumerate(lines[start - 1 : end], start=start)
+    return page_text(
+        _decode_workspace_utf8(state["data"]),
+        locator={"path": relative},
+        policy=page_policy,
+        start=int(args.get("start", 1)),
+        end=int(args["end"]) if args.get("end") is not None else None,
+        start_byte=(
+            int(args["start_byte"])
+            if args.get("start_byte") is not None
+            else None
+        ),
+        expected_sha256=args.get("expected_sha256"),
     )
-    return f"# {relative}\n{body}"
 
 
 def tool_write_file(context, args):
