@@ -47,7 +47,7 @@ from pony.tools.validation import validate_tool as validate_tool_arguments
 from pony.config.environment import read_project_env
 from pony.config.model import validate_model_name
 from pony.config.project import load_pony_toml
-from pony.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions, require_streaming_client
 from pony.runtime.legacy import preflight_legacy_sandbox_resume
 from pony.runtime.reporting import build_report_request_metadata
 from pony.runtime.working_memory import WorkingMemory
@@ -210,6 +210,10 @@ class Pony:
     def bypass_permissions_available(self):
         return self._bypass_permissions_available
 
+    @property
+    def stream_enabled(self):
+        return self._stream_enabled
+
     def _initialize(
         self,
         model_client,
@@ -223,6 +227,10 @@ class Pony:
             options = RuntimeOptions()
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
+        if type(options.stream) is not bool:
+            raise TypeError("stream must be a bool")
+        if options.stream:
+            require_streaming_client(model_client)
         if (
             isinstance(session, dict)
             and _session_requires_bypass_permission_capability(session)
@@ -274,6 +282,10 @@ class Pony:
         self.project_trusted = options.project_trusted is True
         self._trace_listener = None
         self._approval_prompt = None
+        self._stream_enabled = options.stream
+        self._stream_committed_callback = None
+        self._stream_preview_callback = None
+        self._stream_finished_callback = None
         self.max_steps = options.max_steps
         self.depth = options.depth
         self.max_depth = options.max_depth
@@ -575,6 +587,10 @@ class Pony:
         options = RuntimeOptions() if options is None else options
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
+        if type(options.stream) is not bool:
+            raise TypeError("stream must be a bool")
+        if options.stream:
+            require_streaming_client(model_client)
         session_store.path_for(session_id)
         preflight_legacy_sandbox_resume(workspace.repo_root, session_id)
         redaction_env = options.redaction_env
@@ -756,6 +772,8 @@ class Pony:
             candidate_client = self.model_client_factory(model)
         except (TypeError, ValueError) as exc:
             raise ValueError("model_session_mismatch") from exc
+        if self.stream_enabled:
+            require_streaming_client(candidate_client)
         candidate = getattr(candidate_client, "provider_binding", None)
         if (
             not isinstance(candidate, dict)
@@ -1485,6 +1503,7 @@ class Pony:
                 max_steps=int(args.get("max_steps", MAX_DELEGATE_STEPS)),
                 max_output_tokens=self._model_runtime_options.max_output_tokens,
                 context_window=self._model_runtime_options.context_window,
+                stream=False,
                 depth=self.depth + 1,
                 max_depth=self.depth + 1,
                 read_only=True,

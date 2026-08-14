@@ -21,6 +21,7 @@ from prompt_toolkit.shortcuts import choice, CompleteStyle
 from pony.cli.help import SLASH_COMMANDS
 from pony.cli.input_queue import InputQueue
 from pony.runtime.resume import active_prompt_history
+from pony.security.text import normalize_surrogate_pairs
 from pony.tools.permissions import display_permission_mode
 from pony.tui.render import FULL_TUI_MINIMUM_COLUMNS, TuiRenderer
 
@@ -54,13 +55,7 @@ def _session_terminal_columns(session):
 
 
 def _normalize_prompt_text(value):
-    text = str(value)
-    if not any("\ud800" <= character <= "\udfff" for character in text):
-        return text
-    return text.encode("utf-16-le", "surrogatepass").decode(
-        "utf-16-le",
-        "replace",
-    )
+    return normalize_surrogate_pairs(value)
 
 
 class _PromptTextAssembler:
@@ -178,6 +173,114 @@ def _install_activity_resize_repaint(session, on_resize):
 
     after_render += repaint
     return repaint
+
+
+class _PreviewCoalescer:
+    """Synchronize the first preview, then keep one rate-limited latest slot."""
+
+    def __init__(self, render_first, render_later, schedule, *, clock=time.monotonic):
+        self._render_first = render_first
+        self._render_later = render_later
+        self._schedule = schedule
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._active = False
+        self._first_pending = True
+        self._latest = None
+        self._scheduled = False
+        self._last_rendered_at = 0.0
+
+    def begin(self):
+        with self._lock:
+            self._generation += 1
+            self._active = True
+            self._first_pending = True
+            self._latest = None
+            self._scheduled = False
+            self._last_rendered_at = 0.0
+
+    def submit(self, snapshot):
+        with self._lock:
+            if not self._active:
+                return False
+            if self._first_pending:
+                self._first_pending = False
+                generation = self._generation
+                first = True
+            else:
+                self._latest = str(snapshot)
+                if self._scheduled:
+                    return True
+                self._scheduled = True
+                generation = self._generation
+                delay = max(0.0, 0.1 - (self._clock() - self._last_rendered_at))
+                first = False
+        if first:
+            try:
+                displayed = self._render_first(snapshot) is True
+            except Exception:
+                displayed = False
+            with self._lock:
+                if not self._active or generation != self._generation:
+                    return False
+                if displayed:
+                    self._last_rendered_at = self._clock()
+                else:
+                    self._active = False
+            return displayed
+        return self._schedule_flush(generation, delay)
+
+    def finish(self):
+        with self._lock:
+            self._generation += 1
+            self._active = False
+            self._latest = None
+            self._scheduled = False
+
+    def _schedule_flush(self, generation, delay):
+        try:
+            scheduled = self._schedule(
+                delay,
+                lambda: self._flush(generation),
+            ) is True
+        except Exception:
+            scheduled = False
+        if scheduled:
+            return True
+        with self._lock:
+            if generation == self._generation:
+                self._active = False
+                self._latest = None
+                self._scheduled = False
+        return False
+
+    def _flush(self, generation):
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return
+            snapshot = self._latest
+            self._latest = None
+            self._scheduled = False
+        if snapshot is None:
+            return
+        try:
+            displayed = self._render_later(snapshot) is True
+        except Exception:
+            displayed = False
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return
+            if not displayed:
+                self._active = False
+                self._latest = None
+                return
+            self._last_rendered_at = self._clock()
+            if self._latest is None or self._scheduled:
+                return
+            self._scheduled = True
+            next_generation = self._generation
+        self._schedule_flush(next_generation, 0.1)
 
 
 class _CompactPromptSession(PromptSession):
@@ -388,6 +491,10 @@ def run_tui(
     prompt_history=(),
 ):
     """Run one synchronous Pony turn at a time in an inline terminal UI."""
+    if getattr(agent, "stream_enabled", False):
+        from pony.runtime.options import require_streaming_client
+
+        require_streaming_client(getattr(agent, "model_client", None))
     renderer = TuiRenderer(
         no_color=no_color or os.environ.get("NO_COLOR") is not None,
     )
@@ -429,6 +536,47 @@ def run_tui(
             app.loop,
         )
         return future.result()
+
+    def render_later(snapshot):
+        with ui_lock:
+            return renderer.stream_preview(snapshot)
+
+    def schedule_preview(delay, callback):
+        app = getattr(session, "app", None)
+        loop = getattr(app, "loop", None)
+        if app is None or loop is None or not getattr(app, "is_running", False):
+            return False
+
+        async def render_in_terminal():
+            try:
+                await run_in_terminal(callback)
+            except Exception:
+                pass
+
+        def enqueue_render():
+            if getattr(app, "is_running", False):
+                loop.create_task(render_in_terminal())
+
+        def schedule_on_loop():
+            if getattr(app, "is_running", False):
+                loop.call_later(delay, enqueue_render)
+
+        loop.call_soon_threadsafe(schedule_on_loop)
+        return True
+
+    preview_coalescer = _PreviewCoalescer(
+        lambda snapshot: call_ui(renderer.stream_preview, snapshot),
+        render_later,
+        schedule_preview,
+    )
+
+    def stream_committed():
+        preview_coalescer.begin()
+        call_ui(renderer.stream_committed)
+
+    def stream_finished():
+        preview_coalescer.finish()
+        call_ui(renderer.stream_finished)
 
     def schedule_activity_resize(resized_app, _columns):
         async def repaint_in_terminal():
@@ -581,8 +729,15 @@ def run_tui(
 
     previous_listener = getattr(agent, "_trace_listener", None)
     previous_approval_prompt = getattr(agent, "_approval_prompt", None)
+    previous_stream_committed = getattr(agent, "_stream_committed_callback", None)
+    previous_stream_preview = getattr(agent, "_stream_preview_callback", None)
+    previous_stream_finished = getattr(agent, "_stream_finished_callback", None)
     agent._trace_listener = lambda envelope: call_ui(renderer.trace, envelope)
     agent._approval_prompt = approve
+    if getattr(agent, "stream_enabled", False):
+        agent._stream_committed_callback = stream_committed
+        agent._stream_preview_callback = preview_coalescer.submit
+        agent._stream_finished_callback = stream_finished
     last_interrupt = 0.0
 
     try:
@@ -650,9 +805,13 @@ def run_tui(
                 return result
     finally:
         input_queue.close()
+        preview_coalescer.finish()
         try:
             call_ui(renderer.close)
         except Exception:  # noqa: BLE001 - UI cleanup cannot hide the primary result
             pass
         agent._trace_listener = previous_listener
         agent._approval_prompt = previous_approval_prompt
+        agent._stream_committed_callback = previous_stream_committed
+        agent._stream_preview_callback = previous_stream_preview
+        agent._stream_finished_callback = previous_stream_finished

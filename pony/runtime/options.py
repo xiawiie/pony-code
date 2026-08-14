@@ -13,6 +13,7 @@ class RuntimeOptions:
     max_steps: int = 12
     max_output_tokens: int | None = None
     context_window: int | None = None
+    stream: bool = False
     depth: int = 0
     max_depth: int = 1
     read_only: bool = False
@@ -26,3 +27,8 @@ class RuntimeOptions:
     trusted_executables: dict[str, str] | None = None
     project_config: dict[str, Any] | None = None
     session_id: str | None = None
+
+
+def require_streaming_client(model_client):
+    if not callable(getattr(model_client, "complete_stream", None)):
+        raise ValueError("streaming_unavailable")

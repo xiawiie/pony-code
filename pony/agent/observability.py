@@ -154,7 +154,8 @@ def project_trace_event(task_state, event, payload, *, created_at):
     )
     attempt = getattr(task_state, "attempts", 0)
     if (
-        str(event).startswith("model_") or event in {"prompt_built", "tool_executed"}
+        str(event).startswith("model_")
+        or event in {"prompt_built", "action_decoded", "tool_executed"}
     ) and attempt:
         projected["attempt"] = attempt
     return projected
@@ -180,6 +181,8 @@ def _safe_mapping_key(value):
 def _safe_metadata(value, *, key=""):
     if str(key).casefold() in _FORBIDDEN_METADATA_KEYS:
         return False
+    if key == "streaming":
+        return _streaming_metadata(value)
     if value is None or type(value) in {bool, int}:
         return True
     if type(value) is float:
@@ -196,6 +199,28 @@ def _safe_metadata(value, *, key=""):
             for child_key, item in value.items()
         )
     return False
+
+
+def _streaming_metadata(value):
+    if not isinstance(value, dict) or set(value) != {
+        "requested",
+        "committed",
+        "preview_emitted",
+        "first_preview_ms",
+    }:
+        return False
+    if (
+        value["requested"] is not True
+        or type(value["committed"]) is not bool
+        or type(value["preview_emitted"]) is not bool
+    ):
+        return False
+    first_preview_ms = value["first_preview_ms"]
+    if first_preview_ms is not None and not _nonnegative_int(first_preview_ms):
+        return False
+    return (
+        not value["preview_emitted"] or value["committed"]
+    ) and (first_preview_ms is not None) == value["preview_emitted"]
 
 
 def _nonnegative_int(value):
@@ -252,6 +277,9 @@ def validate_trace(events, *, run_id=None, task_id=None):
     pending_tools = {}
     terminal_tools = {}
     finished_tools = set()
+    streaming_attempts = {}
+    streaming_requested_attempts = set()
+    streaming_terminal_attempts = set()
     for event in events:
         if not isinstance(event, dict) or not _TRACE_ENVELOPE_FIELDS.issubset(event):
             raise RunArtifactError("migration_required", "trace uses a legacy contract")
@@ -288,6 +316,65 @@ def validate_trace(events, *, run_id=None, task_id=None):
         if task_id and event["task_id"] != task_id:
             raise RunArtifactError("incomplete", "trace task id mismatch")
         event_name = event["event"]
+        request_metadata = event.get("request_metadata")
+        streaming = (
+            request_metadata.get("streaming")
+            if isinstance(request_metadata, dict)
+            else None
+        )
+        if streaming is not None:
+            if event_name not in {
+                "model_requested",
+                "action_decoded",
+                "model_turn",
+                "model_failed",
+            }:
+                raise RunArtifactError(
+                    "incomplete", "streaming request metadata is on an invalid event"
+                )
+            attempt = event.get("attempt")
+            if not _nonnegative_int(attempt) or attempt < 1:
+                raise RunArtifactError(
+                    "incomplete", "streaming request metadata has no attempt"
+                )
+            previous = streaming_attempts.get(attempt)
+            if event_name == "model_requested" and (
+                streaming["committed"]
+                or streaming["preview_emitted"]
+                or streaming["first_preview_ms"] is not None
+            ):
+                raise RunArtifactError(
+                    "incomplete", "streaming request metadata is not initial"
+                )
+            if event_name == "model_requested":
+                if attempt in streaming_requested_attempts:
+                    raise RunArtifactError(
+                        "incomplete", "streaming attempt has duplicate initial state"
+                    )
+                streaming_requested_attempts.add(attempt)
+            elif attempt not in streaming_requested_attempts:
+                raise RunArtifactError(
+                    "incomplete", "streaming attempt has no initial state"
+                )
+            if event_name in {"model_turn", "model_failed"}:
+                if attempt in streaming_terminal_attempts:
+                    raise RunArtifactError(
+                        "incomplete", "streaming attempt has duplicate terminal state"
+                    )
+                streaming_terminal_attempts.add(attempt)
+            if previous is not None and (
+                (previous["committed"] and not streaming["committed"])
+                or (previous["preview_emitted"] and not streaming["preview_emitted"])
+                or (
+                    previous["first_preview_ms"] is not None
+                    and streaming["first_preview_ms"]
+                    != previous["first_preview_ms"]
+                )
+            ):
+                raise RunArtifactError(
+                    "incomplete", "streaming request metadata is not monotonic"
+                )
+            streaming_attempts[attempt] = streaming
         if event_name in _TERMINAL_EVENTS:
             terminal += 1
             run_finished = True
@@ -347,6 +434,8 @@ def validate_trace(events, *, run_id=None, task_id=None):
         )
     if pending_tools:
         raise RunArtifactError("incomplete", "trace tool lifecycle is incomplete")
+    if streaming_requested_attempts != streaming_terminal_attempts:
+        raise RunArtifactError("incomplete", "streaming attempt lifecycle is incomplete")
     return events
 
 

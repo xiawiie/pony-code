@@ -20,9 +20,11 @@ from pony.state.checkpoint import (
 from pony.agent.compaction import CompactionError, CompactionNoProgress
 from pony.agent.context_manager import ContextBudgetExceeded
 from pony.agent.model_capabilities import automatic_compaction_keep_recent
+from pony.agent.streaming import SafeTextPreview
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
 from pony.security.command_policy import assess_command
+from pony.security.text import project_terminal_text
 from pony.state.task_state import (
     STOP_REASON_PERSISTENCE_ERROR,
     STATUS_RUNNING,
@@ -104,6 +106,11 @@ def _is_context_length_error(error):
             "prompt too long",
         )
     )
+
+
+def _streaming_attempt_committed(request_metadata):
+    streaming = request_metadata.get("streaming")
+    return isinstance(streaming, dict) and streaming.get("committed") is True
 
 
 def _empty_usage_totals():
@@ -198,6 +205,7 @@ def _record_model_failure(
     failure_phase,
     error,
     completion_usage=None,
+    request_metadata=None,
 ):
     attempts, retries, complete = _record_transport(
         model_execution,
@@ -227,6 +235,8 @@ def _record_model_failure(
         }
         if completion_usage is not None:
             payload["completion_usage"] = completion_usage
+        if request_metadata is not None:
+            payload["request_metadata"] = deepcopy(request_metadata)
         agent.emit_trace(
             task_state,
             "model_failed",
@@ -355,12 +365,15 @@ def _safe_tool_name(agent, name):
 
 def _sanitize_action(agent, action):
     if isinstance(action, FinalAction):
-        return replace(action, text=agent.redact_text(action.text)), None
+        return replace(
+            action,
+            text=project_terminal_text(action.text, agent.redact_text),
+        ), None
     if isinstance(action, RetryAction):
         return replace(
             action,
-            notice=agent.redact_text(action.notice),
-            excerpt=agent.redact_text(action.excerpt),
+            notice=project_terminal_text(action.notice, agent.redact_text),
+            excerpt=project_terminal_text(action.excerpt, agent.redact_text),
         ), None
 
     action = replace(action, name=_safe_tool_name(agent, action.name))
@@ -787,6 +800,14 @@ def _build_attempt_request(
             "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
         },
     )
+    if agent.stream_enabled:
+        request_metadata["streaming"] = {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        }
+        agent.last_request_metadata = dict(request_metadata)
     if (
         attempts == 1
         and request_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS
@@ -836,15 +857,43 @@ def _complete_model_attempt(
     model_execution,
     attempt_origin,
 ):
+    preview = None
+    if agent.stream_enabled:
+        preview = SafeTextPreview(
+            redact_text=agent.redact_text,
+            secret_values=(
+                value for _name, value in agent.detected_secret_env_items()
+            ),
+            on_stream_committed=agent._stream_committed_callback,
+            on_safe_preview=agent._stream_preview_callback,
+            clock=time.monotonic,
+        )
     try:
-        response = agent.model_client.complete(
+        complete = (
+            agent.model_client.complete_stream
+            if preview is not None
+            else agent.model_client.complete
+        )
+        callback_args = (
+            {
+                "on_stream_committed": preview.stream_committed,
+                "on_text_delta": preview.text_delta,
+            }
+            if preview is not None
+            else {}
+        )
+        response = complete(
             system=request["system"],
             tools=request["tools"],
             messages=request["messages"],
             max_tokens=agent.max_output_tokens,
             cache_breakpoints=request["cache_control_breakpoints"],
+            **callback_args,
         )
     except KeyboardInterrupt as exc:
+        if preview is not None:
+            request_metadata["streaming"] = preview.metadata()
+            agent.last_request_metadata = dict(request_metadata)
         _record_model_failure(
             agent,
             task_state,
@@ -853,9 +902,13 @@ def _complete_model_attempt(
             outcome="interrupted",
             failure_phase="provider_complete",
             error=exc,
+            request_metadata=request_metadata,
         )
         raise
     except Exception as exc:
+        if preview is not None:
+            request_metadata["streaming"] = preview.metadata()
+            agent.last_request_metadata = dict(request_metadata)
         _record_model_failure(
             agent,
             task_state,
@@ -864,8 +917,19 @@ def _complete_model_attempt(
             outcome="error",
             failure_phase="provider_complete",
             error=exc,
+            request_metadata=request_metadata,
         )
         return None, None, exc
+    finally:
+        if preview is not None and callable(agent._stream_finished_callback):
+            try:
+                agent._stream_finished_callback()
+            except Exception:
+                pass
+
+    if preview is not None:
+        request_metadata["streaming"] = preview.metadata()
+        agent.last_request_metadata = dict(request_metadata)
 
     completion_usage = dict(response.usage or {})
     request_id = _safe_provider_request_id(completion_usage.pop("request_id", None))
@@ -887,6 +951,7 @@ def _complete_model_attempt(
             outcome="error",
             failure_phase="response_processing",
             error=exc,
+            request_metadata=request_metadata,
         )
         raise
     transport_attempts, transport_retries, evidence_complete = _transport_evidence(
@@ -898,7 +963,13 @@ def _complete_model_attempt(
         request_metadata["last_transport_attempts"] = transport_attempts
     provider_metadata = getattr(agent.model_client, "provider_metadata", None)
     if isinstance(provider_metadata, dict):
-        request_metadata.update(provider_metadata)
+        request_metadata.update(
+            {
+                key: value
+                for key, value in provider_metadata.items()
+                if key != "streaming"
+            }
+        )
     agent.last_request_metadata = dict(request_metadata)
     action_payload = _action_trace_payload(action)
     try:
@@ -938,6 +1009,7 @@ def _complete_model_attempt(
             outcome="error",
             failure_phase="response_processing",
             error=exc,
+            request_metadata=request_metadata,
         )
         raise
     _record_transport(model_execution, agent.model_client)
@@ -1137,7 +1209,8 @@ def _run_agent_attempts(
             _validate_model_session_guard(agent, session_guard)
         if model_error is not None:
             if (
-                _is_context_length_error(model_error)
+                not _streaming_attempt_committed(request_metadata)
+                and _is_context_length_error(model_error)
                 and context_recovery_count < 1
                 and attempts < max_attempts
             ):
@@ -1184,7 +1257,8 @@ def _run_agent_attempts(
                     attempt_origin = "model_retry"
                     continue
             if (
-                isinstance(model_error, ProviderTransportError)
+                not _streaming_attempt_committed(request_metadata)
+                and isinstance(model_error, ProviderTransportError)
                 and model_error.retryable
                 and model_retry_count < len(_MODEL_RETRY_DELAYS)
                 and attempts < max_attempts
@@ -1253,6 +1327,18 @@ def _run_agent_attempts(
             attempt_origin = "tool_followup"
             continue
         if isinstance(action, RetryAction):
+            if _streaming_attempt_committed(request_metadata):
+                final = (
+                    "Stopped after a malformed streamed response without a valid "
+                    "tool call or final answer."
+                )
+                task_state.stop_retry_limit(final)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", final),),
+                    session_guard=session_guard,
+                )
+                return final, task_state.stop_reason, None, None
             if retry_action_count >= 1:
                 final = (
                     "Stopped after repeated malformed model responses without "
@@ -1271,7 +1357,7 @@ def _run_agent_attempts(
             attempt_origin = "retry_action"
             continue
 
-        final = agent.redact_text(action.text)
+        final = action.text
         _commit_session(
             agent,
             messages=(_plain_message("assistant", final),),

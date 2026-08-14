@@ -7,6 +7,8 @@ import re
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.utils import get_cwidth
 
+from pony.security.text import sanitize_terminal_text
+
 
 _INLINE = re.compile(
     r"(?P<link>\[(?P<label>[^\]\n]+)\]\((?P<url>[^)\s\n]+)\))"
@@ -20,17 +22,6 @@ _QUOTE = re.compile(r"^ {0,3}>\s?(.*)$")
 _RULE = re.compile(r"^ {0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^`~]*$")
 _TABLE_DIVIDER = re.compile(r"^:?-{3,}:?$")
-
-
-def sanitize_terminal_text(text) -> str:
-    """Remove terminal control characters while retaining text layout."""
-    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
-    return "".join(
-        character
-        for character in normalized
-        if character in "\n\t"
-        or (ord(character) >= 32 and not 127 <= ord(character) <= 159)
-    )
 
 
 def _style(base_style, addition=""):

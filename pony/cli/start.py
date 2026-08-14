@@ -384,6 +384,9 @@ def _cli_interrupt_boundary():
 
 
 def run_agent_once(agent, prompt_tokens):
+    if getattr(agent, "stream_enabled", False):
+        print("error: streaming_unavailable", file=sys.stderr)
+        return CLI_EXIT_USAGE
     prompt = " ".join(prompt_tokens).strip()
     if not prompt:
         return 0
@@ -721,9 +724,19 @@ def run_repl(
     model="",
     plain=False,
     no_color=False,
+    stream=False,
     show_header=True,
     show_resume=False,
 ):
+    stream = bool(stream or getattr(agent, "stream_enabled", False))
+    if stream:
+        from pony.runtime.options import require_streaming_client
+
+        try:
+            require_streaming_client(getattr(agent, "model_client", None))
+        except ValueError:
+            print("error: streaming_unavailable", file=sys.stderr)
+            return CLI_EXIT_USAGE
     session = getattr(agent, "session", {})
     session = session if isinstance(session, dict) else {}
     resume_projection = (
@@ -751,9 +764,15 @@ def run_repl(
                             prompt_history=prompt_history,
                         ),
                     )
+                if stream:
+                    print("error: streaming_unavailable", file=sys.stderr)
+                    return CLI_EXIT_USAGE
                 if tui_error:
                     print(f"error: {tui_error}", file=sys.stderr)
                     return CLI_EXIT_USAGE
+            elif stream:
+                print("error: streaming_unavailable", file=sys.stderr)
+                return CLI_EXIT_USAGE
 
             def refresh_plain_history():
                 current = getattr(agent, "session", {})

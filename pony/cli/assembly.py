@@ -18,7 +18,7 @@ from pony.runtime.application import (
     _build_redaction_snapshot,
     _session_requires_bypass_permission_capability,
 )
-from pony.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions, require_streaming_client
 from pony.runtime.legacy import (
     LegacySandboxResumeError,
     preflight_legacy_sandbox_resume,
@@ -289,8 +289,6 @@ def _build_agent(args, source_workspace):
                 exit_code=CLI_EXIT_USAGE,
             )
     workspace = source_workspace
-    if store is None:
-        store = SessionStore(session_store_root, redactor=redactor)
     model, resolved_model_config = _build_transport_client(
         args,
         project_env=project_env,
@@ -298,6 +296,17 @@ def _build_agent(args, source_workspace):
         session_store=store if args.resume and session_id else None,
         session_id=session_id if args.resume else None,
     )
+    if getattr(args, "stream", False):
+        try:
+            require_streaming_client(model)
+        except ValueError as exc:
+            raise CliError(
+                code="streaming_unavailable",
+                message="The selected model client does not support streaming",
+                exit_code=CLI_EXIT_USAGE,
+            ) from exc
+    if store is None:
+        store = SessionStore(session_store_root, redactor=redactor)
     model_client_factory = _model_client_factory(
         resolved_model_config,
         args.request_timeout_seconds,
@@ -325,6 +334,7 @@ def _build_agent(args, source_workspace):
                 max_steps=args.max_steps,
                 max_output_tokens=max_output_tokens,
                 context_window=getattr(args, "context_window", None),
+                stream=getattr(args, "stream", False),
                 secret_env_names=configured_secret_names,
                 redaction_env=redaction_env,
                 trusted_redaction_env=True,
@@ -346,6 +356,7 @@ def _build_agent(args, source_workspace):
             max_steps=args.max_steps,
             max_output_tokens=max_output_tokens,
             context_window=getattr(args, "context_window", None),
+            stream=getattr(args, "stream", False),
             secret_env_names=configured_secret_names,
             redaction_env=redaction_env,
             trusted_redaction_env=True,
