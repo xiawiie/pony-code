@@ -1,5 +1,6 @@
 """Ollama Chat native provider adapter."""
 
+from copy import deepcopy
 import json
 import urllib.request
 import uuid
@@ -7,7 +8,9 @@ import uuid
 from .transport import (
     ProviderTransportError,
     _decode_json_object,
+    _iter_ndjson_events,
     _open_provider_request,
+    _open_provider_response,
     _optional_int,
     _provider_auth_headers,
     _provider_protocol_error,
@@ -16,6 +19,8 @@ from .transport import (
     _record_effective_model,
     _resource_url,
     _validate_number,
+    _StreamCallbacks,
+    _stream_failure_after_commit,
 )
 from .response import Response, StopReason
 
@@ -154,6 +159,126 @@ def _ollama_content(data):
     return content
 
 
+def _ollama_request(client, *, system, tools, messages, max_tokens, stream):
+    _validate_number("max_tokens", max_tokens, minimum=1, integer=True)
+    auth_headers = _provider_auth_headers(
+        client.host,
+        client.api_key,
+        auth_mode=client.auth_mode,
+        family="Ollama",
+    )
+    prepared_tools = _ollama_tools(tools)
+    payload = {
+        "model": client.model,
+        "messages": _ollama_messages(system, messages),
+        "stream": stream,
+        "think": False,
+        "options": {
+            "num_predict": max_tokens,
+            "temperature": client.temperature,
+            "top_p": client.top_p,
+        },
+    }
+    if prepared_tools:
+        payload["tools"] = prepared_tools
+    headers = {"Content-Type": "application/json", **auth_headers}
+    if stream:
+        headers["Accept"] = "application/x-ndjson"
+    return urllib.request.Request(
+        _resource_url(client.host, "api/chat"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+
+def _decode_ollama_response(client, data, response_headers):
+    if data.get("error") or data.get("done") is not True:
+        raise ValueError("unsuccessful Ollama response")
+    content = _ollama_content(data)
+    input_tokens = _optional_int(data.get("prompt_eval_count"))
+    output_tokens = _optional_int(data.get("eval_count"))
+    total_tokens = (
+        input_tokens + output_tokens
+        if input_tokens is not None and output_tokens is not None
+        else None
+    )
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": 0,
+        "cache_hit": False,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    _record_effective_model(client, data)
+    request_id = response_headers.get("x-request-id")
+    if isinstance(request_id, str) and request_id:
+        usage["request_id"] = request_id
+    done_reason = data.get("done_reason")
+    if done_reason == "length":
+        stop_reason = StopReason.MAX_TOKENS
+    elif done_reason in {None, "stop"}:
+        stop_reason = (
+            StopReason.TOOL_USE
+            if any(block.get("type") == "tool_use" for block in content)
+            else StopReason.END_TURN
+        )
+    else:
+        stop_reason = StopReason.UNKNOWN
+    return Response(stop_reason=stop_reason, content=content, usage=usage)
+
+
+def _read_ollama_stream(response_stream, callbacks):
+    content_parts = []
+    tool_calls = []
+    terminal = None
+    model = None
+    for data in _iter_ndjson_events(response_stream, family="Ollama"):
+        if data.get("error"):
+            callbacks.commit()
+            raise ProviderTransportError(
+                "Ollama error: backend_error", code="backend_error"
+            )
+        done = data.get("done")
+        message = data.get("message")
+        if type(done) is not bool or not isinstance(message, dict):
+            raise ValueError("invalid Ollama stream event")
+        role = message.get("role")
+        text = message.get("content", "")
+        calls = message.get("tool_calls", [])
+        if role not in {None, "assistant"} or not isinstance(text, str):
+            raise ValueError("invalid Ollama stream message")
+        if not isinstance(calls, list) or not all(isinstance(call, dict) for call in calls):
+            raise ValueError("invalid Ollama stream tool calls")
+        event_model = data.get("model")
+        if event_model is not None:
+            if not isinstance(event_model, str) or model not in {None, event_model}:
+                raise ValueError("Ollama stream model changed")
+            model = event_model
+        callbacks.commit()
+        content_parts.append(text)
+        tool_calls.extend(deepcopy(calls))
+        if not done:
+            callbacks.text(text)
+            continue
+        terminal = deepcopy(data)
+        break
+    if terminal is None:
+        raise ValueError("Ollama stream missing done event")
+    terminal_message = dict(terminal["message"])
+    terminal_message["content"] = "".join(content_parts)
+    if tool_calls:
+        terminal_message["tool_calls"] = tool_calls
+    else:
+        terminal_message.pop("tool_calls", None)
+    terminal["message"] = terminal_message
+    if model is not None:
+        terminal["model"] = model
+    return terminal
+
+
 class OllamaChatModelClient:
     def __init__(
         self,
@@ -202,32 +327,13 @@ class OllamaChatModelClient:
         del cache_breakpoints
         self.last_completion_metadata = {}
         self.last_transport_attempts = 0
-        _validate_number("max_tokens", max_tokens, minimum=1, integer=True)
-        auth_headers = _provider_auth_headers(
-            self.host,
-            self.api_key,
-            auth_mode=self.auth_mode,
-            family="Ollama",
-        )
-        prepared_tools = _ollama_tools(tools)
-        payload = {
-            "model": self.model,
-            "messages": _ollama_messages(system, messages),
-            "stream": False,
-            "think": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-            },
-        }
-        if prepared_tools:
-            payload["tools"] = prepared_tools
-        request = urllib.request.Request(
-            _resource_url(self.host, "api/chat"),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", **auth_headers},
-            method="POST",
+        request = _ollama_request(
+            self,
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=False,
         )
         response_body, response_headers = _open_provider_request(
             self,
@@ -237,45 +343,7 @@ class OllamaChatModelClient:
         )
         try:
             data = _decode_json_object(response_body)
-            if data.get("error") or data.get("done") is not True:
-                raise ValueError("unsuccessful Ollama response")
-            content = _ollama_content(data)
-            input_tokens = _optional_int(data.get("prompt_eval_count"))
-            output_tokens = _optional_int(data.get("eval_count"))
-            total_tokens = (
-                input_tokens + output_tokens
-                if input_tokens is not None and output_tokens is not None
-                else None
-            )
-            usage = {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens,
-                "cached_tokens": 0,
-                "cache_hit": False,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            }
-            _record_effective_model(self, data)
-            request_id = response_headers.get("x-request-id")
-            if isinstance(request_id, str) and request_id:
-                usage["request_id"] = request_id
-            done_reason = data.get("done_reason")
-            if done_reason == "length":
-                stop_reason = StopReason.MAX_TOKENS
-            elif done_reason in {None, "stop"}:
-                stop_reason = (
-                    StopReason.TOOL_USE
-                    if any(block.get("type") == "tool_use" for block in content)
-                    else StopReason.END_TURN
-                )
-            else:
-                stop_reason = StopReason.UNKNOWN
-            response = Response(
-                stop_reason=stop_reason,
-                content=content,
-                usage=usage,
-            )
+            response = _decode_ollama_response(self, data, response_headers)
         except ProviderTransportError:
             raise
         except Exception:
@@ -284,5 +352,51 @@ class OllamaChatModelClient:
                 stage="response_decode",
                 reason="response_shape_invalid",
             ) from None
-        self.last_completion_metadata = usage
+        self.last_completion_metadata = response.usage
+        return response
+
+    def complete_stream(
+        self,
+        *,
+        system,
+        tools,
+        messages,
+        max_tokens,
+        cache_breakpoints=None,
+        on_stream_committed,
+        on_text_delta,
+    ):
+        del cache_breakpoints
+        self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        callbacks = _StreamCallbacks(on_stream_committed, on_text_delta)
+        request = _ollama_request(
+            self,
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        try:
+            with _open_provider_response(
+                self,
+                request,
+                family="Ollama",
+                retryable=True,
+            ) as response_stream:
+                headers = getattr(response_stream, "headers", {}) or {}
+                data = _read_ollama_stream(response_stream, callbacks)
+            response = _decode_ollama_response(self, data, headers)
+        except ProviderTransportError as exc:
+            if callbacks.committed:
+                raise _stream_failure_after_commit(exc) from None
+            raise
+        except Exception:
+            raise _provider_protocol_error(
+                "Ollama",
+                stage="response_decode",
+                reason="response_shape_invalid",
+            ) from None
+        self.last_completion_metadata = response.usage
         return response
