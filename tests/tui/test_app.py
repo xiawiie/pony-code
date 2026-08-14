@@ -1712,6 +1712,40 @@ def test_tool_receipt_fails_closed_on_malformed_result_view(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("columns", (10, 20, 80))
+def test_tool_receipt_preserves_error_code_when_narrow(monkeypatch, columns):
+    output = []
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr("pony.tui.render._terminal_columns", lambda: columns)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    renderer = TuiRenderer(no_color=True)
+    renderer.trace(
+        {"event": "tool_started", "name": "run_shell", "args": {"command": "safe"}}
+    )
+    renderer.trace(
+        {
+            "event": "tool_executed",
+            "tool_status": "error",
+            "tool_error_code": "tool_failed",
+            "result_view": {
+                "delivery": "preview",
+                "truncated": True,
+                "reasons": ["bytes"],
+                "recoverable": False,
+            },
+        }
+    )
+
+    rendered = "".join(fragment[1] for fragment in output[-1])
+    compact = "".join(line.strip() for line in rendered.splitlines())
+    assert "error" in compact
+    assert "code=tool_failed" in compact
+    assert all(get_cwidth(line) <= columns for line in rendered.splitlines())
+
+
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
     output = []
     terminal = io.StringIO()

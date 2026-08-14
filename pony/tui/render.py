@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import textwrap
 from importlib import metadata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -210,6 +211,16 @@ def _bounded_json(value, limit=800):
 
 def _approval_detail(label, value, width):
     return _truncate(f"  │ {label}: {value}", width) + "\n"
+
+
+def _wrap_receipt_semantics(text, width):
+    return textwrap.wrap(
+        text,
+        width=max(1, width),
+        subsequent_indent="  " if width > 2 else "",
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
 
 
 def _protocol_label(model_client):
@@ -734,18 +745,32 @@ class TuiRenderer:
         if summary and available > 3:
             receipt += separator + _truncate(summary, available)
         if not detail:
-            self._write(FormattedText([(style, f"{receipt}\n")]))
+            if get_cwidth(receipt) <= width:
+                self._write(FormattedText([(style, f"{receipt}\n")]))
+                return
+            lines = _wrap_receipt_semantics(prefix, width)
+            if summary:
+                indent = "  " if width > 2 else ""
+                summary_width = max(1, width - get_cwidth(indent))
+                lines.append(indent + _truncate(summary, summary_width))
+            self._write(FormattedText([(style, f"{line}\n") for line in lines]))
             return
         combined = f"{receipt} · {detail}"
         if get_cwidth(combined) <= width:
             self._write(FormattedText([(style, f"{combined}\n")]))
             return
-        detail_width = max(1, width - 2)
+        indent = "  " if width > 2 else ""
+        detail_width = max(1, width - get_cwidth(indent))
+        lines = (
+            [receipt]
+            if get_cwidth(receipt) <= width
+            else _wrap_receipt_semantics(prefix, width)
+        )
+        if receipt != prefix and get_cwidth(receipt) > width:
+            lines.append(indent + _truncate(summary, detail_width))
         self._write(
             FormattedText(
-                [
-                    (style, _truncate(receipt, width) + "\n"),
-                    (style, "  " + _truncate(detail, detail_width) + "\n"),
-                ]
+                [(style, f"{line}\n") for line in lines]
+                + [(style, indent + _truncate(detail, detail_width) + "\n")]
             )
         )
