@@ -126,6 +126,22 @@ def test_read_file_updates_working_memory_and_raw_file_summary(tmp_path, monkeyp
     )
 
 
+def test_read_file_summary_strips_valid_page_envelopes_only():
+    result = (
+        '[page] {"path":"sample.txt","start":1}\n'
+        "alpha\nbeta\n"
+        '[continuation] {"path":"sample.txt","start":3}'
+    )
+
+    assert memorylib.summarize_read_result(result) == "alpha | beta"
+    assert memorylib.summarize_read_result(
+        '[page] {"path":"sample.md","start":1}\n# Heading\nbody'
+    ) == "body"
+    assert memorylib.summarize_read_result("[page] not-json\nalpha") == (
+        "[page] not-json | alpha"
+    )
+
+
 def test_write_file_invalidates_raw_summary_and_keeps_recent_files_synced(
     tmp_path, monkeypatch
 ):

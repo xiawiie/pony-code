@@ -1,6 +1,7 @@
 """Production helpers for Pony's compact file-summary memory."""
 
 import hashlib as _hashlib
+import json as _json
 from pathlib import Path as _Path
 
 from ..workspace.context import clip as _clip, now as _now
@@ -113,8 +114,22 @@ def invalidate_stale_file_summaries_dict(summaries, workspace_root=None):
     return invalidated
 
 
+def _is_page_envelope(line, marker):
+    prefix = f"[{marker}] "
+    if not line.startswith(prefix):
+        return False
+    try:
+        return isinstance(_json.loads(line[len(prefix) :]), dict)
+    except (TypeError, ValueError):
+        return False
+
+
 def summarize_read_result(result, limit=180):
     lines = [line.strip() for line in str(result).splitlines() if line.strip()]
+    if lines[:1] and _is_page_envelope(lines[0], "page"):
+        lines = lines[1:]
+    if lines and _is_page_envelope(lines[-1], "continuation"):
+        lines = lines[:-1]
     if lines[:1] and lines[0].startswith("# "):
         lines = lines[1:]
     if not lines:
