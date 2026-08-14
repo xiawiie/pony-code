@@ -124,6 +124,13 @@ protocol/endpoint 决定，官方 Responses 的 stateless reasoning continuation
 只在有合同的 exact Target 上启用。详见
 [Model Target 与预算设计](model-target-and-budget-design.md)。
 
+交互 TUI 可由 `--stream` 显式选择同一 adapter 的流式入口；它不参与 resolution 或 Session binding。Transport 只提供有界
+SSE/NDJSON framing，四个 adapter 各自组装协议事件并仍返回唯一终态 `Response`。普通文本 delta 先在 Agent 内累计为完整行并
+脱敏，再经当前 request 私有 callback 投影到 TUI 动态区；冻结 snapshot 含多行/短 secret，或行内出现 private-key BEGIN marker
+时文本 preview fail closed。TUI 独占前缀、当前宽度裁剪与 resize 重投影。reasoning、tool args 与 opaque state 不进入 preview。
+Preview 不走 durable trace listener，不写 Session/Canonical Messages，终态 decode 完成前也不执行工具。详见
+[ADR-0052](adr/0052-safe-streaming-preview.md)。
+
 ## Permission 与 Host 执行
 
 ```mermaid
@@ -201,6 +208,8 @@ flowchart LR
 
 Pony 优先保留 primary failure：cleanup、observer 或 finalizer 的次生失败不能覆盖它。trace、doctor、Provider 报错和 UI
 只投影稳定 code 与低敏事实，不保存 API Key、完整 endpoint、prompt、raw response 或 Provider reasoning。
+流式请求在首个有效 wire event 后进入 committed 状态；之后失败不可 retry，也不能切回 final-only 重放。Preview callback
+或 renderer 失败只禁用本次瞬态显示，不能取消 Provider 请求或覆盖其终态。
 
 ## 分发与发布边界
 
