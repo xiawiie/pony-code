@@ -445,10 +445,13 @@ def run_tui(
 
     def prompt_message():
         columns = _session_terminal_columns(session)
-        if columns < FULL_TUI_MINIMUM_COLUMNS:
+        if startup_visible and columns < FULL_TUI_MINIMUM_COLUMNS:
             return FormattedText([("class:warning", _terminal_width_message())])
         if not startup_visible:
-            return renderer.prompt(columns=columns)
+            return renderer.prompt(
+                columns=columns,
+                pending=input_queue.pending_count,
+            )
         fragments = []
         if show_header:
             fragments.extend(renderer.welcome(agent, model=model, columns=columns))
@@ -509,6 +512,10 @@ def run_tui(
             manage_permissions=manage_permissions,
             pick_session_entry=pick_session_entry,
         )
+
+    def render_status(text):
+        if not str(text).startswith("queued for next turn: "):
+            call_ui(renderer.notice, text)
 
     from pony.cli.start import _raise_or_return_terminal, _route_repl_input
 
@@ -575,7 +582,7 @@ def run_tui(
                 user_input,
                 process_local=process_local,
                 render_user=lambda text: call_ui(renderer.user, text),
-                render_status=lambda text: call_ui(renderer.notice, text),
+                render_status=render_status,
                 render_error=lambda text: call_ui(
                     renderer.notice,
                     text,
