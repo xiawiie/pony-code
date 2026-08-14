@@ -15,6 +15,7 @@ from prompt_toolkit.utils import get_cwidth
 
 from pony.security.text import sanitize_terminal_line, sanitize_terminal_text
 from pony.tools.permissions import display_permission_mode
+from pony.tools.result_view import project_result_view
 from pony.tui.markdown import render_markdown
 
 
@@ -52,6 +53,7 @@ _PIXEL_GLYPHS = {
 
 FULL_TUI_MINIMUM_COLUMNS = 112
 _PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
+_MISSING_RESULT_VIEW = object()
 
 _COLOR_STYLE = Style.from_dict(
     {
@@ -207,9 +209,7 @@ def _bounded_json(value, limit=800):
 
 
 def _approval_detail(label, value, width):
-    prefix = f"  │ {label}: "
-    available = max(0, width - get_cwidth(prefix))
-    return prefix + _truncate(value, available) + "\n"
+    return _truncate(f"  │ {label}: {value}", width) + "\n"
 
 
 def _protocol_label(model_client):
@@ -365,6 +365,38 @@ def _tool_activity(name, args):
     else:
         text = f"Running {name}..."
     return text
+
+
+def _result_view_detail(value):
+    view = project_result_view(value)
+    if view is None:
+        return "result details unavailable", True
+    delivery = view["delivery"]
+    if delivery == "inline":
+        return "", False
+    if delivery == "page":
+        detail = (
+            f"lines {view['start_line']}-{view['end_line']}/"
+            f"{view['total_lines']}"
+        )
+        if "next_start" in view:
+            detail += f" · more from {view['next_start']}"
+        elif "next_start_byte" in view:
+            detail += f" · more at byte {view['next_start_byte']}"
+    else:
+        detail = "output truncated"
+        if "exit_code" in view:
+            detail = f"exit {view['exit_code']} · {detail}"
+    reasons = view.get("reasons") or []
+    if reasons:
+        detail += f" · limit={'+'.join(reasons)}"
+    if delivery == "preview":
+        detail += (
+            " · recoverable until this turn ends"
+            if view["recoverable"]
+            else " · not recoverable"
+        )
+    return detail, delivery == "preview"
 
 
 class TuiRenderer:
@@ -538,20 +570,33 @@ class TuiRenderer:
             self._write(
                 FormattedText(
                     [
-                        ("class:warning", "\n  ╷ PLAN APPROVAL REQUIRED\n"),
-                        ("", f"  │ revision {revision}\n"),
+                        (
+                            "class:warning",
+                            "\n" + _truncate("  ╷ PLAN APPROVAL REQUIRED", width) + "\n",
+                        ),
+                        ("", _truncate(f"  │ revision {revision}", width) + "\n"),
                     ]
                 )
             )
             self._write(render_markdown(plan, width=width))
             self._write(
-                FormattedText([("class:warning", "\n  ╵ default: deny\n")])
+                FormattedText(
+                    [
+                        (
+                            "class:warning",
+                            "\n" + _truncate("  ╵ default: deny", width) + "\n",
+                        )
+                    ]
+                )
             )
             return
         self._write(
             FormattedText(
                 [
-                    ("class:warning", "\n  ╷ APPROVAL REQUIRED\n"),
+                    (
+                        "class:warning",
+                        "\n" + _truncate("  ╷ APPROVAL REQUIRED", width) + "\n",
+                    ),
                     (
                         "",
                         _approval_detail(
@@ -561,7 +606,10 @@ class TuiRenderer:
                         ),
                     ),
                     ("", _approval_detail("details", _bounded_json(args), width)),
-                    ("class:warning", "  ╵ default: deny\n"),
+                    (
+                        "class:warning",
+                        _truncate("  ╵ default: deny", width) + "\n",
+                    ),
                 ]
             )
         )
@@ -584,7 +632,11 @@ class TuiRenderer:
         elif event == "tool_executed":
             self._clear_activity()
             status = str(envelope.get("tool_status", ""))
-            self._tool_receipt(status, envelope.get("tool_error_code", ""))
+            self._tool_receipt(
+                status,
+                envelope.get("tool_error_code", ""),
+                envelope.get("result_view", _MISSING_RESULT_VIEW),
+            )
             self._active_tool = ""
             self._active_tool_activity = ""
         elif event in {"context_compacted", "context_recovery"}:
@@ -652,11 +704,23 @@ class TuiRenderer:
         self._activity_text = ""
         self._activity_source = ""
 
-    def _tool_receipt(self, status, error_code):
+    def _tool_receipt(self, status, error_code, result_view=_MISSING_RESULT_VIEW):
         self._clear_activity()
         width = _terminal_width()
         summary = self._active_tool or "tool"
-        marker = "✓" if status == "ok" else "!" if status == "partial_success" else "×"
+        detail = ""
+        result_warning = False
+        if result_view is not _MISSING_RESULT_VIEW:
+            detail, result_warning = _result_view_detail(result_view)
+        marker = (
+            "!"
+            if status in {"ok", "partial_success"} and result_warning
+            else "✓"
+            if status == "ok"
+            else "!"
+            if status == "partial_success"
+            else "×"
+        )
         style = "class:tool" if status == "ok" else "class:tool.error"
         prefix = marker
         if status != "ok":
@@ -669,6 +733,19 @@ class TuiRenderer:
         receipt = prefix
         if summary and available > 3:
             receipt += separator + _truncate(summary, available)
+        if not detail:
+            self._write(FormattedText([(style, f"{receipt}\n")]))
+            return
+        combined = f"{receipt} · {detail}"
+        if get_cwidth(combined) <= width:
+            self._write(FormattedText([(style, f"{combined}\n")]))
+            return
+        detail_width = max(1, width - 2)
         self._write(
-            FormattedText([(style, f"{receipt}\n")])
+            FormattedText(
+                [
+                    (style, _truncate(receipt, width) + "\n"),
+                    (style, "  " + _truncate(detail, detail_width) + "\n"),
+                ]
+            )
         )

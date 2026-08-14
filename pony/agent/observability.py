@@ -278,7 +278,9 @@ def validate_trace(events, *, run_id=None, task_id=None):
     terminal_tools = {}
     finished_tools = set()
     streaming_attempts = {}
+    streaming_action_states = {}
     streaming_requested_attempts = set()
+    streaming_action_attempts = set()
     streaming_terminal_attempts = set()
     for event in events:
         if not isinstance(event, dict) or not _TRACE_ENVELOPE_FIELDS.issubset(event):
@@ -356,10 +358,32 @@ def validate_trace(events, *, run_id=None, task_id=None):
                 raise RunArtifactError(
                     "incomplete", "streaming attempt has no initial state"
                 )
+            if event_name == "action_decoded":
+                if (
+                    attempt in streaming_action_attempts
+                    or attempt in streaming_terminal_attempts
+                ):
+                    raise RunArtifactError(
+                        "incomplete", "streaming action lifecycle is invalid"
+                    )
+                streaming_action_attempts.add(attempt)
+                streaming_action_states[attempt] = streaming
             if event_name in {"model_turn", "model_failed"}:
                 if attempt in streaming_terminal_attempts:
                     raise RunArtifactError(
                         "incomplete", "streaming attempt has duplicate terminal state"
+                    )
+                if event_name == "model_turn" and (
+                    attempt not in streaming_action_attempts
+                    or streaming["committed"] is not True
+                ):
+                    raise RunArtifactError(
+                        "incomplete", "streaming success lifecycle is invalid"
+                    )
+                action_state = streaming_action_states.get(attempt)
+                if action_state is not None and streaming != action_state:
+                    raise RunArtifactError(
+                        "incomplete", "streaming terminal state does not match action"
                     )
                 streaming_terminal_attempts.add(attempt)
             if previous is not None and (

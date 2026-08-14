@@ -153,6 +153,23 @@ digest_tokens = 256
     }
 
 
+@pytest.mark.parametrize(
+    "setting",
+    ("inline_tokens = 255", "digest_tokens = 127"),
+)
+def test_legacy_tool_result_budget_below_new_minimum_fails_closed(
+    tmp_path,
+    setting,
+):
+    (tmp_path / "pony.toml").write_text(
+        f"[context.tool_results]\n{setting}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="^tool_result_budget_too_small$"):
+        _config(tmp_path)
+
+
 def test_prepare_tool_result_uses_token_limits(tmp_path):
     from types import SimpleNamespace
 

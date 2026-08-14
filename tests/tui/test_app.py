@@ -1071,17 +1071,43 @@ def test_busy_ctrl_c_clears_queue_but_current_turn_continues(monkeypatch):
 def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
     inputs = queue.Queue()
     approval_visible = threading.Event()
+    approval_prompt_ready = threading.Event()
     approval_finished = threading.Event()
     decisions = []
     prompt_threads = []
     worker_threads = []
+    rendered_output = []
+
+    class FakeLoop:
+        @staticmethod
+        def call_soon_threadsafe(callback):
+            callback()
+
+    class ImmediateFuture:
+        def __init__(self, coroutine):
+            self.coroutine = coroutine
+
+        def result(self):
+            return tui_app.asyncio.run(self.coroutine)
+
+    class FakeApp:
+        is_running = True
+        loop = FakeLoop()
+
+        @staticmethod
+        def exit(*, result):
+            inputs.put(result)
 
     class FakeSession:
         def __init__(self, **_kwargs):
-            pass
+            self.app = FakeApp()
 
-        def prompt(self, *_args, **_kwargs):
+        def prompt(self, *args, **_kwargs):
             prompt_threads.append(threading.current_thread())
+            if args and not callable(args[0]):
+                prompt_text = "".join(fragment[1] for fragment in args[0])
+                if "Approve once?" in prompt_text:
+                    approval_prompt_ready.set()
             return inputs.get(timeout=3)
 
     agent = SimpleNamespace(
@@ -1096,6 +1122,7 @@ def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
 
     def write(value, **_kwargs):
         text = "".join(fragment[1] for fragment in value)
+        rendered_output.append(text)
         if "APPROVAL REQUIRED" in text:
             approval_visible.set()
 
@@ -1107,8 +1134,16 @@ def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
         decisions.append(received._approval_prompt("write_file", {"path": "a.txt"}))
         approval_finished.set()
 
+    async def run_immediately(callback):
+        return callback()
+
     monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
     monkeypatch.setattr("pony.tui.render.print_formatted_text", write)
+    monkeypatch.setattr("pony.tui.app.run_in_terminal", run_immediately)
+    monkeypatch.setattr(
+        "pony.tui.app.asyncio.run_coroutine_threadsafe",
+        lambda coroutine, _loop: ImmediateFuture(coroutine),
+    )
     outcome = []
     thread = threading.Thread(
         target=lambda: outcome.append(
@@ -1119,6 +1154,7 @@ def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
 
     inputs.put("change file")
     assert approval_visible.wait(timeout=3)
+    assert approval_prompt_ready.wait(timeout=3)
     inputs.put("yes")
     assert approval_finished.wait(timeout=3)
     inputs.put("/exit")
@@ -1126,6 +1162,7 @@ def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
 
     assert outcome == [0]
     assert decisions == [True]
+    assert "re-enter the response" not in "".join(rendered_output)
     assert worker_threads[0] is not prompt_threads[0]
     assert all(current is prompt_threads[0] for current in prompt_threads)
 
@@ -1354,7 +1391,7 @@ def test_tool_activity_clear_uses_the_current_terminal_width(monkeypatch):
     assert get_cwidth(cleared) == 79
 
 
-@pytest.mark.parametrize("columns", (80, 112))
+@pytest.mark.parametrize("columns", (10, 80, 112))
 def test_approval_details_are_bounded_by_terminal_width(monkeypatch, columns):
     output = []
     monkeypatch.setattr(
@@ -1370,6 +1407,23 @@ def test_approval_details_are_bounded_by_terminal_width(monkeypatch, columns):
 
     rendered = "".join(fragment[1] for value in output for fragment in value)
     assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+
+
+def test_plan_approval_is_bounded_after_an_extreme_runtime_resize(monkeypatch):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+
+    TuiRenderer(no_color=True).approval(
+        "exit_plan_mode",
+        {"plan": "# Plan\nverify", "revision": 7},
+        columns=10,
+    )
+
+    rendered = "".join(fragment[1] for value in output for fragment in value)
+    assert all(get_cwidth(line) < 10 for line in rendered.splitlines())
 
 
 def test_approval_resolution_replaces_waiting_state(monkeypatch):
@@ -1550,6 +1604,112 @@ def test_tool_receipt_keeps_status_front_and_omits_raw_data(
     assert receipt == expected
     for hidden in ("private command", "raw_private_id", "private raw result"):
         assert hidden not in receipt
+
+
+@pytest.mark.parametrize(
+    ("result_view", "expected"),
+    (
+        (
+            {
+                "delivery": "page",
+                "truncated": False,
+                "start_line": 1,
+                "end_line": 2_000,
+                "total_lines": 5_000,
+                "next_start": 2_001,
+                "reasons": ["lines"],
+            },
+            "✓ read big.txt · lines 1-2000/5000 · more from 2001 · limit=lines\n",
+        ),
+        (
+            {
+                "delivery": "page",
+                "truncated": False,
+                "start_line": 1,
+                "end_line": 1,
+                "total_lines": 1,
+                "next_start_byte": 720,
+                "reasons": ["bytes"],
+            },
+            "✓ read big.txt · lines 1-1/1 · more at byte 720 · limit=bytes\n",
+        ),
+        (
+            {
+                "delivery": "preview",
+                "truncated": True,
+                "reasons": ["tokens"],
+                "recoverable": True,
+            },
+            "! run shell command · output truncated · limit=tokens · "
+            "recoverable until this turn ends\n",
+        ),
+        (
+            {
+                "delivery": "preview",
+                "truncated": True,
+                "reasons": ["bytes"],
+                "recoverable": False,
+            },
+            "! run shell command · output truncated · limit=bytes · not recoverable\n",
+        ),
+    ),
+)
+def test_tool_receipt_exposes_safe_page_and_recovery_state(
+    monkeypatch,
+    result_view,
+    expected,
+):
+    output = []
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr("pony.tui.render._terminal_columns", lambda: 140)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    renderer = TuiRenderer(no_color=True)
+    name = "read_file" if result_view["delivery"] == "page" else "run_shell"
+    args = {"path": "big.txt"} if name == "read_file" else {"command": "private"}
+
+    renderer.trace({"event": "tool_started", "name": name, "args": args})
+    renderer.trace(
+        {
+            "event": "tool_executed",
+            "tool_status": "ok",
+            "result_view": result_view,
+        }
+    )
+
+    assert "".join(fragment[1] for fragment in output[-1]) == expected
+
+
+def test_tool_receipt_fails_closed_on_malformed_result_view(monkeypatch):
+    output = []
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr("pony.tui.render._terminal_columns", lambda: 120)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    renderer = TuiRenderer(no_color=True)
+    renderer.trace(
+        {"event": "tool_started", "name": "read_file", "args": {"path": "a.py"}}
+    )
+
+    renderer.trace(
+        {
+            "event": "tool_executed",
+            "tool_status": "ok",
+            "result_view": {
+                "delivery": "page",
+                "truncated": False,
+                "path": "private.txt",
+            },
+        }
+    )
+
+    assert "".join(fragment[1] for fragment in output[-1]) == (
+        "! read a.py · result details unavailable\n"
+    )
 
 
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):

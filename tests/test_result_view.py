@@ -55,9 +55,28 @@ def test_page_stops_at_two_thousand_complete_lines():
     assert output.result_view["reasons"] == ["lines"]
     assert continuation["start"] == 2_001
     assert continuation["expected_sha256"] == _marker(output, "page")["sha256"]
+    assert "reasons" not in continuation
 
 
-def test_page_reports_envelope_limit_that_forces_line_limit_backoff():
+def test_immutable_result_continuation_uses_its_content_address_only():
+    source = "x\n" * 3_000
+    tool_result_id = "tool_result:" + hashlib.sha256(source.encode()).hexdigest()
+
+    output = page_text(
+        source,
+        locator={"tool_result_id": tool_result_id},
+        policy=_policy(),
+        expected_sha256=tool_result_id.removeprefix("tool_result:"),
+        include_source_hash=False,
+    )
+
+    assert _marker(output, "continuation") == {
+        "tool_result_id": tool_result_id,
+        "start": 2_001,
+    }
+
+
+def test_page_reports_byte_limit_that_forces_backoff_below_line_limit():
     source = "x\n" * 2_001
     line_limited = page_text(source, locator={"path": "many.txt"}, policy=_policy())
     max_bytes = len(line_limited.content.encode("utf-8")) - 1
@@ -69,7 +88,7 @@ def test_page_reports_envelope_limit_that_forces_line_limit_backoff():
     )
 
     assert output.result_view["end_line"] < 2_000
-    assert output.result_view["reasons"] == ["lines", "bytes"]
+    assert output.result_view["reasons"] == ["bytes"]
     assert len(output.content.encode("utf-8")) <= max_bytes
 
 

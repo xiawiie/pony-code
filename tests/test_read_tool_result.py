@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 from benchmarks.support.fake_provider import FakeModelClient
 
@@ -19,6 +20,12 @@ def _agent(tmp_path):
     )
 
 
+def _continuation_args(content):
+    prefix = "[continuation] "
+    line = next(line for line in content.splitlines() if line.startswith(prefix))
+    return json.loads(line[len(prefix) :])
+
+
 def test_current_run_raw_result_is_model_readable_through_executor(tmp_path):
     agent = _agent(tmp_path)
     task = TaskState.create("task1", "inspect", run_id="run1")
@@ -33,6 +40,8 @@ def test_current_run_raw_result_is_model_readable_through_executor(tmp_path):
             "read_tool_result",
             {"tool_result_id": f"tool_result:{content_hash}", "start": 1},
         )
+        continuation = _continuation_args(result.content)
+        next_result = agent.execute_tool("read_tool_result", continuation)
     finally:
         agent.end_permission_turn()
 
@@ -41,6 +50,9 @@ def test_current_run_raw_result_is_model_readable_through_executor(tmp_path):
     assert result.metadata["result_view"]["next_start"] == 2_001
     assert "[continuation]" in result.content
     assert str(agent.current_run_dir) not in result.content
+    assert set(continuation) == {"tool_result_id", "start"}
+    assert next_result.metadata["tool_status"] == "ok"
+    assert next_result.metadata["result_view"]["start_line"] == 2_001
 
 
 def test_terminal_run_raw_result_is_expired_before_read(tmp_path):
@@ -89,6 +101,8 @@ def test_read_file_executor_returns_structured_page_metadata(tmp_path):
     agent.begin_permission_turn()
     try:
         result = agent.execute_tool("read_file", {"path": "large.txt"})
+        continuation = _continuation_args(result.content)
+        next_result = agent.execute_tool("read_file", continuation)
     finally:
         agent.end_permission_turn()
 
@@ -102,3 +116,6 @@ def test_read_file_executor_returns_structured_page_metadata(tmp_path):
         "next_start": 2_001,
         "reasons": ["lines"],
     }
+    assert set(continuation) == {"path", "start", "expected_sha256"}
+    assert next_result.metadata["tool_status"] == "ok"
+    assert next_result.metadata["result_view"]["start_line"] == 2_001

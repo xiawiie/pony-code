@@ -311,6 +311,7 @@ def tool_read_tool_result(
             else None
         ),
         expected_sha256=tool_result_id.removeprefix("tool_result:"),
+        include_source_hash=False,
     )
 
 

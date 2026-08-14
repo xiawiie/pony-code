@@ -414,6 +414,7 @@ def main(argv=None):
             "provider_endpoint_conflict",
             "provider_invalid",
             "streaming_unavailable",
+            "tool_result_budget_too_small",
         }
         if reason in stable_codes:
             message = {

@@ -748,17 +748,15 @@ def run_tui(
             refresh_history()
             confirmation = input_queue.confirmation()
             try:
-                user_input = _normalize_prompt_text(
-                    session.prompt(
-                        FormattedText([("class:warning", confirmation)])
-                        if confirmation is not None
-                        else prompt_message,
-                        prompt_continuation=_continuation,
-                        bottom_toolbar=lambda: renderer.toolbar(
-                            agent,
-                            model=model,
-                        ),
-                    )
+                raw_input = session.prompt(
+                    FormattedText([("class:warning", confirmation)])
+                    if confirmation is not None
+                    else prompt_message,
+                    prompt_continuation=_continuation,
+                    bottom_toolbar=lambda: renderer.toolbar(
+                        agent,
+                        model=model,
+                    ),
                 )
                 startup_visible = False
             except EOFError:
@@ -787,8 +785,9 @@ def run_tui(
                 call_ui(renderer.notice, "press Ctrl+C again to exit")
                 continue
 
-            if user_input is wake_result:
+            if raw_input is wake_result:
                 continue
+            user_input = _normalize_prompt_text(raw_input)
             user_input = user_input.strip()
             result = _route_repl_input(
                 agent,

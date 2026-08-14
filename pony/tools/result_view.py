@@ -158,6 +158,7 @@ def _render_page(
     next_line: int | None,
     next_byte: int | None,
     reasons: list[str],
+    include_source_hash: bool,
 ) -> str:
     range_complete = next_line is None
     file_complete = range_complete and (
@@ -181,14 +182,13 @@ def _render_page(
         continuation = {
             **dict(locator),
             "start": next_line,
-            "expected_sha256": source_hash,
         }
+        if include_source_hash:
+            continuation["expected_sha256"] = source_hash
         if next_byte is not None:
             continuation["start_byte"] = next_byte
         if requested_end is not None:
             continuation["end"] = requested_end
-        if reasons:
-            continuation["reasons"] = reasons
         if not rendered.endswith(("\n", "\r")):
             rendered += "\n"
         rendered += _json_line("continuation", continuation)
@@ -229,6 +229,7 @@ def page_text(
     end: int | None = None,
     start_byte: int | None = None,
     expected_sha256: str | None = None,
+    include_source_hash: bool = True,
 ) -> ToolOutput:
     """Return one lossless page of a redacted UTF-8 text source."""
     if start < 1 or (end is not None and end < start):
@@ -264,6 +265,7 @@ def page_text(
             next_line=None,
             next_byte=None,
             reasons=[],
+            include_source_hash=include_source_hash,
         )
         if not policy.fits(rendered):
             raise ToolResultError("tool_result_budget_too_small")
@@ -296,6 +298,7 @@ def page_text(
                 next_line=None,
                 next_byte=None,
                 reasons=[],
+                include_source_hash=include_source_hash,
             )
             if not policy.fits(rendered):
                 raise ToolResultError("tool_result_budget_too_small")
@@ -336,6 +339,7 @@ def page_text(
             next_line=candidate_next,
             next_byte=None,
             reasons=[],
+            include_source_hash=include_source_hash,
         )
         if not policy.fits(candidate):
             break
@@ -363,6 +367,7 @@ def page_text(
             next_line=cursor + 2 if cursor + 1 < last_requested else None,
             next_byte=None,
             reasons=[],
+            include_source_hash=include_source_hash,
         )
         reasons = _limits_exceeded(policy, failed) or ["tokens"]
         next_line = cursor + 1
@@ -382,6 +387,7 @@ def page_text(
             next_line=next_line,
             next_byte=None,
             reasons=reasons,
+            include_source_hash=include_source_hash,
         )
         while accepted and not policy.fits(rendered):
             for reason in _limits_exceeded(policy, rendered):
@@ -404,6 +410,7 @@ def page_text(
                 next_line=next_line,
                 next_byte=None,
                 reasons=reasons,
+                include_source_hash=include_source_hash,
             )
         if accepted:
             return ToolOutput(
@@ -440,6 +447,7 @@ def page_text(
             next_line=start,
             next_byte=offset_bytes + consumed_bytes,
             reasons=reasons,
+            include_source_hash=include_source_hash,
         )
         if fragment and policy.fits(fragment_rendered):
             best = fragment

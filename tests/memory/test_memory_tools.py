@@ -1,4 +1,5 @@
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -95,6 +96,26 @@ def test_read_runner_pages_an_explicit_large_range(tmp_path):
 
     assert "line250" in out
     assert "[continuation]" in out
+
+
+def test_read_accepts_its_exact_continuation_arguments(tmp_path):
+    from pony.tools.validation import validate_tool
+
+    ctx = _context(tmp_path)
+    target = ctx.memory_store.workspace_root / "notes" / "big.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x\n" * 3_000, encoding="utf-8")
+    first = _read(ctx, {"path": "workspace/notes/big.md"})
+    marker = next(
+        line for line in first.splitlines() if line.startswith("[continuation] ")
+    )
+    continuation = json.loads(marker.removeprefix("[continuation] "))
+
+    validate_tool(ctx, "memory_read", continuation)
+    second = _read(ctx, continuation)
+
+    assert set(continuation) == {"path", "start", "expected_sha256"}
+    assert '"start":2001' in second
 
 
 def test_read_validator_accepts_an_explicit_large_range(tmp_path):

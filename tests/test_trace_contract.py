@@ -312,6 +312,24 @@ def test_trace_reader_accepts_finite_float_metadata():
     assert validate_trace([event]) == [event]
 
 
+def _streaming_state(*, committed=False):
+    return {
+        "requested": True,
+        "committed": committed,
+        "preview_emitted": False,
+        "first_preview_ms": None,
+    }
+
+
+def _streaming_event(state, name, streaming):
+    return project_trace_event(
+        state,
+        name,
+        {"request_metadata": {"streaming": streaming}},
+        created_at="now",
+    )
+
+
 @pytest.mark.parametrize(
     "streaming",
     (
@@ -357,56 +375,52 @@ def test_trace_reader_rejects_invalid_streaming_metadata(streaming):
         validate_trace([event])
 
 
-def test_trace_reader_rejects_streaming_state_regression_within_attempt():
+def test_trace_reader_requires_action_and_terminal_streaming_state_to_match():
     state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
-    requested = project_trace_event(
-        state,
-        "model_requested",
-        {
-            "request_metadata": {
-                "streaming": {
-                    "requested": True,
-                    "committed": False,
-                    "preview_emitted": False,
-                    "first_preview_ms": None,
-                }
-            }
-        },
-        created_at="now",
-    )
-    terminal = project_trace_event(
+    requested = _streaming_event(state, "model_requested", _streaming_state())
+    action = _streaming_event(state, "action_decoded", _streaming_state())
+    terminal = _streaming_event(
         state,
         "model_turn",
-        {
-            "request_metadata": {
-                "streaming": {
-                    "requested": True,
-                    "committed": True,
-                    "preview_emitted": True,
-                    "first_preview_ms": 10,
-                }
-            }
-        },
-        created_at="now",
+        _streaming_state(committed=True),
     )
-    regressed = project_trace_event(
+    finished = project_trace_event(state, "run_finished", {}, created_at="now")
+
+    with pytest.raises(RunArtifactError, match="does not match action"):
+        validate_trace([requested, action, terminal, finished])
+
+
+def test_trace_reader_requires_streaming_action_before_success_terminal():
+    state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
+    requested = _streaming_event(state, "model_requested", _streaming_state())
+    terminal = _streaming_event(
+        state,
+        "model_turn",
+        _streaming_state(committed=True),
+    )
+    action = _streaming_event(
         state,
         "action_decoded",
-        {
-            "request_metadata": {
-                "streaming": {
-                    "requested": True,
-                    "committed": False,
-                    "preview_emitted": False,
-                    "first_preview_ms": None,
-                }
-            }
-        },
-        created_at="now",
+        _streaming_state(committed=True),
     )
+    finished = project_trace_event(state, "run_finished", {}, created_at="now")
 
-    with pytest.raises(RunArtifactError, match="not monotonic"):
-        validate_trace([requested, terminal, regressed])
+    with pytest.raises(RunArtifactError, match="success lifecycle is invalid"):
+        validate_trace([requested, terminal, action, finished])
+
+
+def test_trace_reader_rejects_uncommitted_streaming_success():
+    state = SimpleNamespace(run_id="run_trace", task_id="task_trace", attempts=1)
+    initial = _streaming_state()
+    events = [
+        _streaming_event(state, "model_requested", initial),
+        _streaming_event(state, "action_decoded", initial),
+        _streaming_event(state, "model_turn", initial),
+        project_trace_event(state, "run_finished", {}, created_at="now"),
+    ]
+
+    with pytest.raises(RunArtifactError, match="success lifecycle is invalid"):
+        validate_trace(events)
 
 
 def test_trace_reader_rejects_streaming_metadata_on_an_unrelated_event():

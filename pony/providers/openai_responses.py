@@ -399,7 +399,7 @@ def _read_responses_stream(response_stream, callbacks):
         item_type, data = _responses_stream_object(event_name, payload)
         _validate_responses_sequence(state, data)
         callbacks.commit()
-        if item_type in {"error", "response.failed", "response.incomplete"}:
+        if item_type in {"error", "response.failed"}:
             raise ProviderTransportError("OpenAI error: backend_error", code="backend_error")
         if item_type == "response.output_item.added":
             _record_responses_item(seen_items, data, require_existing=False)
@@ -420,14 +420,14 @@ def _read_responses_stream(response_stream, callbacks):
             if not isinstance(delta, str):
                 raise ValueError("invalid Responses text delta")
             callbacks.text(delta)
-        elif item_type == "response.completed":
+        elif item_type in {"response.completed", "response.incomplete"}:
             completed = data.get("response")
             if not isinstance(completed, dict):
-                raise ValueError("invalid completed Responses object")
+                raise ValueError("invalid terminal Responses object")
             _validate_completed_items(completed, seen_items)
             break
     if completed is None:
-        raise ValueError("Responses stream missing response.completed")
+        raise ValueError("Responses stream missing terminal response")
     return completed
 
 

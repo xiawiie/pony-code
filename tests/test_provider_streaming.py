@@ -548,6 +548,56 @@ def test_responses_stream_uses_completed_response_as_authority(monkeypatch):
     assert response.usage["request_id"] == "req_1"
 
 
+def test_responses_stream_preserves_incomplete_max_tokens_response(monkeypatch):
+    item = {
+        "id": "msg_1",
+        "type": "message",
+        "content": [{"type": "output_text", "text": "partial\n"}],
+    }
+    incomplete = {
+        "id": "resp_1",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [item],
+        "usage": {"input_tokens": 4, "output_tokens": 42},
+    }
+    body = _sse(
+        (
+            "response.output_item.added",
+            {"type": "response.output_item.added", "output_index": 0, "item": item},
+        ),
+        (
+            "response.output_text.delta",
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "partial\n",
+            },
+        ),
+        (
+            "response.output_item.done",
+            {"type": "response.output_item.done", "output_index": 0, "item": item},
+        ),
+        (
+            "response.incomplete",
+            {"type": "response.incomplete", "response": incomplete},
+        ),
+    )
+    monkeypatch.setattr(
+        provider_transport,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _StreamResponse(body),
+    )
+    calls, committed, text = _callbacks()
+
+    response = _complete_stream(_responses_client(), committed, text)
+
+    assert calls == ["committed", "partial\n"]
+    assert response.stop_reason == StopReason.MAX_TOKENS
+    assert response.content == [{"type": "text", "text": "partial\n"}]
+
+
 def test_responses_stream_never_previews_tool_arguments_or_reasoning(monkeypatch):
     reasoning = {
         "id": "rs_1",

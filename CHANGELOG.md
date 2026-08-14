@@ -10,8 +10,12 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   事实保留和 Provider failure 证据的 compaction 净 token/break-even 与非流式 Provider latency 测量。
 - 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
 - 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pony init`。
-- 参考 Pi 消息层级的行内 TUI：完整 `PONY CODE` 品牌状态、无标签低对比用户块、`PONY` Assistant 锚点、内置 Markdown、slash
-  command menu、可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
+- 参考 Pi 消息层级的行内 TUI：完整 `PONY CODE` 品牌状态、无标签低对比用户块、`Pony` Assistant 锚点、`›` 输入、
+  内置 Markdown、slash command menu、可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
+- 完整交互 TUI 可用 `--stream` 显式启用安全文本 preview；四个 Provider adapter 各自解析有界流事件，最终 Answer 与
+  Canonical Messages 保持唯一权威，preview 不持久化且 committed stream 不重放。
+- `read_file`、`memory_read` 与 `read_tool_result` 共用 2,000 行、50 KiB UTF-8 和 inline token 三重分页；不可重放的
+  大结果可在当前 Run 内通过完整 SHA-256 id 恢复，turn 结束后稳定过期。
 - `pony --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
 - PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
 - Session v5 的 `manual|auto|acceptEdits|bypassPermissions|dontAsk|plan` permission mode、exact tool-name
@@ -37,10 +41,10 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
-- `read_file` 与 `memory_read` 的模型可见合同现在明确 1-based inclusive 分页、默认 1-200 行和单次 200 行上限；
-  `memory_read` 的 validator 与 runner 同步落实该上限，live digest turn 固定省略范围参数以验证默认分页和 native tool round-trip。
+- `read_file` 与 `memory_read` 的模型可见合同现在采用 1-based inclusive 分页，默认从第 1 行读到 EOF，但每次结果同时受
+  2,000 行、50 KiB UTF-8 和 inline token 上限约束；continuation 可无损读取后续页面。
 - 任意合法 model id 现在零 catalog 接入，不再触发 unknown-model warning；统一默认预算保持 128K context / 16K output，
-  显式 256K/32K 等覆盖继续可用，非法 `pony.toml` 默认值不再冒充项目配置来源。
+  显式 256K/16K 等覆盖继续可用，非法 `pony.toml` 默认值不再冒充项目配置来源。
 - 预算组合在 config snapshot 边界联合校验；32K/16K 自动 compaction 会按 input limit 缩小 tail，child runtime 保留
   default/config/CLI/mixed 来源，不把父级有效值误报成 CLI。
 - OpenAI Responses 与 Chat Completions 只共享 User-Agent、system/function schema 与 optional-null 原语；endpoint、codec、
@@ -50,10 +54,9 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   compatible Chat 保持 `max_tokens`，官方 Chat endpoint 按当前协议使用 `max_completion_tokens`，官方 Responses 对 future
   model 保持 stateless reasoning continuation；strict schema 不再把本地 `default` 注解发送给服务端，所有字段均不按未知
   model name 猜测。
-- TUI 在 80/111 列稳定拒绝，112 列及以上保留冻结的完整马形资产；无标签用户块、`PONY`、`Message Pony`、真实
-  trace 状态、queue/context/permission/protocol-model footer 让聊天与运行阶段可辨识。busy Ctrl+C 明确不取消当前请求，
-  approval UI 异常继续 fail closed；运行中缩窄会暂停提交并保留输入，恢复宽度后继续，Provider streaming 与 transport cancel
-  仍未实现。
+- TUI 在 80/111 列稳定拒绝，112 列及以上保留冻结的完整马形资产；无标签用户块、`Pony` Answer、`›` 输入、
+  `Working`/`Receiving`/工具回执和 permission/protocol-model footer 让聊天与运行阶段可辨识。busy Ctrl+C 明确不取消当前
+  请求，approval UI 异常继续 fail closed；运行中缩窄保留输入并有界渲染，transport cancel 仍未实现。
 - Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
   model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
   绕过用户配置的 output limit。
@@ -79,9 +82,9 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   单行替代版。完整资产不可隐藏，`--quiet` 也不能抑制；非 TTY fallback 不显示 banner，`pony run` 只输出执行结果。
 - TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
   smoke 在隔离环境中离线验证锁定依赖和 TUI import。
-- TUI 运行事件投影为 Preparing、Waiting、Retrying、Compacting、Tool、Completed、Interrupted 与 Failed，保留单行 Tool
-  摘要、一次性 permission prompt 和 fail-closed 审批；自动 checkpoint 不进入对话区，footer 不显示绝对路径、Session ID、
-  API Base 或 checkpoint ID。Provider reasoning 与 streaming 不属于 1.0 展示面。
+- TUI 运行事件投影为唯一瞬态活动行和单条永久 Tool 回执，保留一次性 permission prompt 和 fail-closed 审批；自动
+  checkpoint 不进入对话区，footer 不显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 不属于
+  1.0 展示面；streaming 只显示 request-scoped 的已脱敏普通文本 preview。
 - Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
   启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时进入有界扩宽提示且不绘制替代 Logo，首条输入后仍保留原生
   inline scrollback。

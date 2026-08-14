@@ -61,6 +61,13 @@ def _bounded_int_setting(parent, key, default, minimum, maximum, path):
     return default, False
 
 
+def _tool_result_tokens(parent, key, default, minimum, maximum, path):
+    value = parent.get(key, _MISSING)
+    if type(value) is int and 1 <= value < minimum:
+        raise ValueError("tool_result_budget_too_small")
+    return _bounded_int(parent, key, default, minimum, maximum, path)
+
+
 def _bounded_bool(parent, key, default, path):
     value = parent.get(key, _MISSING)
     if value is _MISSING:
@@ -172,7 +179,7 @@ def _validated_context(context):
             ),
         },
         "tool_results": {
-            "inline_tokens": _bounded_int(
+            "inline_tokens": _tool_result_tokens(
                 tool_results,
                 "inline_tokens",
                 16384,
@@ -180,7 +187,7 @@ def _validated_context(context):
                 100000,
                 "context.tool_results.inline_tokens",
             ),
-            "digest_tokens": _bounded_int(
+            "digest_tokens": _tool_result_tokens(
                 tool_results,
                 "digest_tokens",
                 512,
