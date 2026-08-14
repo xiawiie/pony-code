@@ -553,9 +553,9 @@ Live harness 的每个 designed turn 必须由 task state、report 与 trace 一
 缺失/不一致都必须使 Behavior gate 失败，并停止后续收费 turn。
 
 Harness 仅暴露 `read_file` 与 `memory_read` 两个只读工具：前者验证 workspace tool round-trip，后者允许模型按
-已注入的 Memory 索引读取命中笔记。每 turn 最多三个 tool step，为“读取 Memory、读取 workspace、返回结论”保留
-完成路径。Memory recall turn 固定为一次 `memory_read` 后返回结论；workspace tool round-trip 由独立 paged-read turn
-验证。它不暴露写入、shell、delegate 或 Memory 写入能力。
+已注入的 Memory 索引读取命中笔记。每 turn 最多三个 Agent step。Memory recall turn 固定为一次 `memory_read` 后
+返回结论；workspace tool round-trip 固定为首次 `read_file`、使用工具返回的 exact continuation 再读一次、然后返回
+Final。它不暴露写入、shell、delegate 或 Memory 写入能力。
 
 Live report 不应保存 prompt、answer、raw response、Key、header 或完整 URL；只记录 Provider、模型、exact SHA、固定 caps、
 行为标签、计数、usage、wall time 和稳定错误码。账号错误、配额、模型不可用与协议失败应明确区分。
