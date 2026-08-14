@@ -406,6 +406,16 @@ def _read_responses_stream(response_stream, callbacks):
         elif item_type == "response.output_item.done":
             _record_responses_item(seen_items, data, require_existing=True)
         elif item_type == "response.output_text.delta":
+            output_index = data.get("output_index")
+            content_index = data.get("content_index")
+            if (
+                type(output_index) is not int
+                or type(content_index) is not int
+                or output_index < 0
+                or content_index < 0
+                or seen_items.get(output_index, (None, None))[1] != "message"
+            ):
+                raise ValueError("invalid Responses text delta target")
             delta = data.get("delta")
             if not isinstance(delta, str):
                 raise ValueError("invalid Responses text delta")

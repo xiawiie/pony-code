@@ -213,8 +213,21 @@ def _equivalent_stream_cases():
     }
     responses_stream = _sse(
         (
+            "response.output_item.added",
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": response_item,
+            },
+        ),
+        (
             "response.output_text.delta",
-            {"type": "response.output_text.delta", "delta": "done"},
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "done",
+            },
         ),
         (
             "response.completed",
@@ -591,6 +604,43 @@ def test_responses_stream_never_previews_tool_arguments_or_reasoning(monkeypatch
     assert response.provider_state == [reasoning]
 
 
+def test_responses_stream_rejects_text_delta_for_non_message_item(monkeypatch):
+    tool = {
+        "id": "fc_1",
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "search",
+        "arguments": '{"pattern":"secret"}',
+    }
+    body = _sse(
+        (
+            "response.output_item.added",
+            {"type": "response.output_item.added", "output_index": 0, "item": tool},
+        ),
+        (
+            "response.output_text.delta",
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "secret\n",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        provider_transport,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _StreamResponse(body),
+    )
+    calls, committed, text = _callbacks()
+
+    with pytest.raises(ProviderTransportError) as caught:
+        _complete_stream(_responses_client(), committed, text)
+
+    assert calls == ["committed"]
+    assert caught.value.code == "provider_protocol_mismatch"
+
+
 def test_chat_stream_assembles_tool_usage_and_sends_stream_options(monkeypatch):
     body = _sse(
         (
@@ -729,7 +779,12 @@ def test_stream_callback_failure_does_not_change_final_response(monkeypatch):
         ),
         (
             "response.output_text.delta",
-            {"type": "response.output_text.delta", "delta": "done"},
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "done",
+            },
         ),
         (
             "response.completed",
