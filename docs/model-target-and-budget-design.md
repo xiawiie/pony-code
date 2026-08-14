@@ -633,8 +633,8 @@ Target 或扩大权限。
 
 ## 10. 分阶段实现与 worktree
 
-在干净、最新 `origin/main` 的集成分支上冻结本设计、`result_view` key/type、Streaming callback 合同和测试基线，再从 exact HEAD 创建四个独立
-worktree。当前 dirty/detached 设计 worktree 不用于生产合并。
+在已确认的干净集成 worktree 上冻结本设计、`result_view` key/type、Streaming callback 合同和测试基线，再从其 exact HEAD 创建四个独立
+worktree。基线必须显式记录并可复现，不要求先 fetch 或切换到 `origin/main`；当前 dirty/detached 设计 worktree 不用于生产合并。
 
 ### Worktree A：Model Target 与预算
 

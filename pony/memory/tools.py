@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pony.memory.block_store import BlockStore
 from pony.memory.retrieval import Retrieval
+from pony.tools.result_view import ResultPagePolicy, page_text
 
 
 def _rel_time(delta_seconds: float) -> str:
@@ -58,27 +59,30 @@ def tool_memory_list(context, args: dict) -> str:
     return "\n".join(lines)
 
 
-def tool_memory_read(context, args: dict) -> str:
+def tool_memory_read(
+    context,
+    args: dict,
+    *,
+    page_policy: ResultPagePolicy,
+):
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
         raise RuntimeError("memory_store unavailable")
     path = str(args.get("path", "")).strip()
-    start = int(args.get("start", 1) or 1)
-    end = int(args.get("end", 200) or 200)
-    if start < 1 or end < start:
-        raise ValueError("invalid line range")
-    if end - start + 1 > 200:
-        raise ValueError("memory_read accepts at most 200 lines")
-
-    raw = store.read(path)
-    lines = raw.splitlines()
-    slice_lines = lines[start - 1 : end]
-    numbered = [f"{start + i:>4}: {line}" for i, line in enumerate(slice_lines)]
-    footer = ""
-    if len(lines) > end:
-        footer = f"\n[... {len(lines) - end} more lines, use start/end for paging]"
-    header = f"# {path} (lines {start}-{min(end, len(lines))} of {len(lines)})\n"
-    return header + "\n".join(numbered) + footer
+    raw = store.read_verbatim(path)
+    return page_text(
+        raw,
+        locator={"path": path},
+        policy=page_policy,
+        start=int(args.get("start", 1)),
+        end=int(args["end"]) if args.get("end") is not None else None,
+        start_byte=(
+            int(args["start_byte"])
+            if args.get("start_byte") is not None
+            else None
+        ),
+        expected_sha256=args.get("expected_sha256"),
+    )
 
 
 def tool_memory_search(context, args: dict) -> str:

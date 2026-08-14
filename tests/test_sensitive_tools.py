@@ -553,7 +553,11 @@ def test_runner_result_is_redacted_before_clip_can_split_known_secret(tmp_path):
     )
     agent.tools["read_file"]["run"] = Mock(return_value="x" * 3990 + secret + "tail")
 
-    result = agent.execute_tool("read_file", {"path": "README.md"})
+    agent.begin_permission_turn()
+    try:
+        result = agent.execute_tool("read_file", {"path": "README.md"})
+    finally:
+        agent.end_permission_turn()
 
     assert secret not in result.content
     assert secret[:20] not in result.content

@@ -455,7 +455,7 @@ class BlockStore:
             len(data),
         )
 
-    def read(self, rel_path: str) -> str:
+    def _read_bytes(self, rel_path: str) -> bytes:
         target = self._resolve(rel_path)
         agent_owned = _is_agent_owned_path(rel_path)
         scope = "workspace" if rel_path.startswith("workspace/") else "user"
@@ -475,7 +475,14 @@ class BlockStore:
             MAX_MEMORY_FILE_BYTES,
             **read_options,
         )
-        return _decode_memory_text(data)
+        return data
+
+    def read(self, rel_path: str) -> str:
+        return _decode_memory_text(self._read_bytes(rel_path))
+
+    def read_verbatim(self, rel_path: str) -> str:
+        """Read model-visible memory text without normalizing line endings."""
+        return self._read_bytes(rel_path).decode("utf-8", errors="replace")
 
     def exists(self, rel_path: str) -> bool:
         try:
