@@ -4,9 +4,9 @@ Pony 的长会话模型由四层组成：模型能力与 token 账户、动态 C
 以及只改变 active view 的 compaction。Canonical history 永远保留在磁盘；模型只看到当前分支的
 summary + recent tail。
 
-本页记录当前已实现合同。把 opaque model id、protocol baseline、AgentModelContract 与 Pony request policy 分离的下一阶段
-设计见[任意型号零登记接入设计](model-target-and-budget-design.md)和
-[ADR-0051](adr/0051-model-compatibility-contract.md)；其状态为 Proposed。
+本页记录当前已实现合同。opaque model id、protocol baseline、AgentModelContract 与 Pony request policy 的分离设计见
+[任意型号零登记接入设计](model-target-and-budget-design.md)和
+[ADR-0051](adr/0051-model-compatibility-contract.md)。
 
 ## 1. ModelCapabilities 与总预算
 

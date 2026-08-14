@@ -2,14 +2,15 @@
 
 ## Status
 
-Proposed。完整方案见[Model Target、预算、工具结果与 TUI 设计](../model-target-and-budget-design.md)。
+Accepted and implemented for the unreleased Pony 1.0 line. 完整方案见
+[Model Target、预算、工具结果与 TUI 设计](../model-target-and-budget-design.md)。
 
 本 ADR 修订 `AGENTS.md` 中 Pony 1.0 不实现 streaming 的旧产品边界；Provider reasoning、tool argument preview、持久化
 partial transcript、请求取消、非 TTY streaming 和协议 fallback 仍不属于 Pony 1.0。
 
 ## Context
 
-Pony 的四个 production adapter 当前都等待完整 response body 后返回 `Response`。TUI 只能显示 `Working...`，用户看不到模型
+设计前，Pony 的四个 production adapter 都等待完整 response body 后返回 `Response`。TUI 只能显示 `Working...`，用户看不到模型
 是否开始生成，真实 TTFT 也不可观察。直接打印 wire delta 并不安全：secret、UTF-8 和协议对象可能跨 chunk，reasoning 与 tool
 arguments 也可能混在增量事件中；把 partial text 写入 Session 或 trace 会产生第二份、不完整且可能与 Final 冲突的 transcript。
 

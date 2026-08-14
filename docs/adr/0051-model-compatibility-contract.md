@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed。完整方案见[Model Target、预算、工具结果与 TUI 设计](../model-target-and-budget-design.md)。
+Accepted and implemented for the unreleased Pony 1.0 line. 完整方案见
+[Model Target、预算、工具结果与 TUI 设计](../model-target-and-budget-design.md)。
 
 本 ADR 修订：
 
@@ -118,5 +119,5 @@ TUI 又把 `tool_started` 显示为永久工具行、成功完成保持静默，
 - 大窗口获得真实可用的文件正文：常见仓库约 97% 文件单页完成，其余结果有准确 continuation。
 - 不可重放大输出只有在真实保存成功时才声称当前 turn 可恢复；历史 preview 明确标注过期，不把它描述成永久能力。
 - 用户能持续看见思考、工具运行、分页/截断、失败和下一次输入状态，不再把等待误认为 bug。
-- 实现需同步修改 model budget、tool schema/validation/runner、memory read、RunStore、Agent result shaping、TUI listener/render
-  及其聚焦测试；完整门禁和收费 live 验证仍是独立完成条件。
+- 实现已同步修改 model budget、tool schema/validation/runner、memory read、RunStore、Agent result shaping、TUI listener/render
+  及其聚焦测试；完整门禁和收费 live 验证仍是独立验收证据。

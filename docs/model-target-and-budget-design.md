@@ -1,6 +1,6 @@
 # Model Target、预算、工具结果与 TUI 设计
 
-- 状态：Proposed，尚未改变当前运行时行为
+- 状态：Accepted and implemented for the unreleased Pony 1.0 line
 - 日期：2026-08-14
 - 决策记录：[ADR-0051](adr/0051-model-compatibility-contract.md)、
   [ADR-0052](adr/0052-safe-streaming-preview.md)
@@ -9,6 +9,10 @@
 - 起因：[PR #16](https://github.com/xiawiie/pony-code/pull/16)
 
 ## 1. 最终结论
+
+实现已落地：型号 catalog/unknown warning 已删除；默认预算保持 `128000/16384`；工具结果采用有界分页和当前 Run
+恢复；TUI 已区分输入、模型、工具与 Answer；`--stream` 提供不持久化的安全文本 preview。完整离线门禁和收费 live
+仍按第 11.5 节作为 exact-HEAD 验证证据，不改变本设计的接受状态。
 
 最适合 Pony 的不是型号表、自动窗口探测或统一 OpenAI adapter，而是四条独立且可组合的合同：
 
@@ -771,10 +775,10 @@ A/B、C1 和 D1 可以并行；C2 明确依赖 B，D2 明确依赖 C 的单一 a
 9. 任一流事件后失败不重放，完整终态解码前绝不执行工具；
 10. Safe preview 对多行、短已知 secret 和跨行 PEM fail closed，不能依赖逐行 redactor 作出错误安全承诺。
 
-按这些条件，本方案通过设计 review，推荐进入实现。核心路径复用现有预算入口、RunStore、ToolExecutionResult metadata、
-listener 和行内 renderer，删除无价值的型号分类与 warning；非流式数据路径只新增一个共享页面值对象和一个严格受限的恢复
-工具。Streaming 作为独立 opt-in 切片，只增加有界 framing、四个 adapter 私有组装器和 request-scoped 安全 preview，不引入
-通用 Provider event model、第二 transcript、动态 registry 或新依赖。
+按这些条件，本方案已通过设计 review 并完成实现。核心路径复用现有预算入口、RunStore、ToolExecutionResult metadata、
+listener 和行内 renderer，删除无价值的型号分类与 warning；非流式数据路径只新增共享页面合同和严格受限的恢复工具。
+Streaming 是独立 opt-in 切片，只增加有界 framing、四个 adapter 私有组装器和 request-scoped 安全 preview，没有引入
+通用 Provider event model、第二 transcript、动态 registry 或新依赖。完整门禁与收费 live 是合并后的独立验收项。
 
 ## 13. 参考资料
 

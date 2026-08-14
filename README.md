@@ -128,6 +128,7 @@ pony doctor
 
 ```bash
 pony
+pony --stream
 pony run "inspect the failing tests and make the smallest safe fix"
 pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
@@ -136,7 +137,8 @@ pony --permission-mode plan run "inspect the repository and produce a plan"
 TUI 要求 stdin/stdout 为 TTY 且至少 112 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。低于 112 列返回稳定 usage
 error，不会静默进入纯文本或缩小版界面；112 列及以上只显示完整马形 Logo 与块状字标。只有非 TTY 自动化输入才使用纯文本
 REPL。
-`pony run` 不显示装饰性 banner。
+`pony run` 不显示装饰性 banner。`pony --stream`（等价于 `pony --stream repl`）只在完整交互 TUI 中启用安全文本
+preview；默认交互、one-shot、非 TTY 与管理命令仍使用 final-only。
 
 ## 配置与 Provider 路由
 
@@ -182,7 +184,7 @@ flowchart LR
 
 `PONY_MODEL` 是不透明路由值，不需要内置登记。未显式配置预算时，所有型号统一使用 Pony 的 128,000 context / 16,384
 output 请求策略；这不是对远端物理上限的声明。可在现有 CLI/`pony.toml` 中显式设置其他完整预算，例如
-256,000 / 32,768。Pony 不根据型号名称静默降档，也不把一次 `doctor --check-api` 结果写成永久 catalog。
+256,000 / 16,384。Pony 不根据型号名称静默降档，也不把一次 `doctor --check-api` 结果写成永久 catalog。
 
 OpenAI Responses 与 Chat Completions 共用认证、HTTP 和 function schema 等原语，但 wire protocol 不合并：两者的 endpoint、
 消息结构、tool continuation、opaque reasoning state 及 streaming event 都不同。`openai`/`auto` 对不明确 endpoint 优先探测
@@ -216,9 +218,10 @@ stateDiagram-v2
 | Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
 
 112 列及以上继续使用截图所示的完整尺寸马形 Logo 与 `PONY CODE` 字标，完整资产本身保持冻结；80/111 列要求扩宽，
-不显示 compact 替代版。用户消息为无标签的低对比块，Assistant 使用 `PONY` 锚点，输入区显示 `Message Pony`；footer
-展示真实运行状态、queue、已有 context 占用、permission 和具体 protocol/model。忙碌时的 Ctrl+C 只清除 queued
-next-turn input，并明确说明当前请求不会被取消；Pony 1.0 尚未实现 transport streaming/cancel。
+不显示 compact 替代版。用户消息为无标签的低对比块，Assistant Answer 使用 `Pony` 锚点，输入使用 `›` prompt；
+`Working...`、`Receiving...`、工具动作与结果各有明确状态，footer 展示仓库/分支、permission 和具体 protocol/model。
+`--stream` 只预览已脱敏的完整安全文本行，最终 Answer 仍只渲染并持久化一次。忙碌时的 Ctrl+C 只清除 queued
+next-turn input，并明确说明当前请求不会被取消；Pony 1.0 不实现 transport cancel。
 
 ## 并行 Worktree Agent
 

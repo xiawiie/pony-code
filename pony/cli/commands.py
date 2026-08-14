@@ -44,6 +44,7 @@ USAGE:
 
 EXAMPLES:
     pony
+    pony --stream
     pony init
     pony run "inspect the failing tests"
     pony --model claude-sonnet-4-6 run "inspect the failing tests"
@@ -83,6 +84,7 @@ Flags:
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
       --no-color   disable terminal colors
+      --stream     stream safe text previews in the full interactive TUI
       --permission-mode  permission mode: acceptEdits, auto, bypassPermissions,
                          manual, dontAsk, or plan
       --model            select this Session's model without changing .env

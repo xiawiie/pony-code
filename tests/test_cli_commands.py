@@ -543,6 +543,8 @@ def test_help_command_shows_examples(capsys):
     assert "pony\n" in out
     assert "also the default for bare `pony`" in out
     assert "--no-color" in out
+    assert "--stream" in out
+    assert "pony --stream" in out
     assert "--sandbox" not in out
     assert "sandbox      " not in out
     assert 'pony run "inspect the failing tests"' in out
