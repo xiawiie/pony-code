@@ -278,6 +278,8 @@ def validate_trace(events, *, run_id=None, task_id=None):
     terminal_tools = {}
     finished_tools = set()
     streaming_attempts = {}
+    streaming_requested_attempts = set()
+    streaming_terminal_attempts = set()
     for event in events:
         if not isinstance(event, dict) or not _TRACE_ENVELOPE_FIELDS.issubset(event):
             raise RunArtifactError("migration_required", "trace uses a legacy contract")
@@ -321,6 +323,15 @@ def validate_trace(events, *, run_id=None, task_id=None):
             else None
         )
         if streaming is not None:
+            if event_name not in {
+                "model_requested",
+                "action_decoded",
+                "model_turn",
+                "model_failed",
+            }:
+                raise RunArtifactError(
+                    "incomplete", "streaming request metadata is on an invalid event"
+                )
             attempt = event.get("attempt")
             if not _nonnegative_int(attempt) or attempt < 1:
                 raise RunArtifactError(
@@ -335,6 +346,22 @@ def validate_trace(events, *, run_id=None, task_id=None):
                 raise RunArtifactError(
                     "incomplete", "streaming request metadata is not initial"
                 )
+            if event_name == "model_requested":
+                if attempt in streaming_requested_attempts:
+                    raise RunArtifactError(
+                        "incomplete", "streaming attempt has duplicate initial state"
+                    )
+                streaming_requested_attempts.add(attempt)
+            elif attempt not in streaming_requested_attempts:
+                raise RunArtifactError(
+                    "incomplete", "streaming attempt has no initial state"
+                )
+            if event_name in {"model_turn", "model_failed"}:
+                if attempt in streaming_terminal_attempts:
+                    raise RunArtifactError(
+                        "incomplete", "streaming attempt has duplicate terminal state"
+                    )
+                streaming_terminal_attempts.add(attempt)
             if previous is not None and (
                 (previous["committed"] and not streaming["committed"])
                 or (previous["preview_emitted"] and not streaming["preview_emitted"])
@@ -407,6 +434,8 @@ def validate_trace(events, *, run_id=None, task_id=None):
         )
     if pending_tools:
         raise RunArtifactError("incomplete", "trace tool lifecycle is incomplete")
+    if streaming_requested_attempts != streaming_terminal_attempts:
+        raise RunArtifactError("incomplete", "streaming attempt lifecycle is incomplete")
     return events
 
 

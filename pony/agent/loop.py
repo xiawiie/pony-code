@@ -24,6 +24,7 @@ from pony.agent.streaming import SafeTextPreview
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
 from pony.security.command_policy import assess_command
+from pony.security.text import project_terminal_text
 from pony.state.task_state import (
     STOP_REASON_PERSISTENCE_ERROR,
     STATUS_RUNNING,
@@ -364,12 +365,15 @@ def _safe_tool_name(agent, name):
 
 def _sanitize_action(agent, action):
     if isinstance(action, FinalAction):
-        return replace(action, text=agent.redact_text(action.text)), None
+        return replace(
+            action,
+            text=project_terminal_text(action.text, agent.redact_text),
+        ), None
     if isinstance(action, RetryAction):
         return replace(
             action,
-            notice=agent.redact_text(action.notice),
-            excerpt=agent.redact_text(action.excerpt),
+            notice=project_terminal_text(action.notice, agent.redact_text),
+            excerpt=project_terminal_text(action.excerpt, agent.redact_text),
         ), None
 
     action = replace(action, name=_safe_tool_name(agent, action.name))
@@ -765,13 +769,6 @@ def _build_attempt_request(
                 },
             )
     recall_paths = list(request_metadata.pop("recall_commit_paths", []) or [])
-    if agent.stream_enabled:
-        request_metadata["streaming"] = {
-            "requested": True,
-            "committed": False,
-            "preview_emitted": False,
-            "first_preview_ms": None,
-        }
     agent.last_request_metadata = dict(request_metadata)
     if recall_paths:
         recent = list(agent.session.get("recently_recalled") or [])
@@ -803,6 +800,14 @@ def _build_attempt_request(
             "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
         },
     )
+    if agent.stream_enabled:
+        request_metadata["streaming"] = {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        }
+        agent.last_request_metadata = dict(request_metadata)
     if (
         attempts == 1
         and request_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS
@@ -1352,7 +1357,7 @@ def _run_agent_attempts(
             attempt_origin = "retry_action"
             continue
 
-        final = agent.redact_text(action.text)
+        final = action.text
         _commit_session(
             agent,
             messages=(_plain_message("assistant", final),),

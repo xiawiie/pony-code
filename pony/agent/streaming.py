@@ -4,7 +4,11 @@ import re
 import time
 
 from pony.security.redaction import MIN_SECRET_SUBSTRING_REDACTION_LENGTH
-from pony.security.text import sanitize_terminal_line
+from pony.security.text import (
+    contains_isolated_surrogate,
+    normalize_surrogate_pairs,
+    sanitize_terminal_security_line,
+)
 
 
 MAX_PREVIEW_LINE_BYTES = 64 * 1024
@@ -31,12 +35,18 @@ class SafeTextPreview:
         self._clock = clock
         self._started_at = clock()
         self._buffer = ""
-        self._snapshot = ""
+        self._raw_snapshot = ""
+        self._safe_snapshot = ""
+        raw_secret_values = tuple(str(value) for value in secret_values if value)
+        self._secret_values = tuple(
+            normalize_surrogate_pairs(value) for value in raw_secret_values
+        )
         self._disabled = any(
             "\r" in value
             or "\n" in value
             or len(value) < MIN_SECRET_SUBSTRING_REDACTION_LENGTH
-            for value in tuple(str(value) for value in secret_values if value)
+            or sanitize_terminal_security_line(value) != value
+            for value in raw_secret_values
         )
         self._committed = False
         self._preview_emitted = False
@@ -97,23 +107,40 @@ class SafeTextPreview:
         return None
 
     def _release_line(self, line):
+        if contains_isolated_surrogate(line):
+            self._disabled = True
+            self._buffer = ""
+            return
+        line = normalize_surrogate_pairs(line)
         try:
             line_bytes = len(line.encode("utf-8"))
         except (UnicodeEncodeError, UnicodeError):
             line_bytes = MAX_PREVIEW_LINE_BYTES + 1
-        if line_bytes > MAX_PREVIEW_LINE_BYTES or _PRIVATE_KEY_BEGIN.search(line):
+        if line_bytes > MAX_PREVIEW_LINE_BYTES:
             self._disabled = True
             self._buffer = ""
             return
         try:
-            safe_line = sanitize_terminal_line(self._redact_text(line))
-            snapshot = "\n".join(part for part in (self._snapshot, safe_line) if part)
-            snapshot_bytes = len(snapshot.encode("utf-8"))
+            raw_snapshot = "\n".join((self._raw_snapshot, line)).lstrip("\n")
+            if len(raw_snapshot.encode("utf-8")) > MAX_PREVIEW_LINE_BYTES:
+                raise ValueError("preview snapshot too large")
+            projected = sanitize_terminal_security_line(raw_snapshot)
+            if _PRIVATE_KEY_BEGIN.search(projected):
+                raise ValueError("private key preview")
+            safe_snapshot = sanitize_terminal_security_line(
+                self._redact_text(projected)
+            )
+            if _PRIVATE_KEY_BEGIN.search(safe_snapshot) or any(
+                value in safe_snapshot for value in self._secret_values
+            ):
+                raise ValueError("unsafe preview projection")
+            snapshot_bytes = len(safe_snapshot.encode("utf-8"))
         except Exception:
             self._disabled = True
             self._buffer = ""
             return
-        if not safe_line:
+        self._raw_snapshot = raw_snapshot
+        if not safe_snapshot or safe_snapshot == self._safe_snapshot:
             return
         if snapshot_bytes > MAX_PREVIEW_LINE_BYTES:
             self._disabled = True
@@ -124,13 +151,13 @@ class SafeTextPreview:
             self._disabled = True
             return
         try:
-            displayed = callback(snapshot) is True
+            displayed = callback(safe_snapshot) is True
         except Exception:
             displayed = False
         if not displayed:
             self._disabled = True
             return
-        self._snapshot = snapshot
+        self._safe_snapshot = safe_snapshot
         if not self._preview_emitted:
             self._preview_emitted = True
             elapsed = max(0.0, self._clock() - self._started_at)

@@ -21,6 +21,7 @@ from prompt_toolkit.shortcuts import choice, CompleteStyle
 from pony.cli.help import SLASH_COMMANDS
 from pony.cli.input_queue import InputQueue
 from pony.runtime.resume import active_prompt_history
+from pony.security.text import normalize_surrogate_pairs
 from pony.tools.permissions import display_permission_mode
 from pony.tui.render import FULL_TUI_MINIMUM_COLUMNS, TuiRenderer
 
@@ -54,13 +55,7 @@ def _session_terminal_columns(session):
 
 
 def _normalize_prompt_text(value):
-    text = str(value)
-    if not any("\ud800" <= character <= "\udfff" for character in text):
-        return text
-    return text.encode("utf-16-le", "surrogatepass").decode(
-        "utf-16-le",
-        "replace",
-    )
+    return normalize_surrogate_pairs(value)
 
 
 class _PromptTextAssembler:

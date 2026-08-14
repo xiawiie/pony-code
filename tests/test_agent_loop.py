@@ -627,11 +627,13 @@ def test_streaming_preview_metadata_is_initial_then_terminal(tmp_path):
     assert committed == [True]
     assert previews == [
         "PREVIEW_ONLY_SENTINEL",
-        "PREVIEW_ONLY_SENTINEL\nsecond",
+        "PREVIEW_ONLY_SENTINEL second",
     ]
     events = read_trace(agent)
     requested = next(event for event in events if event["event"] == "model_requested")
     turn = next(event for event in events if event["event"] == "model_turn")
+    prompt_built = next(event for event in events if event["event"] == "prompt_built")
+    assert "streaming" not in prompt_built["request_metadata"]
     assert requested["request_metadata"]["streaming"] == {
         "requested": True,
         "committed": False,
@@ -651,6 +653,37 @@ def test_streaming_preview_metadata_is_initial_then_terminal(tmp_path):
     ).read_text(encoding="utf-8")
     assert "PREVIEW_ONLY_SENTINEL" not in json.dumps(report)
     assert "PREVIEW_ONLY_SENTINEL" not in json.dumps(listener_events)
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    ("\x00", "\u200b", "\u202e", "\ufe0f", "\u0301"),
+)
+def test_final_answer_redacts_secrets_reassembled_by_terminal_projection(
+    tmp_path,
+    hidden,
+):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": f"secret-{hidden}value"}],
+                usage={},
+            )
+        ]
+    )
+    agent = build_native_agent(
+        tmp_path,
+        provider,
+        redaction_env={"MODEL_SECRET": "secret-value"},
+        secret_env_names=frozenset({"MODEL_SECRET"}),
+        trusted_redaction_env=True,
+    )
+
+    final = agent.ask("finish")
+
+    assert "secret-value" not in final
+    assert "secret-value" not in agent.session_path.read_text(encoding="utf-8")
 
 
 def test_streaming_metadata_restarts_for_each_tool_followup_attempt(tmp_path):
