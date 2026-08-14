@@ -37,6 +37,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- `read_file` 与 `memory_read` 的模型可见合同现在明确 1-based inclusive 分页、默认 1-200 行和单次 200 行上限；
+  `memory_read` 的 validator 与 runner 同步落实该上限，live digest turn 固定省略范围参数以验证默认分页和 native tool round-trip。
 - 任意合法 model id 现在零 catalog 接入，不再触发 unknown-model warning；统一默认预算保持 128K context / 16K output，
   显式 256K/32K 等覆盖继续可用，非法 `pony.toml` 默认值不再冒充项目配置来源。
 - 预算组合在 config snapshot 边界联合校验；32K/16K 自动 compaction 会按 input limit 缩小 tail，child runtime 保留

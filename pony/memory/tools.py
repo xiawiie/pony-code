@@ -63,11 +63,15 @@ def tool_memory_read(context, args: dict) -> str:
     if store is None:
         raise RuntimeError("memory_store unavailable")
     path = str(args.get("path", "")).strip()
-    raw = store.read(path)
-
-    lines = raw.splitlines()
     start = int(args.get("start", 1) or 1)
     end = int(args.get("end", 200) or 200)
+    if start < 1 or end < start:
+        raise ValueError("invalid line range")
+    if end - start + 1 > 200:
+        raise ValueError("memory_read accepts at most 200 lines")
+
+    raw = store.read(path)
+    lines = raw.splitlines()
     slice_lines = lines[start - 1 : end]
     numbered = [f"{start + i:>4}: {line}" for i, line in enumerate(slice_lines)]
     footer = ""

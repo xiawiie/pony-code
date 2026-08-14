@@ -555,6 +555,15 @@ def test_main_constructs_live_pony_with_read_only_workspace_and_memory_tools(
     assert captured["options"].project_trusted is True
 
 
+def test_tool_digest_prompt_uses_the_default_bounded_page():
+    prompt = run_live_session._TOOL_DIGEST_PROMPT
+
+    assert run_live_session.TOOL_DIGEST_FIXTURE_REL.as_posix() in prompt
+    assert "with only the path argument" in prompt
+    assert "Omit start and end" in prompt
+    assert "default 1-200 line range" in prompt
+
+
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
     trace = tmp_path / "trace.jsonl"
     trace.write_text(

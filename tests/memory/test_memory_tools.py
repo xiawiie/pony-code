@@ -61,6 +61,28 @@ def test_read_supports_paging(tmp_path):
     assert "line200" not in out
 
 
+def test_read_runner_rejects_more_than_200_lines(tmp_path):
+    ctx = _context(tmp_path)
+
+    with pytest.raises(ValueError, match="memory_read accepts at most 200 lines"):
+        tool_memory_read(
+            ctx,
+            {"path": "workspace/notes/big.md", "start": 250, "end": 450},
+        )
+
+
+def test_read_validator_rejects_more_than_200_lines(tmp_path):
+    from pony.tools.validation import validate_tool
+
+    ctx = _context(tmp_path)
+    with pytest.raises(ValueError, match="memory_read accepts at most 200 lines"):
+        validate_tool(
+            ctx,
+            "memory_read",
+            {"path": "workspace/notes/big.md", "start": 250, "end": 450},
+        )
+
+
 def test_read_missing_raises(tmp_path):
     ctx = _context(tmp_path)
     with pytest.raises(FileNotFoundError):

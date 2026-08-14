@@ -53,7 +53,11 @@ BASE_TOOL_SPECS = {
         "schema": {"path": "str", "start": "int=1", "end": "int=200"},
         "risky": False,
         "effect_class": "read_only",
-        "description": "Read a UTF-8 file by line range.",
+        "description": (
+            "Read a UTF-8 file with 1-based inclusive line numbers. "
+            "Omit start and end to read lines 1-200. Each call may span at most "
+            "200 lines (end - start + 1 <= 200); use another call for later pages."
+        ),
     },
     "search": {
         "schema": {"pattern": "str", "path": "str='.'"},
@@ -89,7 +93,11 @@ BASE_TOOL_SPECS = {
         "schema": {"path": "str", "start": "int=1", "end": "int=200"},
         "risky": False,
         "effect_class": "read_only",
-        "description": "Read a memory file by line range. Same paging as read_file.",
+        "description": (
+            "Read a memory file with 1-based inclusive line numbers. "
+            "Omit start and end to read lines 1-200. Each call may span at most "
+            "200 lines (end - start + 1 <= 200); use another call for later pages."
+        ),
     },
     "memory_search": {
         "schema": {"query": "str", "limit": "int=5"},

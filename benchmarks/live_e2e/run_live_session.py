@@ -316,6 +316,13 @@ TOOL_DIGEST_FIXTURE_REL = Path(
     "benchmarks/live_e2e/fixtures/live_tool_digest_fixture.txt"
 )
 TOOL_DIGEST_FIXTURE_TEXT = "digest-fixture-token " * 5_000 + "\n"
+_TOOL_DIGEST_PROMPT = (
+    "Call the API-provided native read_file tool exactly once with only the path "
+    f"argument set to {TOOL_DIGEST_FIXTURE_REL.as_posix()}. Omit start and end so "
+    "the tool uses its default 1-200 line range. After its result, do not call any "
+    "tool again. The result may be a [digest] summary; treat that digest as complete "
+    "evidence and return a concise final summary. Do not emit XML tool text."
+)
 PONY_TOML_REL = Path("pony.toml")
 BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pony.toml.bak")
 COMPACTION_FIXTURE_MESSAGES = 80
@@ -2504,13 +2511,6 @@ def main() -> int:
     pony_root = repo_root / ".pony"
     artifact_baseline = snapshot_private_artifacts(pony_root)
 
-    digest_fixture = TOOL_DIGEST_FIXTURE_REL.as_posix()
-    tool_prompt = (
-        "Call the API-provided native read_file tool exactly once for "
-        f"{digest_fixture}. After its result, do not call any tool again. The result "
-        "may be a [digest] summary; treat that digest as complete evidence and return "
-        "a concise final summary. Do not emit XML tool text."
-    )
     turns = [
         (
             1,
@@ -2521,7 +2521,7 @@ def main() -> int:
         ),
         (
             2,
-            tool_prompt,
+            _TOOL_DIGEST_PROMPT,
             "provider_tool_roundtrip",
         ),
         (
