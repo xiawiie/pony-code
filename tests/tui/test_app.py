@@ -541,6 +541,58 @@ def test_startup_resize_repaint_does_not_clear_other_platforms(monkeypatch):
     assert handlers == []
 
 
+def test_runtime_resize_reprojects_the_full_activity_source(monkeypatch):
+    handlers = []
+    output = []
+    terminal = io.StringIO()
+    columns = {"value": 120}
+
+    class Event:
+        def __iadd__(self, handler):
+            handlers.append(handler)
+            return self
+
+    app = SimpleNamespace(
+        after_render=Event(),
+        output=SimpleNamespace(
+            get_size=lambda: SimpleNamespace(columns=columns["value"])
+        ),
+    )
+    session = SimpleNamespace(app=app)
+    monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
+    monkeypatch.setattr(
+        "pony.tui.render._terminal_columns",
+        lambda: columns["value"],
+    )
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(
+            "".join(fragment[1] for fragment in value)
+        ),
+    )
+    renderer = TuiRenderer(no_color=True)
+    long_path = "deep/" + "directory/" * 9 + "file.py"
+    renderer.trace(
+        {"event": "tool_started", "name": "read_file", "args": {"path": long_path}}
+    )
+    full_projection = output[-1]
+
+    tui_app._install_activity_resize_repaint(
+        session,
+        lambda _app, width: renderer.resize(width),
+    )
+    columns["value"] = 80
+    handlers[0](app)
+    narrow_projection = output[-1]
+    columns["value"] = 120
+    handlers[0](app)
+
+    assert narrow_projection.endswith("...")
+    assert get_cwidth(narrow_projection) < 80
+    assert output[-1] == full_projection
+    assert renderer._activity_source == f"Reading {long_path}..."
+
+
 def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
     calls = []
     agent = SimpleNamespace()
@@ -769,6 +821,9 @@ def test_busy_ctrl_c_clears_queue_but_current_turn_continues(monkeypatch):
     release = threading.Event()
     current_finished = threading.Event()
     notice_visible = threading.Event()
+    queue_visible = threading.Event()
+    queue_activity_restored = threading.Event()
+    notice_activity_restored = threading.Event()
     prompts = queue.Queue()
     calls = []
 
@@ -794,14 +849,22 @@ def test_busy_ctrl_c_clears_queue_but_current_turn_continues(monkeypatch):
 
     def write(value, **_kwargs):
         text = "".join(fragment[1] for fragment in value)
+        if "queue: 1 pending; turn active" in text:
+            queue_visible.set()
         if "request cancellation is unavailable" in text:
             notice_visible.set()
+        if text == "Working...":
+            if notice_visible.is_set():
+                notice_activity_restored.set()
+            elif queue_visible.is_set():
+                queue_activity_restored.set()
 
-    def handle_input(_agent, text, **_kwargs):
+    def handle_input(received, text, **_kwargs):
         if text == "/exit":
             return 0
         calls.append(text)
         if text == "active":
+            received._trace_listener({"event": "model_requested"})
             assert release.wait(timeout=3)
             current_finished.set()
 
@@ -819,8 +882,11 @@ def test_busy_ctrl_c_clears_queue_but_current_turn_continues(monkeypatch):
     while calls != ["active"]:
         threading.Event().wait(0.01)
     prompts.put("queued")
+    prompts.put("/queue")
+    assert queue_activity_restored.wait(timeout=3)
     prompts.put(KeyboardInterrupt())
     assert notice_visible.wait(timeout=3)
+    assert notice_activity_restored.wait(timeout=3)
     release.set()
     assert current_finished.wait(timeout=3)
     prompts.put("/exit")
@@ -976,13 +1042,11 @@ def test_toolbar_only_shows_repository_permission_and_model(monkeypatch):
     )
     renderer = TuiRenderer(no_color=True)
 
-    def footer(*, busy=False, pending=0):
+    def footer():
         rendered = renderer.toolbar(
             agent,
             model="gpt-test",
             columns=140,
-            busy=busy,
-            pending=pending,
         )
         return "".join(fragment[1] for fragment in rendered).splitlines()[-1]
 
@@ -1003,7 +1067,7 @@ def test_toolbar_only_shows_repository_permission_and_model(monkeypatch):
         created_at="now",
     )
     renderer.trace(prompt_built)
-    rendered = footer(busy=True, pending=1)
+    rendered = footer()
     assert "repo (main)" in rendered
     assert "auto · openai/responses/gpt-test" in rendered
     for hidden in ("Preparing", "Waiting", "queue", "ctx", "Working"):
@@ -1202,6 +1266,9 @@ def test_editor_header_combines_runtime_width_and_queue_state():
     (
         ("read_file", {"path": "src/app.py"}, "Reading src/app.py..."),
         ("read_file", {"path": "C:\\private\\secret.py"}, "Reading secret.py..."),
+        ("read_file", {"path": "C:\\"}, "Reading [path]..."),
+        ("read_file", {"path": "\\\\server\\share\\"}, "Reading [path]..."),
+        ("read_file", {"path": "/"}, "Reading [path]..."),
         ("memory_read", {"path": "notes.md"}, "Reading notes.md..."),
         ("read_tool_result", {"raw_result_id": "hidden"}, "Reading tool result..."),
         ("list_files", {"path": "src"}, "Listing src..."),
@@ -1255,6 +1322,65 @@ def test_tool_result_waits_for_the_next_model_request_before_working(monkeypatch
     assert "".join(fragment[1] for fragment in output[-1]) == "Working..."
 
 
+@pytest.mark.parametrize(
+    ("name", "args", "status", "error_code", "expected"),
+    (
+        (
+            "run_shell",
+            {"command": "private command"},
+            "ok",
+            "",
+            "✓ run shell command\n",
+        ),
+        (
+            "run_shell",
+            {"command": "private command"},
+            "error",
+            "shell_failed",
+            "× error · code=shell_failed · run shell command\n",
+        ),
+        (
+            "read_tool_result",
+            {"raw_result_id": "raw_private_id"},
+            "partial_success",
+            "tool_partial_success",
+            "! partial_success · code=tool_partial_success · read tool result\n",
+        ),
+    ),
+)
+def test_tool_receipt_keeps_status_front_and_omits_raw_data(
+    monkeypatch,
+    name,
+    args,
+    status,
+    error_code,
+    expected,
+):
+    output = []
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr("pony.tui.render._terminal_columns", lambda: 80)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.trace({"event": "tool_started", "name": name, "args": args})
+    renderer.trace(
+        {
+            "event": "tool_executed",
+            "tool_status": status,
+            "tool_error_code": error_code,
+            "result": "private raw result",
+        }
+    )
+
+    receipt = "".join(fragment[1] for fragment in output[-1])
+    assert receipt == expected
+    for hidden in ("private command", "raw_private_id", "private raw result"):
+        assert hidden not in receipt
+
+
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
     output = []
     terminal = io.StringIO()
@@ -1294,6 +1420,7 @@ def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
             "event": "tool_executed",
             "name": "search",
             "tool_status": "error",
+            "tool_error_code": "permission_denied",
             "result": "permission denied",
         }
     )
@@ -1301,7 +1428,8 @@ def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
         fragment[1] for value, _kwargs in output for fragment in value
     )
     assert "ckpt_hidden" not in rendered
-    assert "permission denied" in rendered
+    assert "× error · code=permission_denied" in rendered
+    assert "permission denied" not in rendered
 
 
 def test_user_block_keeps_a_plain_side_rail_and_hides_terminal_controls(monkeypatch):

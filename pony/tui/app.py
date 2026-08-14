@@ -156,6 +156,30 @@ def _install_startup_resize_repaint(session, startup_is_visible):
     return repaint
 
 
+def _install_activity_resize_repaint(session, on_resize):
+    app = getattr(session, "app", None)
+    after_render = getattr(app, "after_render", None)
+    columns = _application_terminal_columns(app)
+    if after_render is None or columns is None:
+        return None
+
+    previous_columns = columns
+
+    def repaint(resized_app):
+        nonlocal previous_columns
+        columns = resized_app.output.get_size().columns
+        if columns == previous_columns:
+            return
+        previous_columns = columns
+        try:
+            on_resize(resized_app, columns)
+        except Exception:  # resize repaint cannot replace the active turn outcome
+            pass
+
+    after_render += repaint
+    return repaint
+
+
 class _CompactPromptSession(PromptSession):
     """Keep the multiline editor inline with native terminal scrollback."""
 
@@ -406,6 +430,23 @@ def run_tui(
         )
         return future.result()
 
+    def schedule_activity_resize(resized_app, _columns):
+        async def repaint_in_terminal():
+            def repaint():
+                with ui_lock:
+                    renderer.resize(resized_app.output.get_size().columns)
+
+            try:
+                return await run_in_terminal(repaint)
+            except Exception:  # resize repaint cannot replace the active turn outcome
+                return None
+
+        loop = getattr(resized_app, "loop", None)
+        if loop is not None and getattr(resized_app, "is_running", False):
+            loop.create_task(repaint_in_terminal())
+
+    _install_activity_resize_repaint(session, schedule_activity_resize)
+
     wake_result = object()
 
     def wake_prompt():
@@ -515,7 +556,26 @@ def run_tui(
 
     def render_status(text):
         if not str(text).startswith("queued for next turn: "):
-            call_ui(renderer.notice, text)
+            call_ui(
+                renderer.notice,
+                text,
+                restore_activity=input_queue.busy,
+            )
+
+    def render_user(text):
+        call_ui(
+            renderer.user,
+            text,
+            restore_activity=input_queue.busy,
+        )
+
+    def render_error(text):
+        call_ui(
+            renderer.notice,
+            text,
+            error=True,
+            restore_activity=input_queue.busy,
+        )
 
     from pony.cli.start import _raise_or_return_terminal, _route_repl_input
 
@@ -542,8 +602,6 @@ def run_tui(
                         bottom_toolbar=lambda: renderer.toolbar(
                             agent,
                             model=model,
-                            busy=input_queue.busy,
-                            pending=input_queue.pending_count,
                         ),
                     )
                 )
@@ -561,7 +619,8 @@ def run_tui(
                     call_ui(
                         renderer.notice,
                         "current turn continues (request cancellation is unavailable); "
-                        f"cleared {removed} queued next-turn input(s)"
+                        f"cleared {removed} queued next-turn input(s)",
+                        restore_activity=True,
                     )
                     continue
                 if hasattr(exc, "signal_number"):
@@ -581,13 +640,9 @@ def run_tui(
                 input_queue,
                 user_input,
                 process_local=process_local,
-                render_user=lambda text: call_ui(renderer.user, text),
+                render_user=render_user,
                 render_status=render_status,
-                render_error=lambda text: call_ui(
-                    renderer.notice,
-                    text,
-                    error=True,
-                ),
+                render_error=render_error,
                 confirmation_shown=confirmation is not None,
             )
             refresh_history()

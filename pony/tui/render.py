@@ -292,12 +292,14 @@ def _display_path(value):
     path = _one_line(value) or "."
     windows_path = PureWindowsPath(path)
     posix_path = PurePosixPath(path)
-    if windows_path.drive or windows_path.is_absolute() or posix_path.is_absolute():
-        return windows_path.name or posix_path.name or "[path]"
+    if windows_path.drive or windows_path.is_absolute():
+        return windows_path.name or "[path]"
+    if posix_path.is_absolute():
+        return posix_path.name or "[path]"
     return path
 
 
-def _tool_summary(name, args, width):
+def _tool_summary(name, args):
     name = _one_line(name) or "tool"
     args = args if isinstance(args, dict) else {}
     path = _display_path(args.get("path", "."))
@@ -308,7 +310,7 @@ def _tool_summary(name, args, width):
     elif name == "search":
         summary = f"search {_quoted(args.get('pattern', ''))} in {path}"
     elif name == "run_shell":
-        summary = f"$ {_one_line(args.get('command', ''))}"
+        summary = "run shell command"
     elif name == "write_file":
         summary = f"write {path}"
     elif name == "patch_file":
@@ -322,6 +324,8 @@ def _tool_summary(name, args, width):
     elif name == "memory_save":
         scope = _one_line(args.get("scope", "workspace")) or "workspace"
         summary = f"save {scope} memory"
+    elif name == "read_tool_result":
+        summary = "read tool result"
     elif name == "repo_lookup":
         summary = f"look up {_one_line(args.get('symbol', 'symbol'))}"
     elif name == "delegate":
@@ -330,10 +334,10 @@ def _tool_summary(name, args, width):
         summary = "run isolated worktree agents"
     else:
         summary = name
-    return _truncate(summary, max(1, width - 2))
+    return summary
 
 
-def _tool_activity(name, args, width):
+def _tool_activity(name, args):
     name = _one_line(name) or "tool"
     args = args if isinstance(args, dict) else {}
     path = _display_path(args.get("path", "."))
@@ -359,7 +363,7 @@ def _tool_activity(name, args, width):
         text = "Delegating..."
     else:
         text = f"Running {name}..."
-    return _truncate(text, max(1, width))
+    return text
 
 
 class TuiRenderer:
@@ -370,6 +374,7 @@ class TuiRenderer:
         self._activity_visible = False
         self._activity_width = 0
         self._activity_text = ""
+        self._activity_source = ""
         self._active_tool = ""
         self._active_tool_activity = ""
 
@@ -401,7 +406,7 @@ class TuiRenderer:
     def header(self, agent, *, model, columns=None):
         self._write(self.welcome(agent, model=model, columns=columns))
 
-    def toolbar(self, agent, *, model, columns=None, busy=False, pending=0):
+    def toolbar(self, agent, *, model, columns=None):
         width = _terminal_width(columns)
         branch = _one_line(getattr(agent.workspace, "branch", "-") or "-")
         workspace = _one_line(getattr(agent.workspace, "cwd", "-"))
@@ -486,9 +491,12 @@ class TuiRenderer:
         self._clear_activity()
         self._write(self.resume_card(projection))
 
-    def user(self, text, *, columns=None):
+    def user(self, text, *, columns=None, restore_activity=False):
+        activity = self._activity_source if restore_activity else ""
         self._clear_activity()
         self._write(_user_block(text, _terminal_width(columns)))
+        if activity:
+            self._show_activity(activity)
 
     def turn_started(self, text, *, columns=None):
         self.user(text, columns=columns)
@@ -526,7 +534,7 @@ class TuiRenderer:
                         "",
                         _approval_detail(
                             "action",
-                            _tool_summary(safe_name, args, width),
+                            _tool_summary(safe_name, args),
                             width,
                         ),
                     ),
@@ -546,16 +554,15 @@ class TuiRenderer:
         if event == "model_requested":
             self._show_activity("Working...")
         elif event == "tool_started":
-            width = _terminal_width()
             name = envelope.get("name", "tool")
             args = envelope.get("args", {})
-            self._active_tool = _tool_summary(name, args, width)
-            self._active_tool_activity = _tool_activity(name, args, width)
+            self._active_tool = _tool_summary(name, args)
+            self._active_tool_activity = _tool_activity(name, args)
             self._show_activity(self._active_tool_activity)
         elif event == "tool_executed":
             self._clear_activity()
             status = str(envelope.get("tool_status", ""))
-            self._tool_receipt(status, envelope.get("result", ""))
+            self._tool_receipt(status, envelope.get("tool_error_code", ""))
             self._active_tool = ""
             self._active_tool_activity = ""
         elif event in {"context_compacted", "context_recovery"}:
@@ -565,64 +572,81 @@ class TuiRenderer:
         elif event == "finalization_failed":
             self._clear_activity()
         elif event == "tool_interrupted":
-            self._tool_receipt("interrupted", "")
+            self._tool_receipt("interrupted", envelope.get("tool_error_code", ""))
             self._active_tool = ""
             self._active_tool_activity = ""
         elif event == "run_finished":
             self._clear_activity()
 
-    def notice(self, text, *, error=False):
+    def notice(self, text, *, error=False, restore_activity=False):
+        activity = self._activity_source if restore_activity else ""
         self._clear_activity()
         style = "class:error" if error else "class:activity"
         prefix = "error: " if error else ""
         safe_text = sanitize_terminal_text(text).strip()
         self._write(FormattedText([(style, f"\n{prefix}{safe_text}\n")]))
+        if activity:
+            self._show_activity(activity)
 
     def close(self):
         self._clear_activity(newline=True)
 
-    def _show_activity(self, text):
-        if self._activity_visible and self._activity_text == text:
+    def resize(self, columns):
+        if not self._activity_visible:
+            return
+        source = self._activity_source
+        projected = _truncate(source, _terminal_width(columns))
+        if projected == self._activity_text:
+            return
+        self._clear_activity(columns=columns)
+        self._show_activity(source, columns=columns)
+
+    def _show_activity(self, text, *, columns=None):
+        source = str(text)
+        projected = _truncate(source, _terminal_width(columns))
+        if self._activity_visible and self._activity_text == projected:
+            self._activity_source = source
             return
         self._clear_activity()
         self._activity_visible = True
-        self._activity_width = get_cwidth(text)
-        self._activity_text = text
+        self._activity_width = get_cwidth(projected)
+        self._activity_text = projected
+        self._activity_source = source
         self._write(
-            FormattedText([("class:activity", text)]),
+            FormattedText([("class:activity", projected)]),
             end="",
             flush=True,
         )
 
-    def _clear_activity(self, *, newline=False):
+    def _clear_activity(self, *, newline=False, columns=None):
         if not self._activity_visible:
             return
         suffix = "\n" if newline else ""
-        clear_width = min(self._activity_width, _terminal_width())
+        clear_width = min(self._activity_width, _terminal_width(columns))
         sys.stdout.write(f"\r{' ' * clear_width}\r{suffix}")
         sys.stdout.flush()
         self._activity_visible = False
         self._activity_width = 0
         self._activity_text = ""
+        self._activity_source = ""
 
-    def _tool_receipt(self, status, result):
+    def _tool_receipt(self, status, error_code):
         self._clear_activity()
         width = _terminal_width()
         summary = self._active_tool or "tool"
-        detail = _one_line(result)
-        suffix = f" · {status}"
-        if detail:
-            suffix += f" · {detail}"
         marker = "✓" if status == "ok" else "!" if status == "partial_success" else "×"
         style = "class:tool" if status == "ok" else "class:tool.error"
+        prefix = marker
+        if status != "ok":
+            prefix += f" {(_one_line(status) or 'error')}"
+            safe_code = _one_line(error_code)
+            if safe_code:
+                prefix += f" · code={safe_code}"
+        separator = " " if status == "ok" else " · "
+        available = width - get_cwidth(prefix) - get_cwidth(separator)
+        receipt = prefix
+        if summary and available > 3:
+            receipt += separator + _truncate(summary, available)
         self._write(
-            FormattedText(
-                [
-                    (
-                        style,
-                        f"{marker} "
-                        f"{_truncate(summary + ('' if status == 'ok' else suffix), width - 2)}\n",
-                    )
-                ]
-            )
+            FormattedText([(style, f"{receipt}\n")])
         )
