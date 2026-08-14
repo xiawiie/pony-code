@@ -41,6 +41,23 @@ class _StreamResponse:
         return self.read(size)
 
 
+class _LineOnlyBlockingResponse:
+    def __init__(self, lines):
+        self._lines = iter(lines)
+        self.readline_calls = 0
+
+    def read(self, *_args):
+        raise AssertionError("stream framing must not use bulk read")
+
+    def readline(self, size):
+        assert size == provider_transport.MAX_PROVIDER_STREAM_LINE_BYTES + 2
+        self.readline_calls += 1
+        try:
+            return next(self._lines)
+        except StopIteration:
+            raise AssertionError("stream framing waited for EOF before yielding") from None
+
+
 def _sse(*events):
     parts = []
     for event_name, value in events:
@@ -838,6 +855,22 @@ def test_sse_and_ndjson_framing_limits_are_exact(monkeypatch):
     with pytest.raises(ProviderTransportError) as body_too_large:
         list(provider_transport._iter_ndjson_events(_StreamResponse(b"{}\n{}\nX"), family="Test"))
     assert body_too_large.value.code == "response_too_large"
+
+
+def test_line_oriented_framing_yields_without_bulk_read_or_eof():
+    sse_response = _LineOnlyBlockingResponse([b"data: first\n", b"\n"])
+    sse_events = provider_transport._iter_sse_events(sse_response, family="Test")
+
+    assert next(sse_events) == (None, "first")
+    assert sse_response.readline_calls == 2
+
+    ndjson_response = _LineOnlyBlockingResponse([b'{"value":1}\n'])
+    ndjson_events = provider_transport._iter_ndjson_events(
+        ndjson_response, family="Test"
+    )
+
+    assert next(ndjson_events) == {"value": 1}
+    assert ndjson_response.readline_calls == 1
 
 
 def test_stream_framing_rejects_invalid_utf8_missing_terminator_and_event_overflow(monkeypatch):
