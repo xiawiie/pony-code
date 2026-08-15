@@ -54,6 +54,9 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   compatible Chat 保持 `max_tokens`，官方 Chat endpoint 按当前协议使用 `max_completion_tokens`，官方 Responses 对 future
   model 保持 stateless reasoning continuation；strict schema 不再把本地 `default` 注解发送给服务端，所有字段均不按未知
   model name 猜测。
+- OpenAI-compatible Responses streaming 允许 terminal object 省略已流式发送的 reasoning 和非语义 output item id；终态仍是
+  可见内容与工具调用的唯一权威，启用 reasoning replay 时只补回已完成的 opaque provider state，并继续拒绝语义 identity
+  漂移。
 - TUI 在 80/111 列稳定拒绝，112 列及以上保留冻结的完整马形资产；无标签用户块、`Pony` Answer、`›` 输入、
   `Working`/`Receiving`/工具回执和 permission/protocol-model footer 让聊天与运行阶段可辨识。busy Ctrl+C 明确不取消当前
   请求，approval UI 异常继续 fail closed；运行中缩窄保留输入并有界渲染，transport cancel 仍未实现。

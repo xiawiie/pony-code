@@ -315,6 +315,7 @@ def _decode_responses_response(
     *,
     optional_by_name,
     replay_reasoning,
+    omitted_reasoning=(),
 ):
     if "choices" in data or data.get("error") or data.get("status") == "failed":
         raise ValueError("not a successful Responses object")
@@ -323,6 +324,8 @@ def _decode_responses_response(
         optional_by_name=optional_by_name,
         preserve_reasoning=replay_reasoning,
     )
+    if replay_reasoning and not provider_state and omitted_reasoning:
+        provider_state = _validated_provider_state(omitted_reasoning)
     usage = _extract_usage_cache_details(data)
     _record_effective_model(client, data)
     request_id = response_headers.get("x-request-id") or data.get("id")
@@ -361,6 +364,10 @@ def _record_responses_item(seen_items, data, *, require_existing):
     identity = (item.get("id"), item.get("type"))
     if not all(isinstance(value, str) and value for value in identity):
         raise ValueError("invalid Responses output item")
+    if identity[1] == "function_call":
+        identity += (item.get("call_id"), item.get("name"))
+        if not all(isinstance(value, str) and value for value in identity[2:]):
+            raise ValueError("invalid Responses output item")
     if require_existing:
         if seen_items.get(index) != identity:
             raise ValueError("Responses output item identity changed")
@@ -370,15 +377,35 @@ def _record_responses_item(seen_items, data, *, require_existing):
         seen_items[index] = identity
 
 
-def _validate_completed_items(response, seen_items):
+def _completed_item_matches(item, identity):
+    if item.get("type") != identity[1] or item.get("id") not in {None, identity[0]}:
+        return False
+    if identity[1] == "function_call":
+        return (item.get("call_id"), item.get("name")) == identity[2:]
+    return True
+
+
+def _validate_completed_items(response, seen_items, done_indices):
     output = response.get("output")
     if not isinstance(output, list):
         raise ValueError("invalid completed Responses output")
-    for index, identity in seen_items.items():
-        if index >= len(output) or not isinstance(output[index], dict):
+    expected = list(seen_items.items())
+    if not any(
+        isinstance(item, dict) and item.get("type") == "reasoning" for item in output
+    ):
+        omitted = {
+            index for index, identity in expected if identity[1] == "reasoning"
+        }
+        if not omitted.issubset(done_indices):
             raise ValueError("completed Responses item missing")
-        item = output[index]
-        if (item.get("id"), item.get("type")) != identity:
+        expected = [item for item in expected if item[1][1] != "reasoning"]
+    for terminal_index, (_stream_index, identity) in enumerate(expected):
+        if terminal_index >= len(output) or not isinstance(
+            output[terminal_index], dict
+        ):
+            raise ValueError("completed Responses item missing")
+        item = output[terminal_index]
+        if not _completed_item_matches(item, identity):
             raise ValueError("completed Responses item identity changed")
 
 
@@ -391,9 +418,11 @@ def _validate_responses_sequence(state, data):
     state["last_sequence"] = sequence
 
 
-def _read_responses_stream(response_stream, callbacks):
+def _read_responses_stream(response_stream, callbacks, *, preserve_reasoning):
     state = {"last_sequence": -1}
     seen_items = {}
+    done_indices = set()
+    completed_reasoning = {}
     completed = None
     for event_name, payload in _iter_sse_events(response_stream, family="OpenAI"):
         item_type, data = _responses_stream_object(event_name, payload)
@@ -405,6 +434,12 @@ def _read_responses_stream(response_stream, callbacks):
             _record_responses_item(seen_items, data, require_existing=False)
         elif item_type == "response.output_item.done":
             _record_responses_item(seen_items, data, require_existing=True)
+            index = data["output_index"]
+            if index in done_indices:
+                raise ValueError("duplicate Responses output item completion")
+            done_indices.add(index)
+            if preserve_reasoning and data["item"].get("type") == "reasoning":
+                completed_reasoning[index] = data["item"]
         elif item_type == "response.output_text.delta":
             output_index = data.get("output_index")
             content_index = data.get("content_index")
@@ -424,11 +459,16 @@ def _read_responses_stream(response_stream, callbacks):
             completed = data.get("response")
             if not isinstance(completed, dict):
                 raise ValueError("invalid terminal Responses object")
-            _validate_completed_items(completed, seen_items)
+            _validate_completed_items(completed, seen_items, done_indices)
             break
     if completed is None:
         raise ValueError("Responses stream missing terminal response")
-    return completed
+    if any(
+        isinstance(item, dict) and item.get("type") == "reasoning"
+        for item in completed["output"]
+    ):
+        completed_reasoning = {}
+    return completed, [completed_reasoning[index] for index in sorted(completed_reasoning)]
 
 
 class OpenAIResponsesModelClient:
@@ -546,13 +586,18 @@ class OpenAIResponsesModelClient:
                 retryable=True,
             ) as response_stream:
                 headers = getattr(response_stream, "headers", {}) or {}
-                data = _read_responses_stream(response_stream, callbacks)
+                data, omitted_reasoning = _read_responses_stream(
+                    response_stream,
+                    callbacks,
+                    preserve_reasoning=replay_reasoning,
+                )
             response = _decode_responses_response(
                 self,
                 data,
                 headers,
                 optional_by_name=optional_by_name,
                 replay_reasoning=replay_reasoning,
+                omitted_reasoning=omitted_reasoning,
             )
         except ProviderTransportError as exc:
             if callbacks.committed:

@@ -8,7 +8,11 @@ import pony.providers.transport as provider_transport
 from pony.providers.anthropic_messages import AnthropicMessagesModelClient
 from pony.providers.ollama_chat import OllamaChatModelClient
 from pony.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
-from pony.providers.openai_responses import OpenAIResponsesModelClient
+from pony.providers.openai_responses import (
+    OpenAIResponsesModelClient,
+    _record_responses_item,
+    _validate_completed_items,
+)
 from pony.providers.response import StopReason
 from pony.providers.transport import ProviderTransportError
 
@@ -68,6 +72,11 @@ def _sse(*events):
     return "".join(parts).encode()
 
 
+def _responses_item_event(stage, index, item):
+    event_type = f"response.output_item.{stage}"
+    return event_type, {"type": event_type, "output_index": index, "item": item}
+
+
 def _callbacks():
     calls = []
     return calls, lambda: calls.append("committed"), lambda text: calls.append(text)
@@ -84,14 +93,14 @@ def _anthropic_client():
     )
 
 
-def _responses_client():
+def _responses_client(*, reasoning_replay=True):
     return OpenAIResponsesModelClient(
         model="gpt-test",
         base_url="https://api.openai.com/v1",
         api_key="test-key",
         temperature=0.0,
         timeout=30,
-        capabilities={"reasoning_replay": True},
+        capabilities={"reasoning_replay": reasoning_replay},
     )
 
 
@@ -503,11 +512,12 @@ def test_responses_stream_uses_completed_response_as_authority(monkeypatch):
         "type": "message",
         "content": [{"type": "output_text", "text": "hello\n"}],
     }
+    completed_item = {key: value for key, value in item.items() if key != "id"}
     completed = {
         "id": "resp_1",
         "model": "gpt-effective",
         "status": "completed",
-        "output": [item],
+        "output": [completed_item],
         "usage": {"input_tokens": 4, "output_tokens": 2},
     }
     body = _sse(
@@ -652,6 +662,205 @@ def test_responses_stream_never_previews_tool_arguments_or_reasoning(monkeypatch
     assert calls == ["committed"]
     assert response.content[0]["input"] == {"pattern": "secret"}
     assert response.provider_state == [reasoning]
+
+
+@pytest.mark.parametrize("reasoning_replay", [True, False])
+def test_responses_stream_recovers_omitted_reasoning_state(
+    monkeypatch,
+    reasoning_replay,
+):
+    reasoning = [
+        {
+            "id": f"rs_{index}",
+            "type": "reasoning",
+            "encrypted_content": f"opaque_{index}",
+            "summary": [],
+        }
+        for index in range(2)
+    ]
+    tool = {
+        "id": "fc_1",
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "search",
+        "arguments": '{"pattern":"streamed"}',
+    }
+    terminal_tool = {
+        **{key: value for key, value in tool.items() if key != "id"},
+        "arguments": '{"pattern":"terminal"}',
+    }
+    body = _sse(
+        _responses_item_event("added", 0, reasoning[0]),
+        _responses_item_event("added", 1, reasoning[1]),
+        _responses_item_event("added", 2, tool),
+        _responses_item_event("done", 1, reasoning[1]),
+        _responses_item_event("done", 0, reasoning[0]),
+        _responses_item_event("done", 2, tool),
+        (
+            "response.completed",
+            {
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": [terminal_tool],
+                    "usage": {},
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        provider_transport,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _StreamResponse(body),
+    )
+    calls, committed, text = _callbacks()
+
+    response = _complete_stream(
+        _responses_client(reasoning_replay=reasoning_replay),
+        committed,
+        text,
+    )
+
+    assert calls == ["committed"]
+    assert response.content == [
+        {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "search",
+            "input": {"pattern": "terminal"},
+        }
+    ]
+    assert response.provider_state == (reasoning if reasoning_replay else [])
+
+
+def test_responses_stream_rejects_duplicate_item_completion(monkeypatch):
+    item = {
+        "id": "msg_1",
+        "type": "message",
+        "content": [{"type": "output_text", "text": "done"}],
+    }
+    done = _responses_item_event("done", 0, item)
+    body = _sse(
+        _responses_item_event("added", 0, item),
+        done,
+        done,
+    )
+    monkeypatch.setattr(
+        provider_transport,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _StreamResponse(body),
+    )
+    calls, committed, text = _callbacks()
+
+    with pytest.raises(ProviderTransportError) as caught:
+        _complete_stream(_responses_client(), committed, text)
+
+    assert calls == ["committed"]
+    assert caught.value.code == "provider_protocol_mismatch"
+
+
+@pytest.mark.parametrize(
+    "seen_items",
+    [
+        {0: ("fc_1", "function_call", "call_1", "read_file")},
+        {
+            0: ("rs_1", "reasoning"),
+            1: ("fc_1", "function_call", "call_1", "read_file"),
+        },
+    ],
+)
+def test_responses_terminal_accepts_compatible_omissions(seen_items):
+    _validate_completed_items(
+        {"output": [{"type": "function_call", "call_id": "call_1", "name": "read_file"}]},
+        seen_items,
+        set(seen_items),
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"id": "fc_changed"},
+        {"type": "message"},
+        {"call_id": "call_changed"},
+        {"name": "write_file"},
+    ],
+)
+def test_responses_stream_rejects_semantic_identity_change(changed):
+    item = {
+        "id": "fc_1",
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "read_file",
+        "arguments": "{}",
+    }
+    changed_item = {**item, **changed}
+    seen_items = {}
+    _record_responses_item(
+        seen_items,
+        {"output_index": 0, "item": item},
+        require_existing=False,
+    )
+
+    with pytest.raises(ValueError, match="identity changed"):
+        _record_responses_item(
+            seen_items,
+            {"output_index": 0, "item": changed_item},
+            require_existing=True,
+        )
+    with pytest.raises(ValueError, match="identity changed"):
+        _validate_completed_items(
+            {"output": [changed_item]},
+            {
+                0: ("rs_1", "reasoning"),
+                1: ("fc_1", "function_call", "call_1", "read_file"),
+            },
+            {0, 1},
+        )
+
+
+@pytest.mark.parametrize("reasoning_replay", [True, False])
+def test_responses_stream_rejects_omitted_unfinished_reasoning(
+    monkeypatch,
+    reasoning_replay,
+):
+    reasoning = {"id": "rs_1", "type": "reasoning"}
+    tool = {
+        "id": "fc_1",
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "read_file",
+        "arguments": "{}",
+    }
+    terminal_tool = {key: value for key, value in tool.items() if key != "id"}
+    body = _sse(
+        _responses_item_event("added", 0, reasoning),
+        _responses_item_event("added", 1, tool),
+        _responses_item_event("done", 1, tool),
+        (
+            "response.completed",
+            {
+                "type": "response.completed",
+                "response": {"status": "completed", "output": [terminal_tool]},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        provider_transport,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _StreamResponse(body),
+    )
+    calls, committed, text = _callbacks()
+
+    with pytest.raises(ProviderTransportError) as caught:
+        _complete_stream(
+            _responses_client(reasoning_replay=reasoning_replay),
+            committed,
+            text,
+        )
+
+    assert calls == ["committed"]
+    assert caught.value.code == "provider_protocol_mismatch"
 
 
 def test_responses_stream_rejects_text_delta_for_non_message_item(monkeypatch):
