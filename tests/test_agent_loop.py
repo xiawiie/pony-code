@@ -614,7 +614,7 @@ def test_streaming_preview_metadata_is_initial_then_terminal(tmp_path):
         )
 
     provider = StreamingScriptProvider([stream])
-    agent = build_native_agent(tmp_path, provider, stream=True)
+    agent = build_native_agent(tmp_path, provider, stream=True, redaction_env={})
     committed = []
     previews = []
     listener_events = []
