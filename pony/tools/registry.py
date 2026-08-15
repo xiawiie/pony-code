@@ -12,6 +12,7 @@ from pony.memory.tools import (
     tool_memory_search,
 )
 from .files import tool_list_files, tool_patch_file, tool_read_file, tool_write_file
+from .result_view import ResultPagePolicy, page_text
 from .search import tool_search
 from .shell import DEFAULT_RUN_SHELL_TIMEOUT, _tool_run_shell
 
@@ -50,10 +51,27 @@ BASE_TOOL_SPECS = {
         "description": "List files in the workspace.",
     },
     "read_file": {
-        "schema": {"path": "str", "start": "int=1", "end": "int=200"},
+        "schema": {
+            "path": "str",
+            "start": "int=1",
+            "end": {"type": ["integer", "null"], "minimum": 1, "default": None},
+            "start_byte": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "default": None,
+            },
+            "expected_sha256": {
+                "type": ["string", "null"],
+                "pattern": "^[0-9a-f]{64}$",
+                "default": None,
+            },
+        },
         "risky": False,
         "effect_class": "read_only",
-        "description": "Read a UTF-8 file by line range.",
+        "description": (
+            "Read one bounded page of a UTF-8 file. Omit end to read toward EOF; "
+            "use the exact continuation arguments returned for later pages."
+        ),
     },
     "search": {
         "schema": {"pattern": "str", "path": "str='.'"},
@@ -86,10 +104,48 @@ BASE_TOOL_SPECS = {
         "description": "List memory files (user notes + agent_notes). Optional prefix filter.",
     },
     "memory_read": {
-        "schema": {"path": "str", "start": "int=1", "end": "int=200"},
+        "schema": {
+            "path": "str",
+            "start": "int=1",
+            "end": {"type": ["integer", "null"], "minimum": 1, "default": None},
+            "start_byte": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "default": None,
+            },
+            "expected_sha256": {
+                "type": ["string", "null"],
+                "pattern": "^[0-9a-f]{64}$",
+                "default": None,
+            },
+        },
         "risky": False,
         "effect_class": "read_only",
-        "description": "Read a memory file by line range. Same paging as read_file.",
+        "description": (
+            "Read one bounded page of a memory file. Omit end to read toward EOF; "
+            "use the exact continuation arguments returned for later pages."
+        ),
+    },
+    "read_tool_result": {
+        "schema": {
+            "tool_result_id": {
+                "type": "string",
+                "pattern": "^tool_result:[0-9a-f]{64}$",
+            },
+            "start": "int=1",
+            "end": {"type": ["integer", "null"], "minimum": 1, "default": None},
+            "start_byte": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "default": None,
+            },
+        },
+        "risky": False,
+        "effect_class": "read_only",
+        "description": (
+            "Read one bounded page of a retained tool result from the current run. "
+            "The result expires when the current turn ends."
+        ),
     },
     "memory_search": {
         "schema": {"query": "str", "limit": "int=5"},
@@ -201,7 +257,11 @@ TOOL_EXAMPLES = {
         '"max_steps":6}],"max_parallel":2}}'
     ),
     "memory_list": '{"name":"memory_list","arguments":{"prefix":"workspace/"}}',
-    "memory_read": '{"name":"memory_read","arguments":{"path":"workspace/notes/auth.md","start":1,"end":200}}',
+    "memory_read": '{"name":"memory_read","arguments":{"path":"workspace/notes/auth.md","start":1}}',
+    "read_tool_result": (
+        '{"name":"read_tool_result","arguments":'
+        '{"tool_result_id":"tool_result:<64 lowercase sha256>","start":1}}'
+    ),
     "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',
     "memory_save": '{"name":"memory_save","arguments":{"note":"bcrypt rounds > 12 causes CI timeout"}}',
     "repo_lookup": '{"name":"repo_lookup","arguments":{"symbol":"AuthMiddleware"}}',
@@ -228,6 +288,33 @@ def tool_delegate_worktrees(context, args):
     return context.spawn_worktree_agents(args)
 
 
+def tool_read_tool_result(
+    context,
+    args,
+    *,
+    page_policy: ResultPagePolicy,
+):
+    reader = context.read_current_tool_result
+    if not callable(reader):
+        raise ValueError("tool_result_expired")
+    tool_result_id = str(args.get("tool_result_id", ""))
+    source = reader(tool_result_id)
+    return page_text(
+        source,
+        locator={"tool_result_id": tool_result_id},
+        policy=page_policy,
+        start=int(args.get("start", 1)),
+        end=int(args["end"]) if args.get("end") is not None else None,
+        start_byte=(
+            int(args["start_byte"])
+            if args.get("start_byte") is not None
+            else None
+        ),
+        expected_sha256=tool_result_id.removeprefix("tool_result:"),
+        include_source_hash=False,
+    )
+
+
 _TOOL_RUNNERS = {
     "list_files": tool_list_files,
     "read_file": tool_read_file,
@@ -237,6 +324,7 @@ _TOOL_RUNNERS = {
     "patch_file": tool_patch_file,
     "memory_list": tool_memory_list,
     "memory_read": tool_memory_read,
+    "read_tool_result": tool_read_tool_result,
     "memory_search": tool_memory_search,
     "memory_save": tool_memory_save,
     "repo_lookup": tool_repo_lookup,

@@ -129,6 +129,8 @@ def test_chat_uses_exact_gateway_root_and_native_tool_history(monkeypatch):
     assert "enable_thinking" not in captured["body"]
     assert "thinking" not in captured["body"]
     assert "parallel_tool_calls" not in captured["body"]
+    assert captured["body"]["max_tokens"] == 42
+    assert "max_completion_tokens" not in captured["body"]
     assert "strict" not in captured["body"]["tools"][0]["function"]
     assert captured["body"]["messages"] == [
         {"role": "system", "content": "SYSTEM"},
@@ -160,6 +162,68 @@ def test_chat_uses_exact_gateway_root_and_native_tool_history(monkeypatch):
         "model": "qwen-test",
         "endpoint_hash": _client().provider_binding["endpoint_hash"],
     }
+
+
+def test_exact_chat_target_uses_current_output_token_field(monkeypatch):
+    captured = {}
+
+    def urlopen(request, **_kwargs):
+        captured["body"] = json.loads(request.data)
+        return _Response(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": {},
+            }
+        )
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+
+    _complete(_client(capabilities={"output_token_field": "max_completion_tokens"}))
+
+    assert captured["body"]["max_completion_tokens"] == 42
+    assert "max_tokens" not in captured["body"]
+
+
+def test_future_official_chat_target_uses_current_output_token_field(monkeypatch):
+    from pony.config.model import capabilities_for_target
+
+    captured = {}
+
+    def urlopen(request, **_kwargs):
+        captured["body"] = json.loads(request.data)
+        return _Response(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": {},
+            }
+        )
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+    capabilities = capabilities_for_target(
+        "openai_chat_completions",
+        "https://api.openai.com/v1",
+        "future-model",
+    )
+
+    _complete(
+        _client(
+            base_url="https://api.openai.com/v1",
+            capabilities=capabilities,
+        )
+    )
+
+    assert captured["body"]["max_completion_tokens"] == 42
+    assert "max_tokens" not in captured["body"]
 
 
 @pytest.mark.parametrize(

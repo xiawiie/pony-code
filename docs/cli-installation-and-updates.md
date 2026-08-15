@@ -82,6 +82,11 @@ pony config show
 pony doctor
 ```
 
+首次执行需要运行 Agent 或 mutation 管理命令的操作时，Pony 会显示 `Trust project ...? [y/N]`。授权绑定当前 lexical
+root 的路径与目录身份，不绑定 branch/HEAD：同一 worktree 切换分支不会重复询问，新建 sibling worktree 需要单独确认一次。
+Pony 会自动恢复当前用户拥有的 `~/.pony` trust 根目录权限漂移，但不会自动授予项目；owner、symlink/reparse、记录文件权限、
+hardlink 或内容不安全时返回 `project_trust_invalid` 及 current-user-only 权限修复提示。
+
 `init` 依次询问 Provider（默认 `auto`）、API Base、模型和 API Key。输入已有 Key 时留空会保留
 原值；本地 Ollama 允许空 Key。强制 Provider 只做本地校验；`auto` 或 `openai` 先执行 fixed synthetic
 tool/continuation probe，只有完整通过后才把 resolved Provider 与另外三项一次性原子写入根目录 `.env`。
@@ -141,11 +146,11 @@ Provider、protocol 与 model，`/model <model>` 保存新的 Session model。�
 opaque Provider state 的历史返回 `model_session_mismatch`。Pony 不维护模型目录，也不会为切换发起探测或在失败后
 fallback。
 
-TUI 需要 stdin/stdout 同时为 TTY 且终端至少 112 列；非 Windows 还要求 `TERM` 有效且不是 `dumb`。完整尺寸 Logo 是
-交互 TUI 不可隐藏的唯一欢迎状态；TTY 不满足能力或宽度要求时返回 usage error 并要求扩宽，不会进入无 Logo 的纯文本
-REPL。只有非交互输入按纯文本处理。颜色仍遵守 `--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；busy 时可排队最多
-五条 follow-up，`/queue [clear]` 查看或清空。
-idle 时 `Ctrl+D` 退出，`Ctrl+C` 清空输入并可再次按下退出；busy 时两者不取消已开始的 Provider 或 Tool。
+TUI 需要 stdin/stdout 同时为 TTY 且终端至少 112 列；非 Windows 还要求 `TERM` 有效且不是 `dumb`。低于 112 列返回
+usage error，不会进入纯文本 REPL 或 compact 替代版；112 列及以上显示冻结的完整马形 Logo/字标。
+颜色仍遵守 `--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；busy 时可排队最多五条 follow-up，`/queue [clear]` 查看或
+清空。idle 时 `Ctrl+D` 退出，`Ctrl+C` 清空输入并可再次按下退出；busy Ctrl+C 只清空 queued next-turn input，并明确
+当前 Provider/Tool 仍继续，不能当作 request cancellation。
 
 ### Permission mode 与 Plan
 
@@ -289,5 +294,5 @@ terminal child 要显式加 `--discard`。执行阶段进程中断遗留的 `cre
 | `legacy_sandbox_session_unsupported` | 该 Session 绑定旧 Sandbox；检查历史后创建新的 Host Session |
 | `pony` 找不到 | 虚拟环境与 PATH 是否一致 |
 | 裸 `pony` 仍显示旧 help | `command -v pony` / `pony --version` 是否指向旧安装；从当前版本重新安装或使用 `uv run pony` |
-| TUI 因完整 Logo 宽度被拒绝 | 将交互终端扩至至少 112 列；不要恢复小版或无 Logo fallback |
+| TUI 因宽度被拒绝 | 将交互终端扩至至少 112 列；112+ 使用唯一完整大版 |
 | 没有 TUI 颜色或菜单 | 检查 stdin/stdout、`TERM`、`NO_COLOR` / `--no-color`；非 TTY 才使用纯文本模式 |

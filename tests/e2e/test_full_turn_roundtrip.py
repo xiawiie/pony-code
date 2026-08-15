@@ -1,4 +1,4 @@
-"""E2E: one Pony.ask exercises injection + digest + recall together."""
+"""E2E: one Pony.ask exercises injection + paged read + recall together."""
 
 from pony.providers.response import Response, StopReason
 from pony.runtime.application import Pony
@@ -20,9 +20,9 @@ class _SniffProvider:
         return self.script.pop(0)
 
 
-def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
+def test_full_turn_injects_recall_and_keeps_large_read_as_a_page(tmp_path):
     (tmp_path / "pony.toml").write_text(
-        "[context.tool_results]\ninline_tokens = 100\ndigest_tokens = 128\n",
+        "[context.tool_results]\ninline_tokens = 256\ndigest_tokens = 128\n",
         encoding="utf-8",
     )
     # Seed a memory note that should match "cache".
@@ -83,8 +83,7 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     assert "<pony:recalled_memory" in turn1_user_content
     assert "cache" in turn1_user_content.lower()
 
-    # Turn 2: canonical messages contain the tool_result. Because the raw README exceeds
-    # the token-based inline cap, content is the short [digest] rendering.
+    # Turn 2 keeps the bounded file page intact instead of digesting it again.
     turn2_msgs = provider.calls[1]["messages"]
     tool_result_msgs = [
         m
@@ -94,7 +93,9 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     ]
     assert tool_result_msgs, "no tool_result in turn 2 canonical messages"
     tr_content = tool_result_msgs[-1]["content"][0]["content"]
-    assert "[digest]" in tr_content, f"expected digest, got: {tr_content[:200]!r}"
+    assert "[page]" in tr_content
+    assert "[continuation]" in tr_content
+    assert "[digest]" not in tr_content
 
     # No recall errors surfaced.
     assert pony.session.get("_recall_errors", {}).get("count", 0) == 0

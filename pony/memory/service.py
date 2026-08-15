@@ -1,6 +1,7 @@
 """Production helpers for Pony's compact file-summary memory."""
 
 import hashlib as _hashlib
+import json as _json
 from pathlib import Path as _Path
 
 from ..workspace.context import clip as _clip, now as _now
@@ -113,8 +114,68 @@ def invalidate_stale_file_summaries_dict(summaries, workspace_root=None):
     return invalidated
 
 
+def _page_envelope(line, marker):
+    prefix = f"[{marker}] "
+    if not line.startswith(prefix):
+        return None
+    try:
+        value = _json.loads(line[len(prefix) :])
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_page_header(value):
+    required = {
+        "start": int,
+        "end": int,
+        "total_lines": int,
+        "range_complete": bool,
+        "file_complete": bool,
+        "sha256": str,
+    }
+    if value is None or not all(
+        type(value.get(key)) is expected for key, expected in required.items()
+    ):
+        return False
+    locators = [
+        key
+        for key in ("path", "tool_result_id")
+        if type(value.get(key)) is str and value[key]
+    ]
+    return (
+        len(locators) == 1
+        and value["start"] >= 1
+        and 0 <= value["end"] <= value["total_lines"]
+        and len(value["sha256"]) == 64
+        and not set(value["sha256"]) - set("0123456789abcdef")
+    )
+
+
+def _matches_page_continuation(header, continuation):
+    if header.get("range_complete") is not False or continuation is None:
+        return False
+    if "path" in header and continuation.get("path") != header["path"]:
+        return False
+    if "tool_result_id" in header:
+        return continuation.get("tool_result_id") == header["tool_result_id"]
+    return continuation.get("expected_sha256") == header["sha256"]
+
+
 def summarize_read_result(result, limit=180):
     lines = [line.strip() for line in str(result).splitlines() if line.strip()]
+    header = _page_envelope(lines[0], "page") if lines else None
+    header = header if _is_page_header(header) else None
+    continuation = _page_envelope(lines[-1], "continuation") if lines else None
+    matching_continuation = header is not None and _matches_page_continuation(
+        header, continuation
+    )
+    if header is not None and (header["range_complete"] or matching_continuation):
+        lines = lines[1:]
+    else:
+        header = None
+    if matching_continuation:
+        lines = lines[:-1]
     if lines[:1] and lines[0].startswith("# "):
         lines = lines[1:]
     if not lines:

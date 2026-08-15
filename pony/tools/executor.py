@@ -13,6 +13,7 @@ from pony.security import workspace_files as workspace_files
 from pony.security import private_files as private_files
 from pony.security.command_policy import assess_command
 from pony.tools.permissions import PermissionDecision, PermissionMode, decide_permission
+from pony.tools.result_view import ToolOutput
 from pony.tools.subprocess import (
     _validate_hardened_git_args,
     _validate_hardened_git_repository,
@@ -873,9 +874,26 @@ def _invoke_prepared_tool(prepared, execution):
     agent = prepared["agent"]
     if prepared["name"] != "run_shell":
         execution["runner_started"] = True
-        raw_content = prepared["tool"]["run"](prepared["runner_args"])
+        runner = prepared["tool"]["run"]
+        if prepared["name"] in {
+            "read_file",
+            "memory_read",
+            "read_tool_result",
+        }:
+            raw_content = runner(
+                prepared["runner_args"],
+                page_policy=agent.current_result_page_policy(),
+            )
+        else:
+            raw_content = runner(prepared["runner_args"])
         execution["runner_completed"] = True
-        execution["content"] = str(agent.redact_text(raw_content))
+        output = (
+            raw_content
+            if isinstance(raw_content, ToolOutput)
+            else ToolOutput(str(raw_content), {})
+        )
+        execution["content"] = str(agent.redact_text(output.content))
+        execution["result_view"] = dict(output.result_view)
         return
 
     shell_execution = prepared["shell_execution"]
@@ -1020,6 +1038,8 @@ def _finish_tool_success(prepared, execution, effects):
         tool_error_code,
         effects,
     )
+    if execution["result_view"]:
+        metadata["result_view"] = dict(execution["result_view"])
     return ToolExecutionResult(content=execution["content"], metadata=metadata)
 
 
@@ -1030,6 +1050,7 @@ def _run_tool_lifecycle(prepared):
         "shell_result": None,
         "verification_evidence": None,
         "content": "",
+        "result_view": {},
     }
     before = None
     effects = _empty_effects()

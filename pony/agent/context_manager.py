@@ -138,7 +138,7 @@ class ContextManager:
                 context_window=128_000,
                 max_output_tokens=16_384,
                 token_counter_mode="provider_usage_or_estimate",
-                source="fallback",
+                source="default",
             )
         value = build_model_budget(capabilities)
         self.agent.model_budget = value
@@ -347,7 +347,7 @@ class ContextManager:
             "model": {
                 "context_window": capabilities.context_window,
                 "max_output_tokens": capabilities.max_output_tokens,
-                "capabilities_source": capabilities.source,
+                "policy_source": capabilities.source,
             },
             "budget": {
                 "output": budget.output_tokens,

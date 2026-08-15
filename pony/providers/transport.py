@@ -1,5 +1,6 @@
 """Shared HTTP transport, validation, and response helpers."""
 
+from contextlib import contextmanager
 from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -14,6 +15,8 @@ import urllib.request
 
 
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_PROVIDER_STREAM_LINE_BYTES = 256 * 1024
+MAX_PROVIDER_STREAM_EVENTS = 100_000
 _PROVIDER_ERROR_STAGES = frozenset(
     {"tool_call", "tool_result", "response_decode", "runtime"}
 )
@@ -246,84 +249,291 @@ def _open_provider_request(
     retryable,
     detect_reasoning_replay=False,
 ):
+    with _open_provider_response(
+        client,
+        request,
+        family=family,
+        retryable=retryable,
+        detect_reasoning_replay=detect_reasoning_replay,
+    ) as response:
+        body = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+        headers = getattr(response, "headers", {}) or {}
+        if len(body) > MAX_PROVIDER_RESPONSE_BYTES:
+            raise ProviderTransportError(
+                f"{family} error: response_too_large",
+                code="response_too_large",
+            )
+    return body, headers
+
+
+@contextmanager
+def _open_provider_response(
+    client,
+    request,
+    *,
+    family,
+    retryable,
+    detect_reasoning_replay=False,
+):
     client.last_transport_attempts += 1
     try:
         with _provider_urlopen(request, timeout=client.timeout) as response:
-            body = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
-            headers = getattr(response, "headers", {}) or {}
+            yield response
     except urllib.error.HTTPError as exc:
-        status = int(exc.code)
-        retry_after = _retry_after_seconds(getattr(exc, "headers", None))
-        try:
-            error_body = exc.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
-        except Exception:
-            error_body = b""
-        try:
-            exc.close()
-        except Exception:
-            pass
-        error_text = (
-            error_body.decode("utf-8", errors="ignore").casefold()
-            if len(error_body) <= MAX_PROVIDER_RESPONSE_BYTES
-            else ""
-        )
-        context_markers = (
-            "context_length_exceeded",
-            "context window",
-            "maximum context length",
-            "prompt is too long",
-            "prompt too long",
-            "too many tokens",
-            "input token limit",
-        )
-        if status in {400, 413, 422} and any(
-            marker in error_text for marker in context_markers
-        ):
-            code = "context_length_exceeded"
-        elif status == 408:
-            code = "request_timeout"
-        elif status == 413:
-            code = "request_too_large"
-        elif status == 429:
-            code = "rate_limited"
-        elif 500 <= status < 600:
-            code = "http_5xx"
-        elif 300 <= status < 400:
-            code = "redirect_blocked"
-        else:
-            code = "http_4xx"
-        reasoning_required = (
-            detect_reasoning_replay
-            and status in {400, 422}
-            and any(
-                marker in error_text
-                for marker in (
-                    "reasoning state is required",
-                    "reasoning content is required",
-                    "missing reasoning content",
-                    "must include reasoning",
-                )
-            )
-        )
-        raise ProviderTransportError(
-            f"{family} request failed with HTTP {status}",
-            code=code,
-            http_status=status,
-            retryable=retryable
-            and code in {"request_timeout", "rate_limited", "http_5xx"},
-            retry_after=retry_after if code == "rate_limited" else None,
-            protocol_reason=(
-                "reasoning_replay_required" if reasoning_required else None
-            ),
+        raise _http_failure(
+            family,
+            exc,
+            retryable=retryable,
+            detect_reasoning_replay=detect_reasoning_replay,
         ) from None
     except (urllib.error.URLError, HTTPException, OSError) as exc:
         raise _network_failure(family, exc, retryable=retryable) from None
-    if len(body) > MAX_PROVIDER_RESPONSE_BYTES:
+
+
+def _http_failure(family, exc, *, retryable, detect_reasoning_replay):
+    status = int(exc.code)
+    retry_after = _retry_after_seconds(getattr(exc, "headers", None))
+    try:
+        error_body = exc.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+    except Exception:
+        error_body = b""
+    try:
+        exc.close()
+    except Exception:
+        pass
+    error_text = (
+        error_body.decode("utf-8", errors="ignore").casefold()
+        if len(error_body) <= MAX_PROVIDER_RESPONSE_BYTES
+        else ""
+    )
+    context_markers = (
+        "context_length_exceeded",
+        "context window",
+        "maximum context length",
+        "prompt is too long",
+        "prompt too long",
+        "too many tokens",
+        "input token limit",
+    )
+    if status in {400, 413, 422} and any(
+        marker in error_text for marker in context_markers
+    ):
+        code = "context_length_exceeded"
+    elif status == 408:
+        code = "request_timeout"
+    elif status == 413:
+        code = "request_too_large"
+    elif status == 429:
+        code = "rate_limited"
+    elif 500 <= status < 600:
+        code = "http_5xx"
+    elif 300 <= status < 400:
+        code = "redirect_blocked"
+    else:
+        code = "http_4xx"
+    reasoning_required = (
+        detect_reasoning_replay
+        and status in {400, 422}
+        and any(
+            marker in error_text
+            for marker in (
+                "reasoning state is required",
+                "reasoning content is required",
+                "missing reasoning content",
+                "must include reasoning",
+            )
+        )
+    )
+    return ProviderTransportError(
+        f"{family} request failed with HTTP {status}",
+        code=code,
+        http_status=status,
+        retryable=retryable
+        and code in {"request_timeout", "rate_limited", "http_5xx"},
+        retry_after=retry_after if code == "rate_limited" else None,
+        protocol_reason=("reasoning_replay_required" if reasoning_required else None),
+    )
+
+
+def _stream_failure_after_commit(exc):
+    if not isinstance(exc, ProviderTransportError) or not exc.retryable:
+        return exc
+    return ProviderTransportError(
+        str(exc),
+        code=exc.code,
+        http_status=exc.http_status,
+        retryable=False,
+        retry_after=exc.retry_after,
+        stage=exc.stage,
+        protocol_reason=exc.protocol_reason,
+        protocol_family=exc.protocol_family,
+    )
+
+
+class _StreamCallbacks:
+    def __init__(self, on_stream_committed, on_text_delta):
+        if not callable(on_stream_committed) or not callable(on_text_delta):
+            raise TypeError("stream callbacks must be callable")
+        self._on_stream_committed = on_stream_committed
+        self._on_text_delta = on_text_delta
+        self.committed = False
+        self._enabled = True
+
+    def commit(self):
+        if self.committed:
+            return
+        self.committed = True
+        self._call(self._on_stream_committed)
+
+    def text(self, value):
+        if not isinstance(value, str):
+            raise ValueError("stream text delta must be text")
+        if value:
+            self._call(self._on_text_delta, value)
+
+    def _call(self, callback, *args):
+        if not self._enabled:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            self._enabled = False
+
+
+def _bounded_stream_lines(response, *, family, allow_unterminated_final_line):
+    total_bytes = 0
+    while True:
+        raw_line = response.readline(MAX_PROVIDER_STREAM_LINE_BYTES + 2)
+        if not isinstance(raw_line, bytes):
+            raise ProviderTransportError(
+                f"{family} error: response_shape_invalid",
+                code="provider_protocol_mismatch",
+                stage="response_decode",
+                protocol_reason="response_shape_invalid",
+            )
+        if not raw_line:
+            break
+        total_bytes += len(raw_line)
+        if total_bytes > MAX_PROVIDER_RESPONSE_BYTES:
+            raise ProviderTransportError(
+                f"{family} error: response_too_large",
+                code="response_too_large",
+            )
+        terminated = raw_line.endswith(b"\n")
+        if terminated:
+            raw_line = raw_line[:-1]
+        line = _decode_stream_line(raw_line, family=family)
+        if not terminated and not allow_unterminated_final_line:
+            raise ProviderTransportError(
+                f"{family} error: response_truncated",
+                code="response_truncated",
+            )
+        yield line
+        if not terminated:
+            break
+
+
+def _decode_stream_line(raw_line, *, family):
+    if raw_line.endswith(b"\r"):
+        raw_line = raw_line[:-1]
+    if len(raw_line) > MAX_PROVIDER_STREAM_LINE_BYTES:
         raise ProviderTransportError(
-            f"{family} error: response_too_large",
+            f"{family} error: response_line_too_large",
             code="response_too_large",
         )
-    return body, headers
+    if b"\r" in raw_line:
+        raise ProviderTransportError(
+            f"{family} error: invalid_stream_framing",
+            code="provider_protocol_mismatch",
+            stage="response_decode",
+            protocol_reason="response_shape_invalid",
+        )
+    try:
+        return raw_line.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ProviderTransportError(
+            f"{family} error: invalid_utf8",
+            code="provider_protocol_mismatch",
+            stage="response_decode",
+            protocol_reason="response_shape_invalid",
+        ) from None
+
+
+def _iter_sse_events(response, *, family):
+    event_name = None
+    data_lines = []
+    event_count = 0
+    for line in _bounded_stream_lines(
+        response,
+        family=family,
+        allow_unterminated_final_line=False,
+    ):
+        if line == "":
+            if event_name is None and not data_lines:
+                continue
+            if not data_lines:
+                raise _invalid_stream_framing(family)
+            event_count += 1
+            if event_count > MAX_PROVIDER_STREAM_EVENTS:
+                raise ProviderTransportError(
+                    f"{family} error: too_many_stream_events",
+                    code="response_too_large",
+                )
+            yield event_name, "\n".join(data_lines)
+            event_name = None
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, value = line.partition(":")
+        if not separator or field not in {"event", "data"}:
+            raise _invalid_stream_framing(family)
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "event":
+            if event_name is not None or not value:
+                raise _invalid_stream_framing(family)
+            event_name = value
+        else:
+            data_lines.append(value)
+    if event_name is not None or data_lines:
+        raise ProviderTransportError(
+            f"{family} error: response_truncated",
+            code="response_truncated",
+        )
+
+
+def _iter_ndjson_events(response, *, family):
+    event_count = 0
+    for line in _bounded_stream_lines(
+        response,
+        family=family,
+        allow_unterminated_final_line=True,
+    ):
+        if not line:
+            raise _invalid_stream_framing(family)
+        event_count += 1
+        if event_count > MAX_PROVIDER_STREAM_EVENTS:
+            raise ProviderTransportError(
+                f"{family} error: too_many_stream_events",
+                code="response_too_large",
+            )
+        try:
+            data = json.loads(line)
+        except (TypeError, ValueError):
+            raise _invalid_stream_framing(family) from None
+        if not isinstance(data, dict):
+            raise _invalid_stream_framing(family)
+        yield data
+
+
+def _invalid_stream_framing(family):
+    return ProviderTransportError(
+        f"{family} error: invalid_stream_framing",
+        code="provider_protocol_mismatch",
+        stage="response_decode",
+        protocol_reason="response_shape_invalid",
+    )
 
 
 def _retry_after_seconds(headers):

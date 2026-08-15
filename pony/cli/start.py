@@ -384,6 +384,9 @@ def _cli_interrupt_boundary():
 
 
 def run_agent_once(agent, prompt_tokens):
+    if getattr(agent, "stream_enabled", False):
+        print("error: streaming_unavailable", file=sys.stderr)
+        return CLI_EXIT_USAGE
     prompt = " ".join(prompt_tokens).strip()
     if not prompt:
         return 0
@@ -681,7 +684,8 @@ def _route_repl_input(
         render_user(user_input)
         removed = input_queue.clear()
         render_status(
-            f"current turn continues before exit; cleared {removed} pending"
+            "current turn continues before exit; "
+            f"cleared {removed} queued next-turn input(s)"
         )
         input_queue.close()
         terminal_result = _raise_or_return_terminal(input_queue)
@@ -697,7 +701,8 @@ def _route_repl_input(
     submitted = input_queue.submit(user_input)
     if submitted.status == "queued":
         render_status(
-            f"queued input: {submitted.pending}/{MAX_PENDING_INPUTS} pending"
+            "queued for next turn: "
+            f"{submitted.pending}/{MAX_PENDING_INPUTS} pending"
         )
     elif submitted.status == "full":
         render_error(f"input queue is full ({MAX_PENDING_INPUTS} pending)")
@@ -719,9 +724,19 @@ def run_repl(
     model="",
     plain=False,
     no_color=False,
+    stream=False,
     show_header=True,
     show_resume=False,
 ):
+    stream = bool(stream or getattr(agent, "stream_enabled", False))
+    if stream:
+        from pony.runtime.options import require_streaming_client
+
+        try:
+            require_streaming_client(getattr(agent, "model_client", None))
+        except ValueError:
+            print("error: streaming_unavailable", file=sys.stderr)
+            return CLI_EXIT_USAGE
     session = getattr(agent, "session", {})
     session = session if isinstance(session, dict) else {}
     resume_projection = (
@@ -749,9 +764,15 @@ def run_repl(
                             prompt_history=prompt_history,
                         ),
                     )
+                if stream:
+                    print("error: streaming_unavailable", file=sys.stderr)
+                    return CLI_EXIT_USAGE
                 if tui_error:
                     print(f"error: {tui_error}", file=sys.stderr)
                     return CLI_EXIT_USAGE
+            elif stream:
+                print("error: streaming_unavailable", file=sys.stderr)
+                return CLI_EXIT_USAGE
 
             def refresh_plain_history():
                 current = getattr(agent, "session", {})
@@ -825,7 +846,11 @@ def run_repl(
                         if input_queue.busy and not hasattr(exc, "signal_number"):
                             input_queue.answer_confirmation("")
                             removed = input_queue.clear()
-                            print(f"\ncurrent turn continues; cleared {removed} pending")
+                            print(
+                                "\ncurrent turn continues "
+                                "(request cancellation is unavailable); "
+                                f"cleared {removed} queued next-turn input(s)"
+                            )
                             continue
                         raise
 

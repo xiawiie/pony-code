@@ -163,9 +163,10 @@ def test_tool_created_summary_appears_next_top_level_turn_not_current_turn(tmp_p
         )
         for call in provider.calls
     ]
-    assert "- README.md: 1: demo" not in current_users[0]
-    assert "- README.md: 1: demo" not in current_users[1]
-    assert "- README.md: 1: demo" in current_users[2]
+    assert "- README.md: demo" not in current_users[0]
+    assert "- README.md: demo" not in current_users[1]
+    assert "- README.md: demo" in current_users[2]
+    assert "[page]" not in current_users[2]
 
 
 def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(

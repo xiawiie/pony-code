@@ -19,6 +19,12 @@ _MAX_TRUST_BYTES = 1024 * 1024
 _BYTES_IDENTITY_PREFIX = "bytes:"
 
 
+class _RepairableTrustRootPermissions(ValueError):
+    def __init__(self, identity):
+        super().__init__("private trust directory permissions are unsafe")
+        self.identity = identity
+
+
 def _encode_identity_value(value):
     if type(value) is int:
         return value
@@ -51,6 +57,10 @@ class ProjectTrustStore:
             self._root_identity = self._read_root_identity()
         except FileNotFoundError:
             self._root_identity = None
+        except _RepairableTrustRootPermissions as exc:
+            # Host sandboxes can add directory ACLs. Harden the owned root before
+            # reading; the trust file itself remains strict and is never repaired here.
+            self._ensure_root(expected_identity=exc.identity)
 
     def _read_root_identity(self):
         identity = private_directory_identity(self.root)
@@ -60,21 +70,28 @@ class ProjectTrustStore:
             with windows_native.open_path(self.root, directory=True) as handle:
                 if windows_native.identity(handle) != tuple(identity):
                     raise ValueError("trust store root changed")
-                windows_native.require_private(handle)
+                windows_native.require_current_owner(handle)
+                try:
+                    windows_native.require_private(handle)
+                except ValueError as exc:
+                    raise _RepairableTrustRootPermissions(identity) from exc
             return identity
         info = self.root.stat(follow_symlinks=False)
         uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != uid
-            or stat.S_IMODE(info.st_mode) != 0o700
-        ):
-            raise ValueError("private trust directory permissions are unsafe")
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
+            raise ValueError("private trust directory owner is unsafe")
+        if identity != (info.st_dev, info.st_ino):
+            raise ValueError("trust store root changed")
+        if stat.S_IMODE(info.st_mode) != 0o700:
+            raise _RepairableTrustRootPermissions(identity)
         return identity
 
-    def _ensure_root(self):
+    def _ensure_root(self, *, expected_identity=None):
         self.root = ensure_private_dir(self.root)
-        self._root_identity = self._read_root_identity()
+        identity = self._read_root_identity()
+        if expected_identity is not None and identity != expected_identity:
+            raise ValueError("trust store root changed")
+        self._root_identity = identity
 
     def trust(self, project_root):
         project_root = require_directory_no_symlink(project_root)

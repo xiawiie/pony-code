@@ -29,6 +29,7 @@ from pony.agent.model_capabilities import (
     build_model_budget,
     resolve_model_capabilities,
 )
+from pony.tools.result_view import ResultPagePolicy, page_text
 from scripts.evaluation import evaluate
 
 
@@ -100,7 +101,6 @@ def test_live_fixture_uses_model_budget_and_compaction_contract():
     context = fixture["context"]
     compaction = context["compaction"]
     capabilities = resolve_model_capabilities(
-        "live-fixture",
         model_config=model,
     )
     budget = build_model_budget(
@@ -341,7 +341,7 @@ def test_parse_args_accepts_auto_target_without_network(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
-def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
+def test_project_env_uses_protocol_baseline_for_unknown_model(tmp_path, provider):
     base_url = f"https://api.{provider}.com/v1"
     lines = [
         f"PONY_PROVIDER={provider}",
@@ -366,9 +366,10 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
     assert settings["model"] == (f"{provider}-test-model")
     assert settings["base_url"] == base_url
     assert settings["auth_mode"] == expected_auth_mode
-    assert settings["capabilities"].get("prompt_cache", False) is (
-        provider == "anthropic"
+    expected_capabilities = (
+        {} if provider == "anthropic" else {"reasoning_replay": True}
     )
+    assert settings["capabilities"] == expected_capabilities
 
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
@@ -553,6 +554,15 @@ def test_main_constructs_live_pony_with_read_only_workspace_and_memory_tools(
     assert captured["options"].allowed_tools == ("read_file", "memory_read")
     assert captured["options"].max_steps == 3
     assert captured["options"].project_trusted is True
+
+
+def test_tool_page_prompt_requires_exact_continuation():
+    prompt = run_live_session._TOOL_PAGE_PROMPT
+
+    assert run_live_session.TOOL_PAGE_FIXTURE_REL.as_posix() in prompt
+    assert "Use only path, or path plus start=1; omit end" in prompt
+    assert "exact continuation arguments" in prompt
+    assert "exactly once more" in prompt
 
 
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
@@ -1490,19 +1500,19 @@ def test_dispatch_fails_incomplete_turns(overrides, failed_name):
 
 
 def _turn_2_result_stub(**overrides):
-    """Session state includes a tool_result message with digest applied."""
+    prompt = run_live_session._TOOL_PAGE_PROMPT
     defaults = dict(
         turn=2,
-        user_prompt="读一下 pony/runtime/application.py",
-        expected_behavior="digest_applied",
+        user_prompt=prompt,
+        expected_behavior="provider_tool_roundtrip",
         final_answer="ok",
         metadata={"injection_tokens": {"recalled_memory": 1}},
         session_message_count_before=2,
-        session_message_count_after=6,
-        model_turns_this_turn=2,
-        model_attempts_this_turn=2,
+        session_message_count_after=8,
+        model_turns_this_turn=3,
+        model_attempts_this_turn=3,
         model_failures_this_turn=0,
-        transport_attempts_this_turn=2,
+        transport_attempts_this_turn=3,
         transport_retries_this_turn=0,
         transport_evidence_complete=True,
         billing_ambiguous=False,
@@ -1516,12 +1526,14 @@ def _turn_2_result_stub(**overrides):
         request_metadata_by_call=(
             {"injection_tokens": {"recalled_memory": 1}},
             {"injection_tokens": {"recalled_memory": 1}},
+            {"injection_tokens": {"recalled_memory": 1}},
         ),
-        system_prefix_hashes=("cache-key", "cache-key"),
-        action_origins=("native_tool_use",),
+        system_prefix_hashes=("cache-key", "cache-key", "cache-key"),
+        action_origins=("native_tool_use", "native_tool_use"),
         actual_user_contents=(
-            "<system-reminder>context</system-reminder>\n读一下 pony/runtime/application.py",
-            "<system-reminder>context</system-reminder>\n读一下 pony/runtime/application.py",
+            f"<system-reminder>context</system-reminder>\n{prompt}",
+            f"<system-reminder>context</system-reminder>\n{prompt}",
+            f"<system-reminder>context</system-reminder>\n{prompt}",
         ),
         run_id="run-2",
         task_state_terminal=True,
@@ -1529,87 +1541,150 @@ def _turn_2_result_stub(**overrides):
         trace_terminal=True,
         terminal_status="completed",
         stop_reason="final_answer_returned",
-        tool_name_counts={},
-        tool_status_counts={},
+        tool_name_counts={"read_file": 2},
+        tool_status_counts={"ok": 2},
         error_code_counts={},
     )
     defaults.update(overrides)
     return TurnResult(**defaults)
 
 
-def _pony_stub_with_digested_message(
-    raw_body: str,
-    run_dir: Path,
-    source_hash: str | None = None,
-):
-    """Build a MagicMock pony whose session has a digested tool_result at the tail."""
-    content_sha256 = hashlib.sha256(raw_body.encode("utf-8")).hexdigest()
-    source_hash = source_hash or content_sha256[:16]
-    raw_dir = run_dir / "tool_results"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    raw_file = raw_dir / f"{source_hash}.txt"
-    raw_file.write_text(raw_body, encoding="utf-8")
-
+def _pony_stub_with_paged_messages(run_dir: Path):
+    run_dir.mkdir(parents=True)
+    fixture = run_live_session.TOOL_PAGE_FIXTURE_TEXT
+    fixture_lines = fixture.splitlines(keepends=True)
+    source_hash = hashlib.sha256(fixture.encode("utf-8")).hexdigest()
+    path = run_live_session.TOOL_PAGE_FIXTURE_REL.as_posix()
+    continuation = {
+        "path": path,
+        "start": 2_001,
+        "expected_sha256": source_hash,
+    }
+    first_header = {
+        "path": path,
+        "start": 1,
+        "end": 2_000,
+        "total_lines": 3_000,
+        "range_complete": False,
+        "file_complete": False,
+        "sha256": source_hash,
+    }
+    second_header = {
+        "path": path,
+        "start": 2_001,
+        "end": 3_000,
+        "total_lines": 3_000,
+        "range_complete": True,
+        "file_complete": True,
+        "sha256": source_hash,
+    }
+    first_content = (
+        f"[page] {json.dumps(first_header, separators=(',', ':'))}\n"
+        + "".join(fixture_lines[:2_000])
+        + f"[continuation] {json.dumps(continuation, separators=(',', ':'))}"
+    )
+    second_content = (
+        f"[page] {json.dumps(second_header, separators=(',', ':'))}\n"
+        + "".join(fixture_lines[2_000:])
+    )
+    messages = [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "earlier"},
+        {"role": "user", "content": run_live_session._TOOL_PAGE_PROMPT},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "read_file",
+                    "input": {"path": path},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": first_content,
+                }
+            ],
+            "_pony_meta": {
+                "digest_applied": False,
+                "source_hash": None,
+                "tool_use_id": "t1",
+                "tool_status": "ok",
+                "effect_class": "read_only",
+            },
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t2",
+                    "name": "read_file",
+                    "input": continuation,
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t2",
+                    "content": second_content,
+                }
+            ],
+            "_pony_meta": {
+                "digest_applied": False,
+                "source_hash": None,
+                "tool_use_id": "t2",
+                "tool_status": "ok",
+                "effect_class": "read_only",
+            },
+        },
+        {"role": "assistant", "content": "done"},
+    ]
     pony = MagicMock()
     pony.run_store.run_dir.return_value = run_dir
-    pony.session = {
-        "messages": [
-            {"role": "user", "content": "read"},
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "t1",
-                        "name": "read_file",
-                        "input": {"path": "x"},
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "t1",
-                        "content": (
-                            "[digest] runtime.py (900 lines)\n- import\n"
-                            f"[reference] content_sha256: sha256:{content_sha256} "
-                            f"raw_result_id: tool_result:{source_hash}"
-                        ),
-                    }
-                ],
-                "_pony_meta": {
-                    "digest_applied": True,
-                    "source_hash": source_hash,
-                    "tool_use_id": "t1",
-                },
-            },
-        ]
-    }
-    return pony, raw_file
+    pony.session = {"messages": messages}
+    return pony
 
 
-def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
+def test_check_turn_2_pages_passes_on_valid_state(tmp_path):
     engine = _engine()
-    raw_body = "x" * 5000
-    pony, raw_file = _pony_stub_with_digested_message(raw_body, tmp_path / "runs")
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
     result = _turn_2_result_stub()
-    asserts = engine.check_turn_2_digest(result, pony)
-    assert len(asserts) == 14
+    asserts = engine.check_turn_2_pages(result, pony)
     assert all(a.passed for a in asserts), [
         (a.name, a.actual) for a in asserts if not a.passed
     ]
 
 
+def test_check_turn_2_pages_accepts_explicit_first_start(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    pony.session["messages"][3]["content"][0]["input"]["start"] = 1
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert next(
+        item
+        for item in assertions
+        if item.name == "read_file_inputs_follow_exact_continuation"
+    ).passed
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openai", "ollama"])
 def test_turn_2_requires_native_tool_action_for_every_provider(tmp_path, provider):
-    pony, _ = _pony_stub_with_digested_message(
-        "x" * 5000,
-        tmp_path / "runs",
-    )
-    assertions = _engine(provider=provider).check_turn_2_digest(
-        _turn_2_result_stub(action_origins=("native_tool_use",)),
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    assertions = _engine(provider=provider).check_turn_2_pages(
+        _turn_2_result_stub(
+            action_origins=("native_tool_use", "native_tool_use")
+        ),
         pony,
     )
 
@@ -1619,25 +1694,24 @@ def test_turn_2_requires_native_tool_action_for_every_provider(tmp_path, provide
         if assertion.name == "provider_tool_action_observed"
     )
     assert action_assertion.passed
-    assert action_assertion.expected == "native_tool_use in action_origins"
+    assert action_assertion.expected == "exactly two native_tool_use actions"
 
 
 def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
-    pony, _ = _pony_stub_with_digested_message(
-        "x" * 5000,
-        tmp_path / "runs",
-    )
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
     prompt = "读一下 pony/runtime/application.py"
     result = _turn_2_result_stub(
+        user_prompt=prompt,
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
             {"injection_tokens": {"recalled_memory": 0}},
             {"injection_tokens": {"recalled_memory": 0}},
+            {"injection_tokens": {"recalled_memory": 0}},
         ),
-        actual_user_contents=(prompt, prompt),
+        actual_user_contents=(prompt, prompt, prompt),
     )
 
-    assertions = _engine().check_turn_2_digest(result, pony)
+    assertions = _engine().check_turn_2_pages(result, pony)
 
     assert next(
         assertion
@@ -1647,21 +1721,20 @@ def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
 
 
 def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
-    pony, _ = _pony_stub_with_digested_message(
-        "x" * 5000,
-        tmp_path / "runs",
-    )
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
     prompt = "读一下 pony/runtime/application.py"
     result = _turn_2_result_stub(
+        user_prompt=prompt,
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
             {"injection_tokens": {"recalled_memory": 0}},
             {"injection_tokens": {"recalled_memory": 12}},
+            {"injection_tokens": {"recalled_memory": 0}},
         ),
-        actual_user_contents=(prompt, prompt),
+        actual_user_contents=(prompt, prompt, prompt),
     )
 
-    assertions = _engine().check_turn_2_digest(result, pony)
+    assertions = _engine().check_turn_2_pages(result, pony)
 
     assert not next(
         assertion
@@ -1671,7 +1744,7 @@ def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
 
 
 def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
-    pony, _ = _pony_stub_with_digested_message("x" * 5000, tmp_path / "runs")
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
     result = _turn_2_result_stub(
         action_origins=("provider_text",),
         usage_complete=False,
@@ -1679,7 +1752,7 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
         system_prefix_hashes=("",),
     )
 
-    assertions = _engine().check_turn_2_digest(result, pony)
+    assertions = _engine().check_turn_2_pages(result, pony)
 
     failed = {assertion.name for assertion in assertions if not assertion.passed}
     assert {
@@ -1690,45 +1763,126 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
     } <= failed
 
 
-def test_check_turn_2_digest_fails_when_no_digest_applied(tmp_path):
-    engine = _engine()
-    pony = MagicMock()
-    pony.session = {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "t1",
-                        "content": "raw output",
-                    }
-                ],
-                "_pony_meta": {"digest_applied": False, "tool_use_id": "t1"},
-            },
-        ]
+def test_check_turn_2_pages_requires_continuation_marker(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    first_result = pony.session["messages"][4]["content"][0]
+    first_result["content"] = first_result["content"].rsplit(
+        "\n[continuation] ", 1
+    )[0]
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert not next(
+        item for item in assertions if item.name == "first_page_has_exact_continuation"
+    ).passed
+
+
+def test_check_turn_2_pages_requires_exact_second_input(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    pony.session["messages"][5]["content"][0]["input"]["start"] = 2
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert not next(
+        item
+        for item in assertions
+        if item.name == "read_file_inputs_follow_exact_continuation"
+    ).passed
+
+
+def test_check_turn_2_pages_requires_fixture_sha(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    first_result = pony.session["messages"][4]["content"][0]
+    source_hash = hashlib.sha256(
+        run_live_session.TOOL_PAGE_FIXTURE_TEXT.encode("utf-8")
+    ).hexdigest()
+    first_result["content"] = first_result["content"].replace(
+        source_hash, "0" * 64, 1
+    )
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert not next(
+        item for item in assertions if item.name == "first_page_has_exact_continuation"
+    ).passed
+
+
+def test_check_turn_2_pages_requires_matching_second_sha(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    second_result = pony.session["messages"][6]["content"][0]
+    source_hash = hashlib.sha256(
+        run_live_session.TOOL_PAGE_FIXTURE_TEXT.encode("utf-8")
+    ).hexdigest()
+    second_result["content"] = second_result["content"].replace(
+        source_hash, "0" * 64, 1
+    )
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert not next(
+        item for item in assertions if item.name == "second_page_completes_file"
+    ).passed
+
+
+def test_check_turn_2_pages_requires_lossless_body(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    second_result = pony.session["messages"][6]["content"][0]
+    second_result["content"] = second_result["content"].replace(
+        "p2500\n", "changed\n"
+    )
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+
+    assert not next(
+        item for item in assertions if item.name == "page_bodies_reconstruct_source"
+    ).passed
+
+
+def test_check_turn_2_pages_rejects_digest_preview_and_raw_spill(tmp_path):
+    run_dir = tmp_path / "runs"
+    pony = _pony_stub_with_paged_messages(run_dir)
+    first_result_message = pony.session["messages"][4]
+    first_result_message["_pony_meta"]["digest_applied"] = True
+    first_result_message["_pony_meta"]["source_hash"] = "0" * 64
+    first_result_message["_pony_meta"]["result_view"] = {
+        "delivery": "preview",
+        "truncated": True,
     }
-    asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pony)
-    failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "digest_applied_flag_true" for a in failed)
+    first_result_message["content"][0]["content"] += "\n[preview] raw_result_id"
+    raw_dir = run_dir / "tool_results"
+    raw_dir.mkdir()
+    (raw_dir / f"{'0' * 64}.txt").write_text("spill", encoding="utf-8")
+
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
+    failed = {item.name for item in assertions if not item.passed}
+
+    assert {
+        "paged_result_metadata_exact",
+        "paged_results_have_no_preview_markers",
+        "run_has_no_raw_tool_results",
+    } <= failed
 
 
-def test_check_turn_2_digest_verifies_raw_file_exists(tmp_path):
-    engine = _engine()
-    raw_body = "x" * 5000
-    pony, raw_file = _pony_stub_with_digested_message(raw_body, tmp_path / "runs")
-    raw_file.unlink()  # remove the raw file → check should fail
-    asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pony)
-    failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "raw_file_exists_on_disk" for a in failed)
+def test_check_turn_2_pages_requires_durable_tool_success(tmp_path):
+    pony = _pony_stub_with_paged_messages(tmp_path / "runs")
+    pony.session["messages"][6]["_pony_meta"]["tool_status"] = "error"
+    result = _turn_2_result_stub(
+        tool_status_counts={"ok": 1, "error": 1},
+        error_code_counts={"tool_failed": 1},
+    )
+
+    assertions = _engine().check_turn_2_pages(result, pony)
+    failed = {item.name for item in assertions if not item.passed}
+
+    assert {"paged_result_metadata_exact", "read_file_calls_succeeded"} <= failed
 
 
-def test_check_turn_2_digest_rejects_model_visible_host_path(tmp_path):
-    pony, raw_file = _pony_stub_with_digested_message("x" * 5000, tmp_path / "runs")
-    tool_result = pony.session["messages"][-1]["content"][0]
-    tool_result["content"] += f"\n(raw at {raw_file})"
+def test_check_turn_2_pages_rejects_model_visible_host_path(tmp_path):
+    run_dir = tmp_path / "runs"
+    pony = _pony_stub_with_paged_messages(run_dir)
+    pony.session["messages"][6]["content"][0]["content"] += f"\n(raw at {run_dir})"
 
-    assertions = _engine().check_turn_2_digest(_turn_2_result_stub(), pony)
+    assertions = _engine().check_turn_2_pages(_turn_2_result_stub(), pony)
 
     host_path_assertion = next(
         assertion
@@ -3025,6 +3179,50 @@ def test_v3_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
     assert set(turn["assertions"][0]) == {"name", "gate", "passed"}
 
 
+def test_fixture_page_contract_survives_platform_newlines(tmp_path):
+    seed = tmp_path / "seed.md"
+    seed.write_text("safe seed\n", encoding="utf-8")
+    fixture = run_live_session.FixtureManager(tmp_path)
+    fixture._seed_source = seed
+    policy = ResultPagePolicy(
+        max_tokens=4_096,
+        token_counter=lambda text: len(text) // 4,
+        redact_text=str,
+    )
+
+    with fixture:
+        target = tmp_path / run_live_session.TOOL_PAGE_FIXTURE_REL
+        raw_fixture = target.read_bytes()
+        source = raw_fixture.decode("utf-8")
+        path = run_live_session.TOOL_PAGE_FIXTURE_REL.as_posix()
+        first = page_text(source, locator={"path": path}, policy=policy)
+        first_lines = first.content.splitlines(keepends=True)
+        continuation_line = first_lines[-1]
+        continuation = json.loads(
+            continuation_line.removeprefix("[continuation] ")
+        )
+        second = page_text(
+            source,
+            locator={"path": path},
+            policy=policy,
+            start=continuation["start"],
+            expected_sha256=continuation["expected_sha256"],
+        )
+        second_lines = second.content.splitlines(keepends=True)
+        header = json.loads(first_lines[0].removeprefix("[page] "))
+
+        assert raw_fixture == run_live_session.TOOL_PAGE_FIXTURE_TEXT.encode("utf-8")
+        assert continuation == {
+            "path": path,
+            "start": 2_001,
+            "expected_sha256": header["sha256"],
+        }
+        assert header["sha256"] == hashlib.sha256(raw_fixture).hexdigest()
+        assert "".join(first_lines[1:-1] + second_lines[1:]) == source
+        assert second.result_view["start_line"] == 2_001
+        assert second.result_view["end_line"] == 3_000
+
+
 def test_fixture_restoration_is_verified_after_context_exit(tmp_path):
     original = b"ordinary = true\n"
     (tmp_path / "pony.toml").write_bytes(original)
@@ -3035,17 +3233,17 @@ def test_fixture_restoration_is_verified_after_context_exit(tmp_path):
 
     with fixture:
         assert fixture.restoration_status()["restored"] is False
-        assert (tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL).is_file()
+        assert (tmp_path / run_live_session.TOOL_PAGE_FIXTURE_REL).is_file()
 
     assert fixture.restoration_status() == {
         "restored": True,
         "cleanup_error_codes": (),
     }
     assert (tmp_path / "pony.toml").read_bytes() == original
-    assert not (tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL).exists()
+    assert not (tmp_path / run_live_session.TOOL_PAGE_FIXTURE_REL).exists()
 
 
-def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
+def test_fixture_removes_dangling_page_symlink_on_exit(tmp_path):
     original = b"ordinary = true\n"
     (tmp_path / "pony.toml").write_bytes(original)
     seed = tmp_path / "seed.md"
@@ -3054,10 +3252,10 @@ def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
     fixture._seed_source = seed
 
     fixture.__enter__()
-    digest = tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL
-    digest.unlink()
+    page = tmp_path / run_live_session.TOOL_PAGE_FIXTURE_REL
+    page.unlink()
     try:
-        digest.symlink_to(tmp_path / "missing-target")
+        page.symlink_to(tmp_path / "missing-target")
     except OSError as exc:
         if getattr(exc, "winerror", None) == 1314:
             pytest.skip(
@@ -3067,5 +3265,5 @@ def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
         raise
     fixture.__exit__(None, None, None)
 
-    assert not os.path.lexists(digest)
+    assert not os.path.lexists(page)
     assert fixture.restoration_status()["restored"] is True

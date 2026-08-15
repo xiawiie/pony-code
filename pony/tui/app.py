@@ -21,6 +21,7 @@ from prompt_toolkit.shortcuts import choice, CompleteStyle
 from pony.cli.help import SLASH_COMMANDS
 from pony.cli.input_queue import InputQueue
 from pony.runtime.resume import active_prompt_history
+from pony.security.text import normalize_surrogate_pairs
 from pony.tools.permissions import display_permission_mode
 from pony.tui.render import FULL_TUI_MINIMUM_COLUMNS, TuiRenderer
 
@@ -31,14 +32,30 @@ _MAX_EDITOR_LINES = 6
 _COMPLETION_ROWS = 5
 
 
-def _normalize_prompt_text(value):
-    text = str(value)
-    if not any("\ud800" <= character <= "\udfff" for character in text):
-        return text
-    return text.encode("utf-16-le", "surrogatepass").decode(
-        "utf-16-le",
-        "replace",
+def _terminal_width_message():
+    return (
+        "Terminal too narrow\n"
+        f"Expand to at least {FULL_TUI_MINIMUM_COLUMNS} columns to continue.\n"
     )
+
+
+def _application_terminal_columns(app):
+    output = getattr(app, "output", None)
+    get_size = getattr(output, "get_size", None)
+    if not callable(get_size):
+        return None
+    return get_size().columns
+
+
+def _session_terminal_columns(session):
+    columns = _application_terminal_columns(getattr(session, "app", None))
+    if columns is not None:
+        return columns
+    return shutil.get_terminal_size((80, 24)).columns
+
+
+def _normalize_prompt_text(value):
+    return normalize_surrogate_pairs(value)
 
 
 class _PromptTextAssembler:
@@ -134,6 +151,138 @@ def _install_startup_resize_repaint(session, startup_is_visible):
     return repaint
 
 
+def _install_activity_resize_repaint(session, on_resize):
+    app = getattr(session, "app", None)
+    after_render = getattr(app, "after_render", None)
+    columns = _application_terminal_columns(app)
+    if after_render is None or columns is None:
+        return None
+
+    previous_columns = columns
+
+    def repaint(resized_app):
+        nonlocal previous_columns
+        columns = resized_app.output.get_size().columns
+        if columns == previous_columns:
+            return
+        previous_columns = columns
+        try:
+            on_resize(resized_app, columns)
+        except Exception:  # resize repaint cannot replace the active turn outcome
+            pass
+
+    after_render += repaint
+    return repaint
+
+
+class _PreviewCoalescer:
+    """Synchronize the first preview, then keep one rate-limited latest slot."""
+
+    def __init__(self, render_first, render_later, schedule, *, clock=time.monotonic):
+        self._render_first = render_first
+        self._render_later = render_later
+        self._schedule = schedule
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._active = False
+        self._first_pending = True
+        self._latest = None
+        self._scheduled = False
+        self._last_rendered_at = 0.0
+
+    def begin(self):
+        with self._lock:
+            self._generation += 1
+            self._active = True
+            self._first_pending = True
+            self._latest = None
+            self._scheduled = False
+            self._last_rendered_at = 0.0
+
+    def submit(self, snapshot):
+        with self._lock:
+            if not self._active:
+                return False
+            if self._first_pending:
+                self._first_pending = False
+                generation = self._generation
+                first = True
+            else:
+                self._latest = str(snapshot)
+                if self._scheduled:
+                    return True
+                self._scheduled = True
+                generation = self._generation
+                delay = max(0.0, 0.1 - (self._clock() - self._last_rendered_at))
+                first = False
+        if first:
+            try:
+                displayed = self._render_first(snapshot) is True
+            except Exception:
+                displayed = False
+            with self._lock:
+                if not self._active or generation != self._generation:
+                    return False
+                if displayed:
+                    self._last_rendered_at = self._clock()
+                else:
+                    self._active = False
+            return displayed
+        return self._schedule_flush(generation, delay)
+
+    def finish(self):
+        with self._lock:
+            self._generation += 1
+            self._active = False
+            self._latest = None
+            self._scheduled = False
+
+    def _schedule_flush(self, generation, delay):
+        try:
+            scheduled = self._schedule(
+                delay,
+                lambda: self._flush(generation),
+            ) is True
+        except Exception:
+            scheduled = False
+        if scheduled:
+            return True
+        with self._lock:
+            if generation == self._generation:
+                self._active = False
+                self._latest = None
+                self._scheduled = False
+        return False
+
+    def _flush(self, generation):
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return
+            snapshot = self._latest
+            self._latest = None
+            self._scheduled = False
+        if snapshot is None:
+            return
+        try:
+            displayed = self._render_later(snapshot) is True
+        except Exception:
+            displayed = False
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return
+            if not displayed:
+                self._active = False
+                self._latest = None
+                return
+            self._last_rendered_at = self._clock()
+            if self._latest is None or self._scheduled:
+                return
+            self._scheduled = True
+            next_generation = self._generation
+        self._schedule_flush(next_generation, 0.1)
+
+
 class _CompactPromptSession(PromptSession):
     """Keep the multiline editor inline with native terminal scrollback."""
 
@@ -160,16 +309,15 @@ def tui_capability(*, stdin=None, stdout=None, environ=None, columns=None):
         return False, ""
     term = environ.get("TERM", "").strip()
     if term.casefold() == "dumb" or (not term and not _WINDOWS):
-        return False, "terminal cannot display the required full-size PONY CODE logo"
+        return False, "terminal cannot display the PONY CODE conversation interface"
     width = columns
     if width is None:
         width = shutil.get_terminal_size((80, 24)).columns
     if width < FULL_TUI_MINIMUM_COLUMNS:
-        return (
-            False,
+        return False, (
             "terminal width must be at least "
             f"{FULL_TUI_MINIMUM_COLUMNS} columns for the required "
-            "full-size PONY CODE logo",
+            "full-size PONY CODE logo"
         )
     return True, ""
 
@@ -226,6 +374,10 @@ def _key_bindings():
 
     @bindings.add("enter")
     def submit(event):
+        columns = _application_terminal_columns(getattr(event, "app", None))
+        if columns is not None and columns < FULL_TUI_MINIMUM_COLUMNS:
+            event.app.invalidate()
+            return
         buffer = event.current_buffer
         _flush_pending_prompt_text(buffer)
         if buffer.document.text_before_cursor.endswith("\\"):
@@ -339,6 +491,10 @@ def run_tui(
     prompt_history=(),
 ):
     """Run one synchronous Pony turn at a time in an inline terminal UI."""
+    if getattr(agent, "stream_enabled", False):
+        from pony.runtime.options import require_streaming_client
+
+        require_streaming_client(getattr(agent, "model_client", None))
     renderer = TuiRenderer(
         no_color=no_color or os.environ.get("NO_COLOR") is not None,
     )
@@ -381,6 +537,64 @@ def run_tui(
         )
         return future.result()
 
+    def render_later(snapshot):
+        with ui_lock:
+            return renderer.stream_preview(snapshot)
+
+    def schedule_preview(delay, callback):
+        app = getattr(session, "app", None)
+        loop = getattr(app, "loop", None)
+        if app is None or loop is None or not getattr(app, "is_running", False):
+            return False
+
+        async def render_in_terminal():
+            try:
+                await run_in_terminal(callback)
+            except Exception:
+                pass
+
+        def enqueue_render():
+            if getattr(app, "is_running", False):
+                loop.create_task(render_in_terminal())
+
+        def schedule_on_loop():
+            if getattr(app, "is_running", False):
+                loop.call_later(delay, enqueue_render)
+
+        loop.call_soon_threadsafe(schedule_on_loop)
+        return True
+
+    preview_coalescer = _PreviewCoalescer(
+        lambda snapshot: call_ui(renderer.stream_preview, snapshot),
+        render_later,
+        schedule_preview,
+    )
+
+    def stream_committed():
+        preview_coalescer.begin()
+        call_ui(renderer.stream_committed)
+
+    def stream_finished():
+        preview_coalescer.finish()
+        call_ui(renderer.stream_finished)
+
+    def schedule_activity_resize(resized_app, _columns):
+        async def repaint_in_terminal():
+            def repaint():
+                with ui_lock:
+                    renderer.resize(resized_app.output.get_size().columns)
+
+            try:
+                return await run_in_terminal(repaint)
+            except Exception:  # resize repaint cannot replace the active turn outcome
+                return None
+
+        loop = getattr(resized_app, "loop", None)
+        if loop is not None and getattr(resized_app, "is_running", False):
+            loop.create_task(repaint_in_terminal())
+
+    _install_activity_resize_repaint(session, schedule_activity_resize)
+
     wake_result = object()
 
     def wake_prompt():
@@ -419,14 +633,20 @@ def run_tui(
             session.default_buffer.history = history
 
     def prompt_message():
+        columns = _session_terminal_columns(session)
+        if startup_visible and columns < FULL_TUI_MINIMUM_COLUMNS:
+            return FormattedText([("class:warning", _terminal_width_message())])
         if not startup_visible:
-            return renderer.prompt()
+            return renderer.prompt(
+                columns=columns,
+                pending=input_queue.pending_count,
+            )
         fragments = []
         if show_header:
-            fragments.extend(renderer.welcome(agent, model=model))
+            fragments.extend(renderer.welcome(agent, model=model, columns=columns))
         if resume_projection is not None:
             fragments.extend(renderer.resume_card(resume_projection))
-        fragments.extend(renderer.prompt())
+        fragments.extend(renderer.prompt(columns=columns))
         return FormattedText(fragments)
 
     input_queue = None
@@ -458,13 +678,17 @@ def run_tui(
 
     input_queue = InputQueue(
         process_turn,
-        on_start=lambda text: call_ui(renderer.user, text),
+        on_start=lambda text: call_ui(renderer.turn_started, text),
         on_wake=wake_prompt,
     )
 
     def approve(name, args):
-        call_ui(renderer.approval, name, args)
-        return input_queue.confirm("  Approve once? [y/N] ")
+        accepted = input_queue.confirm(
+            "  Approve once? [y/N] ",
+            on_ready=lambda: call_ui(renderer.approval, name, args),
+        )
+        call_ui(renderer.approval_resolved, accepted)
+        return accepted
 
     def process_local(user_input):
         return handle_input(
@@ -478,12 +702,42 @@ def run_tui(
             pick_session_entry=pick_session_entry,
         )
 
+    def render_status(text):
+        if not str(text).startswith("queued for next turn: "):
+            call_ui(
+                renderer.notice,
+                text,
+                restore_activity=input_queue.busy,
+            )
+
+    def render_user(text):
+        call_ui(
+            renderer.user,
+            text,
+            restore_activity=input_queue.busy,
+        )
+
+    def render_error(text):
+        call_ui(
+            renderer.notice,
+            text,
+            error=True,
+            restore_activity=input_queue.busy,
+        )
+
     from pony.cli.start import _raise_or_return_terminal, _route_repl_input
 
     previous_listener = getattr(agent, "_trace_listener", None)
     previous_approval_prompt = getattr(agent, "_approval_prompt", None)
+    previous_stream_committed = getattr(agent, "_stream_committed_callback", None)
+    previous_stream_preview = getattr(agent, "_stream_preview_callback", None)
+    previous_stream_finished = getattr(agent, "_stream_finished_callback", None)
     agent._trace_listener = lambda envelope: call_ui(renderer.trace, envelope)
     agent._approval_prompt = approve
+    if getattr(agent, "stream_enabled", False):
+        agent._stream_committed_callback = stream_committed
+        agent._stream_preview_callback = preview_coalescer.submit
+        agent._stream_finished_callback = stream_finished
     last_interrupt = 0.0
 
     try:
@@ -494,14 +748,15 @@ def run_tui(
             refresh_history()
             confirmation = input_queue.confirmation()
             try:
-                user_input = _normalize_prompt_text(
-                    session.prompt(
-                        FormattedText([("class:warning", confirmation)])
-                        if confirmation is not None
-                        else prompt_message,
-                        prompt_continuation=_continuation,
-                        bottom_toolbar=lambda: renderer.toolbar(agent, model=model),
-                    )
+                raw_input = session.prompt(
+                    FormattedText([("class:warning", confirmation)])
+                    if confirmation is not None
+                    else prompt_message,
+                    prompt_continuation=_continuation,
+                    bottom_toolbar=lambda: renderer.toolbar(
+                        agent,
+                        model=model,
+                    ),
                 )
                 startup_visible = False
             except EOFError:
@@ -516,7 +771,9 @@ def run_tui(
                     removed = input_queue.clear()
                     call_ui(
                         renderer.notice,
-                        f"current turn continues; cleared {removed} pending"
+                        "current turn continues (request cancellation is unavailable); "
+                        f"cleared {removed} queued next-turn input(s)",
+                        restore_activity=True,
                     )
                     continue
                 if hasattr(exc, "signal_number"):
@@ -528,21 +785,18 @@ def run_tui(
                 call_ui(renderer.notice, "press Ctrl+C again to exit")
                 continue
 
-            if user_input is wake_result:
+            if raw_input is wake_result:
                 continue
+            user_input = _normalize_prompt_text(raw_input)
             user_input = user_input.strip()
             result = _route_repl_input(
                 agent,
                 input_queue,
                 user_input,
                 process_local=process_local,
-                render_user=lambda text: call_ui(renderer.user, text),
-                render_status=lambda text: call_ui(renderer.notice, text),
-                render_error=lambda text: call_ui(
-                    renderer.notice,
-                    text,
-                    error=True,
-                ),
+                render_user=render_user,
+                render_status=render_status,
+                render_error=render_error,
                 confirmation_shown=confirmation is not None,
             )
             refresh_history()
@@ -550,9 +804,13 @@ def run_tui(
                 return result
     finally:
         input_queue.close()
+        preview_coalescer.finish()
         try:
             call_ui(renderer.close)
         except Exception:  # noqa: BLE001 - UI cleanup cannot hide the primary result
             pass
         agent._trace_listener = previous_listener
         agent._approval_prompt = previous_approval_prompt
+        agent._stream_committed_callback = previous_stream_committed
+        agent._stream_preview_callback = previous_stream_preview
+        agent._stream_finished_callback = previous_stream_finished

@@ -63,7 +63,7 @@ readme_intro_locked/
 !/docs/benchmark-evaluation-results-2026-08-05.md
 !/docs/memory.md
 !/docs/public-memory-benchmark.md
-!/docs/local-stable-execution.md
+!/docs/model-target-and-budget-design.md
 !/docs/adr/
 !/docs/adr/*.md
 !/docs/context-and-sessions.md

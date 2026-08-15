@@ -8,7 +8,6 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 import os
-import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +39,7 @@ from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from pony.context.skills import discover_project_skills
 from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
+from pony.tools.result_view import ResultPagePolicy, project_result_view
 from pony.tools import registry as toolkit
 from pony.tools.permissions import PermissionMode, validate_permission_mode
 from pony.tools.validation import SensitiveToolError
@@ -47,7 +47,7 @@ from pony.tools.validation import validate_tool as validate_tool_arguments
 from pony.config.environment import read_project_env
 from pony.config.model import validate_model_name
 from pony.config.project import load_pony_toml
-from pony.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions, require_streaming_client
 from pony.runtime.legacy import preflight_legacy_sandbox_resume
 from pony.runtime.reporting import build_report_request_metadata
 from pony.runtime.working_memory import WorkingMemory
@@ -210,6 +210,10 @@ class Pony:
     def bypass_permissions_available(self):
         return self._bypass_permissions_available
 
+    @property
+    def stream_enabled(self):
+        return self._stream_enabled
+
     def _initialize(
         self,
         model_client,
@@ -223,6 +227,10 @@ class Pony:
             options = RuntimeOptions()
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
+        if type(options.stream) is not bool:
+            raise TypeError("stream must be a bool")
+        if options.stream:
+            require_streaming_client(model_client)
         if (
             isinstance(session, dict)
             and _session_requires_bypass_permission_capability(session)
@@ -274,6 +282,10 @@ class Pony:
         self.project_trusted = options.project_trusted is True
         self._trace_listener = None
         self._approval_prompt = None
+        self._stream_enabled = options.stream
+        self._stream_committed_callback = None
+        self._stream_preview_callback = None
+        self._stream_finished_callback = None
         self.max_steps = options.max_steps
         self.depth = options.depth
         self.max_depth = options.max_depth
@@ -372,13 +384,10 @@ class Pony:
             explicit_model_config["context_window"] = model_config["context_window"]
         if config_meta.get("model_output_explicit") is True:
             explicit_model_config["output_limit"] = model_config["output_limit"]
-        model_name = str(getattr(model_client, "model", "") or "")
         model_capabilities = resolve_model_capabilities(
-            model_name,
             model_config=explicit_model_config,
             context_window=options.context_window,
             max_output_tokens=options.max_output_tokens,
-            warning_sink=lambda message: print(message, file=sys.stderr),
         )
         context_config = project_config["context"]
         memory_config = project_config["memory"]
@@ -578,6 +587,10 @@ class Pony:
         options = RuntimeOptions() if options is None else options
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
+        if type(options.stream) is not bool:
+            raise TypeError("stream must be a bool")
+        if options.stream:
+            require_streaming_client(model_client)
         session_store.path_for(session_id)
         preflight_legacy_sandbox_resume(workspace.repo_root, session_id)
         redaction_env = options.redaction_env
@@ -759,6 +772,8 @@ class Pony:
             candidate_client = self.model_client_factory(model)
         except (TypeError, ValueError) as exc:
             raise ValueError("model_session_mismatch") from exc
+        if self.stream_enabled:
+            require_streaming_client(candidate_client)
         candidate = getattr(candidate_client, "provider_binding", None)
         if (
             not isinstance(candidate, dict)
@@ -824,6 +839,11 @@ class Pony:
         self._permission_turn = {
             "mode": mode,
             "tools": self._visible_tools_for(mode),
+            "result_page_policy": ResultPagePolicy(
+                max_tokens=self.context_config["tool_results"]["inline_tokens"],
+                token_counter=self.token_accounting.count_text,
+                redact_text=self.redact_text,
+            ),
         }
 
     def end_permission_turn(self):
@@ -835,7 +855,16 @@ class Pony:
         mode = self.session["permission_mode"]
         if mode == PermissionMode.PLAN.value:
             raise RuntimeError("plan_mode_still_active")
-        self._permission_turn = {"mode": mode, "tools": self._visible_tools_for(mode)}
+        self._permission_turn = {
+            **self._permission_turn,
+            "mode": mode,
+            "tools": self._visible_tools_for(mode),
+        }
+
+    def current_result_page_policy(self):
+        if self._permission_turn is None:
+            raise RuntimeError("permission_turn_inactive")
+        return self._permission_turn["result_page_policy"]
 
     def set_permission_mode(self, mode):
         result = self.update_permissions(mode=mode)
@@ -1094,6 +1123,11 @@ class Pony:
                     listener_event["args"] = deepcopy(redacted_payload["args"])
                 elif event == "tool_executed" and "result" in redacted_payload:
                     listener_event["result"] = deepcopy(redacted_payload["result"])
+                    result_view = project_result_view(
+                        redacted_payload.get("result_view")
+                    )
+                    if result_view is not None:
+                        listener_event["result_view"] = result_view
                 self._trace_listener(listener_event)
             except Exception:  # noqa: BLE001 - optional UI cannot break durable trace
                 pass
@@ -1250,6 +1284,12 @@ class Pony:
         )
         self._last_tool_result_metadata = dict(safe_result.metadata)
         return safe_result
+
+    def read_current_tool_result(self, tool_result_id):
+        return self.run_store.read_tool_result(
+            self.current_task_state,
+            tool_result_id,
+        )
 
     def run_tool(self, name, args):
         """执行一次工具调用，并在执行前后套上完整护栏。
@@ -1439,6 +1479,7 @@ class Pony:
             redaction_env=self.redaction_env,
             secret_env_names=self.secret_env_names,
             workspace_root_identity=self.workspace_root_identity,
+            read_current_tool_result=self.read_current_tool_result,
         )
 
     def spawn_delegate(self, args):
@@ -1460,8 +1501,9 @@ class Pony:
                 run_store=RunStore(child_root / "runs"),
                 project_trusted=self.project_trusted,
                 max_steps=int(args.get("max_steps", MAX_DELEGATE_STEPS)),
-                max_output_tokens=self.max_output_tokens,
-                context_window=self.model_capabilities.context_window,
+                max_output_tokens=self._model_runtime_options.max_output_tokens,
+                context_window=self._model_runtime_options.context_window,
+                stream=False,
                 depth=self.depth + 1,
                 max_depth=self.depth + 1,
                 read_only=True,

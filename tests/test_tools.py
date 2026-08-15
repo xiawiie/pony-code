@@ -8,6 +8,7 @@ from pony.tools.context import ToolContext
 from pony.memory.repo_map import tool_repo_lookup
 from pony.tools.files import tool_read_file
 from pony.tools.registry import build_tool_registry, tool_delegate
+from pony.tools.result_view import ResultPagePolicy
 from pony.tools.search import tool_search
 from pony.tools.shell import DEFAULT_RUN_SHELL_TIMEOUT
 from pony.tools.validation import validate_tool
@@ -24,10 +25,15 @@ def test_tool_context_supports_file_tools_without_full_pony(tmp_path):
         spawn_delegate=lambda args: "unused",
     )
 
-    result = tool_read_file(context, {"path": "sample.txt", "start": 1, "end": 1})
+    output = tool_read_file(
+        context,
+        {"path": "sample.txt", "start": 1, "end": 1},
+        page_policy=ResultPagePolicy(16_384, lambda text: len(text) // 4, str),
+    )
 
-    assert "# sample.txt" in result
-    assert "alpha" in result
+    assert '"path":"sample.txt"' in output.content
+    assert "alpha" in output.content
+    assert output.result_view["delivery"] == "page"
 
 
 def test_delegate_uses_context_spawn_without_runtime_import(tmp_path):

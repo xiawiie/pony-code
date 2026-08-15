@@ -17,9 +17,9 @@
    resolution；真实用户任务失败后不切换协议重放。
 3. 支持 Python 3.11/3.12 的 macOS、Linux 与 Windows 11 x64。Windows 使用 ADR-0050 冻结的原生 Win32/NT backend，
    不依赖 WSL/Git Bash；任一平台缺少等价安全原语时 fail closed，不提供弱化安全保证的兼容路径。
-4. 完整 TUI 只允许完整尺寸的马形 Logo 与 `PONY CODE` 字标，它是不可隐藏的唯一欢迎状态，`--quiet` 也不能抑制。
-   交互 TTY 启动宽度低于 112 列时返回稳定 usage error，不进入无 Logo 的纯文本 REPL，也不提供 medium、micro、缩放或
-   单行替代版。完整大版、欢迎页布局和视觉语言是冻结产品资产；除非用户明确要求，维护、竞品交互对齐和代码精简不得修改。
+4. 完整 TUI 保留完整尺寸马形 Logo 与 `PONY CODE` 字标；低于 112 列返回稳定 usage error，不提供 compact、缩放、单行或
+   隐藏替代版。Logo/字标不得隐藏，`--quiet` 也不能抑制；完整大版、欢迎页布局和视觉语言仍是冻结产品资产，除非用户
+   明确要求，维护、竞品交互对齐和代码精简不得修改。
 5. 源码版本保持 `1.0.0` 作为未发布目标。创建并推送 exact `v1.0.0` tag 前，不把源码、构建或 metadata 描述为已经发布
    或 Production/Stable。
 

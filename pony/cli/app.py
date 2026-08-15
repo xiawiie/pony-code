@@ -164,6 +164,22 @@ def _dispatch_pre_agent_command(invocation, args):
 def _validate_agent_command(invocation):
     args = invocation.runtime_args
     agent_command = invocation.command in {"run", "repl"}
+    if getattr(args, "stream", False):
+        if invocation.command != "repl":
+            raise CliError(
+                code="streaming_unavailable",
+                message="Streaming is only available in the interactive TUI",
+                exit_code=CLI_EXIT_USAGE,
+            )
+        from pony.tui.app import tui_capability
+
+        enabled, _reason = tui_capability()
+        if not enabled:
+            raise CliError(
+                code="streaming_unavailable",
+                message="Streaming requires the full interactive TUI",
+                exit_code=CLI_EXIT_USAGE,
+            )
     permission_flags = (
         getattr(args, "permission_mode", None) is not None
         or getattr(args, "allow_dangerously_skip_permissions", False)
@@ -397,6 +413,8 @@ def main(argv=None):
             "model_session_mismatch",
             "provider_endpoint_conflict",
             "provider_invalid",
+            "streaming_unavailable",
+            "tool_result_budget_too_small",
         }
         if reason in stable_codes:
             message = {
@@ -421,7 +439,11 @@ def main(argv=None):
                         }
                         else ""
                     ),
-                    exit_code=CLI_EXIT_CONFIG,
+                    exit_code=(
+                        CLI_EXIT_USAGE
+                        if reason == "streaming_unavailable"
+                        else CLI_EXIT_CONFIG
+                    ),
                 ),
             )
         return _print_cli_error(
@@ -444,6 +466,7 @@ def main(argv=None):
                 agent,
                 model=model,
                 no_color=args.no_color,
+                stream=args.stream,
                 show_header=True,
                 show_resume=bool(args.resume) and args.format == "text",
             )

@@ -1,3 +1,5 @@
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,7 @@ from pony.memory.tools import (
     tool_memory_save,
     tool_memory_search,
 )
+from pony.tools.result_view import ResultPagePolicy
 
 
 def _context(tmp_path):
@@ -19,6 +22,14 @@ def _context(tmp_path):
     user.mkdir()
     store = BlockStore(workspace_root=workspace, user_root=user)
     return SimpleNamespace(memory_store=store, memory_retrieval=Retrieval(store))
+
+
+def _read(context, args):
+    return tool_memory_read(
+        context,
+        args,
+        page_policy=ResultPagePolicy(16_384, lambda text: len(text) // 4, str),
+    ).content
 
 
 def test_list_empty_returns_hint(tmp_path):
@@ -40,12 +51,25 @@ def test_list_shows_files(tmp_path):
 def test_read_returns_content_with_line_numbers(tmp_path):
     ctx = _context(tmp_path)
     (ctx.memory_store.workspace_root / "notes").mkdir(parents=True, exist_ok=True)
-    (ctx.memory_store.workspace_root / "notes" / "auth.md").write_text(
-        "first\nsecond\nthird\n"
+    (ctx.memory_store.workspace_root / "notes" / "auth.md").write_bytes(
+        b"first\nsecond\nthird\n"
     )
-    out = tool_memory_read(ctx, {"path": "workspace/notes/auth.md"})
-    assert "1: first" in out or "L1" in out
+    out = _read(ctx, {"path": "workspace/notes/auth.md"})
+    assert "first\nsecond\nthird\n" in out
     assert "second" in out
+
+
+def test_read_preserves_crlf_for_body_and_source_hash(tmp_path):
+    ctx = _context(tmp_path)
+    target = ctx.memory_store.workspace_root / "notes" / "windows.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = "first\r\nsecond\r\n"
+    target.write_bytes(source.encode("utf-8"))
+
+    out = _read(ctx, {"path": "workspace/notes/windows.md"})
+
+    assert out.split("\n", 1)[1] == source
+    assert hashlib.sha256(source.encode("utf-8")).hexdigest() in out
 
 
 def test_read_supports_paging(tmp_path):
@@ -53,18 +77,62 @@ def test_read_supports_paging(tmp_path):
     (ctx.memory_store.workspace_root / "notes").mkdir(parents=True, exist_ok=True)
     lines = "\n".join(f"line{i}" for i in range(1, 301))
     (ctx.memory_store.workspace_root / "notes" / "big.md").write_text(lines)
-    out = tool_memory_read(
-        ctx, {"path": "workspace/notes/big.md", "start": 250, "end": 260}
-    )
+    out = _read(ctx, {"path": "workspace/notes/big.md", "start": 250, "end": 260})
     assert "line250" in out
     assert "line260" in out
     assert "line200" not in out
 
 
+def test_read_runner_pages_an_explicit_large_range(tmp_path):
+    ctx = _context(tmp_path)
+    (ctx.memory_store.workspace_root / "notes").mkdir(parents=True, exist_ok=True)
+    lines = "\n".join(f"line{i}" for i in range(1, 3_001))
+    (ctx.memory_store.workspace_root / "notes" / "big.md").write_text(lines)
+
+    out = _read(
+        ctx,
+        {"path": "workspace/notes/big.md", "start": 250, "end": 2_450},
+    )
+
+    assert "line250" in out
+    assert "[continuation]" in out
+
+
+def test_read_accepts_its_exact_continuation_arguments(tmp_path):
+    from pony.tools.validation import validate_tool
+
+    ctx = _context(tmp_path)
+    target = ctx.memory_store.workspace_root / "notes" / "big.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x\n" * 3_000, encoding="utf-8")
+    first = _read(ctx, {"path": "workspace/notes/big.md"})
+    marker = next(
+        line for line in first.splitlines() if line.startswith("[continuation] ")
+    )
+    continuation = json.loads(marker.removeprefix("[continuation] "))
+
+    validate_tool(ctx, "memory_read", continuation)
+    second = _read(ctx, continuation)
+
+    assert set(continuation) == {"path", "start", "expected_sha256"}
+    assert '"start":2001' in second
+
+
+def test_read_validator_accepts_an_explicit_large_range(tmp_path):
+    from pony.tools.validation import validate_tool
+
+    ctx = _context(tmp_path)
+    validate_tool(
+        ctx,
+        "memory_read",
+        {"path": "workspace/notes/big.md", "start": 250, "end": 450},
+    )
+
+
 def test_read_missing_raises(tmp_path):
     ctx = _context(tmp_path)
     with pytest.raises(FileNotFoundError):
-        tool_memory_read(ctx, {"path": "workspace/notes/missing.md"})
+        _read(ctx, {"path": "workspace/notes/missing.md"})
 
 
 def test_search_returns_matches(tmp_path):
@@ -176,6 +244,7 @@ def test_tool_registry_includes_new_tools():
         "memory_search",
         "memory_save",
         "repo_lookup",
+        "read_tool_result",
     ):
         assert expected in names, f"missing tool {expected}"
 
@@ -189,6 +258,7 @@ def test_tool_examples_present():
         "memory_search",
         "memory_save",
         "repo_lookup",
+        "read_tool_result",
     ):
         assert tool_example(name), f"missing example for {name}"
 
@@ -196,7 +266,13 @@ def test_tool_examples_present():
 def test_effect_class_for_new_tools_is_read_only():
     from pony.tools.registry import BASE_TOOL_SPECS
 
-    for name in ("memory_list", "memory_read", "memory_search", "repo_lookup"):
+    for name in (
+        "memory_list",
+        "memory_read",
+        "memory_search",
+        "repo_lookup",
+        "read_tool_result",
+    ):
         assert BASE_TOOL_SPECS[name]["effect_class"] == "read_only"
     assert BASE_TOOL_SPECS["memory_save"]["effect_class"] == "memory_write"
 
@@ -217,8 +293,15 @@ def test_effect_class_for_new_tools_is_read_only():
 def test_memory_runners_raise_when_dependencies_are_unavailable(runner, args, message):
     context = SimpleNamespace(memory_store=None, memory_retrieval=None)
 
+    kwargs = {}
+    if runner is tool_memory_read:
+        kwargs["page_policy"] = ResultPagePolicy(
+            16_384,
+            lambda text: len(text) // 4,
+            str,
+        )
     with pytest.raises(RuntimeError, match=message):
-        runner(context, args)
+        runner(context, args, **kwargs)
 
 
 def test_memory_read_propagates_io_error(tmp_path, monkeypatch):
@@ -227,6 +310,6 @@ def test_memory_read_propagates_io_error(tmp_path, monkeypatch):
     def fail_read(path):
         raise OSError("memory disk failed")
 
-    monkeypatch.setattr(ctx.memory_store, "read", fail_read)
+    monkeypatch.setattr(ctx.memory_store, "read_verbatim", fail_read)
     with pytest.raises(OSError, match="memory disk failed"):
-        tool_memory_read(ctx, {"path": "workspace/notes/auth.md"})
+        _read(ctx, {"path": "workspace/notes/auth.md"})

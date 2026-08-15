@@ -822,15 +822,20 @@ def test_tool_executor_patch_cas_reason_is_not_collapsed(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "external-change\n"
 
 
-def test_read_file_rejects_more_than_200_requested_lines_before_runner(tmp_path):
+def test_read_file_accepts_a_large_range_for_bounded_runner_paging(tmp_path):
     agent = _agent(tmp_path)
-    runner = Mock(return_value="must not run")
+    runner = Mock(return_value="bounded page")
     agent.tools["read_file"]["run"] = runner
 
-    result = agent.execute_tool(
-        "read_file",
-        {"path": "README.md", "start": 1, "end": 201},
-    )
+    agent.begin_permission_turn()
+    try:
+        result = agent.execute_tool(
+            "read_file",
+            {"path": "README.md", "start": 1, "end": 201},
+        )
+    finally:
+        agent.end_permission_turn()
 
-    assert result.metadata["tool_error_code"] == "invalid_arguments"
-    runner.assert_not_called()
+    assert result.metadata["tool_status"] == "ok"
+    assert result.content == "bounded page"
+    runner.assert_called_once()

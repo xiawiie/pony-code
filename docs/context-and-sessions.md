@@ -4,6 +4,10 @@ Pony 的长会话模型由四层组成：模型能力与 token 账户、动态 C
 以及只改变 active view 的 compaction。Canonical history 永远保留在磁盘；模型只看到当前分支的
 summary + recent tail。
 
+本页记录当前已实现合同。opaque model id、protocol baseline、AgentModelContract 与 Pony request policy 的分离设计见
+[任意型号零登记接入设计](model-target-and-budget-design.md)和
+[ADR-0051](adr/0051-model-compatibility-contract.md)。
+
 ## 1. ModelCapabilities 与总预算
 
 所有 Provider 共用同一个能力合同：
@@ -13,16 +17,24 @@ ModelCapabilities(
     context_window=...,
     max_output_tokens=...,
     token_counter_mode=...,
-    source="cli|config|builtin|fallback",
+    source="cli|project|default|mixed",
 )
 ```
 
-能力按以下优先级解析：
+请求预算按字段解析：
 
 1. CLI `--context-window`、`--max-output-tokens`；
 2. `pony.toml` 的 `[model]`；
-3. Pony 内置默认模型记录；
-4. 未知模型回退到 128,000 context / 16,384 output，并输出显著告警。
+3. Pony 统一默认 128,000 context / 16,384 output。
+
+model id 不参与解析；运行时没有型号 catalog、known/unknown 分支或 unknown warning。默认值是 Pony 的请求策略，不是
+远端模型物理上限。小窗口部署应显式降低预算；更大窗口可显式设置，例如 256,000 context / 32,768 output。config parser
+只把实际通过校验且真实出现的字段标为显式，非法字段回到默认但不会伪装成项目策略。混合来源按字段投影。
+
+完整 config snapshot 会联合校验 context window、output limit 与 compaction reserve；如果组合无法留下至少 16,384 input
+tokens，model context/output 与 reserve 回到默认并输出稳定 warning，其他合法 compaction 设置保持不变。
+delegate/worktree child 继承父级原始 override，而不是把父级有效值
+重新注入成 CLI 来源。
 
 统一公式是：
 
@@ -47,14 +59,20 @@ I = W - R
 | Compaction summary hard cap | 13,107，即 `floor(0.8 × R)` |
 | Split-turn summary hard cap | 8,192，即 `floor(0.5 × R)` |
 | Branch summary hard cap | 2,048 |
-| Inline tool result | 4,096 |
-| Tool digest | 512 |
+| Inline tool result / page token cap | 16,384 |
+| Overflow preview | 512 |
 
 `W - R` 至少要留下 16,384 个输入 token，否则配置被拒绝。提高输出上限会同步提高 reserve，避免请求
 声明大输出却没有为它留出窗口。小模型的 pinned cap 缩放到 `min(24,576, floor(W × 0.20))`，source pool
 缩放到 `min(16,384, floor(W × 0.125))`。
 
-模型请求、summary、Memory recall 和 tool digest 全部使用 token；文件和 Session 限制使用 bytes。字符数只
+自动 compaction 的 keep-recent 目标还受当前 input limit 约束；32K/16K profile 首次目标不超过 4,096 tokens，no-progress
+时继续缩小，summary/split-summary cap 同步缩到 4,096/2,048；其他 compaction failure 仍停止请求。
+
+完整设计与已知边界见[Model Target 与预算设计](model-target-and-budget-design.md)及
+[ADR-0051](adr/0051-model-compatibility-contract.md)。
+
+模型请求、summary、Memory recall、工具页面和 overflow preview 全部使用 token；文件和 Session 限制使用 bytes。字符数只
 用于 CLI 展示。没有真实 Provider usage 时，估算器按 CJK code point 约 1 token、其他文本约 4 字符/token，
 再计入 JSON/message/tool schema 结构成本，并对完整请求增加 5% 余量。真实 usage 成功返回后，后续请求优先
 使用 usage anchor 加新增尾部估算。
@@ -282,7 +300,7 @@ reserve_tokens = 16384
 keep_recent_tokens = 20000
 
 [context.tool_results]
-inline_tokens = 4096
+inline_tokens = 16384
 digest_tokens = 512
 
 [memory.recall]
@@ -294,3 +312,8 @@ skip_recent_turns = 2
 
 `total_budget_hard_cap` 在缺少 `[model]` 时迁移为 `model.context_window`；`history_soft_cap`、
 `history_floor_messages` 与 `injection_budget_ratio` 已移除并告警。
+
+`read_file`、`memory_read` 与 `read_tool_result` 的单页同时受 2,000 行、50 KiB UTF-8 和
+`inline_tokens` 约束，并返回可直接调用的 continuation；页面原文不会再经过语义 digest。不可重放的大结果只在完整脱敏文本
+成功写入当前 Run 的私有存储后才返回 `raw_result_id`，且该 id 在本 turn 结束时过期。`inline_tokens` 最小值为 256，
+`digest_tokens` 继续作为 overflow preview 上限且最小值为 128。

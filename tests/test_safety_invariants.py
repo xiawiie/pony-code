@@ -775,13 +775,15 @@ def test_pony_exposes_no_raw_tool_runner_proxies(tmp_path):
     ):
         assert not callable(getattr(agent, name, None)), name
     assert agent.tool_executor.agent is agent
-    assert (
-        "# README.md"
-        in agent.execute_tool(
+    agent.begin_permission_turn()
+    try:
+        result = agent.execute_tool(
             "read_file",
             {"path": "README.md", "start": 1, "end": 1},
-        ).content
-    )
+        )
+    finally:
+        agent.end_permission_turn()
+    assert '"path":"README.md"' in result.content
 
 
 def test_delegate_depth_limit_is_enforced(tmp_path):

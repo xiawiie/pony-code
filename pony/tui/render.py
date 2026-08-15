@@ -5,26 +5,27 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import textwrap
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
+from pony.security.text import sanitize_terminal_line, sanitize_terminal_text
 from pony.tools.permissions import display_permission_mode
-from pony.tui.markdown import render_markdown, sanitize_terminal_text
+from pony.tools.result_view import project_result_view
+from pony.tui.markdown import render_markdown
 
 
-_PROTOCOL_PROVIDERS = {
-    "anthropic_messages": "anthropic",
-    "openai_responses": "openai",
-    "openai_chat_completions": "openai",
-    "ollama_chat": "ollama",
+_PROTOCOL_LABELS = {
+    "anthropic_messages": "anthropic/messages",
+    "openai_responses": "openai/responses",
+    "openai_chat_completions": "openai/chat",
+    "ollama_chat": "ollama/chat",
 }
-
-_FAILURE_STATUSES = frozenset({"error", "partial_success", "rejected"})
 
 # Full-size Pony horse-and-wordmark welcome asset.
 _HORSE_LINES = (
@@ -52,8 +53,8 @@ _PIXEL_GLYPHS = {
 }
 
 FULL_TUI_MINIMUM_COLUMNS = 112
-_COMPACT_STATUS_COLUMNS = 64
 _PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
+_MISSING_RESULT_VIEW = object()
 
 _COLOR_STYLE = Style.from_dict(
     {
@@ -62,6 +63,8 @@ _COLOR_STYLE = Style.from_dict(
         "editor.prompt": "",
         "editor.border": "#777777",
         "user": "bg:#30303d #f4f4f5",
+        "user.rail": "",
+        "assistant.label": "#858585",
         "activity": "italic #858585",
         "tool": "#bdbdbd",
         "tool.error": "#ff4d4f",
@@ -90,6 +93,8 @@ _PLAIN_STYLE = Style.from_dict(
         "editor.prompt": "bold",
         "editor.border": "",
         "user": "",
+        "user.rail": "",
+        "assistant.label": "",
         "activity": "italic",
         "tool": "",
         "tool.error": "bold",
@@ -158,8 +163,12 @@ def _logo_fragments(columns):
     )
 
 
+def _terminal_columns():
+    return shutil.get_terminal_size((80, 24)).columns
+
+
 def _terminal_width(columns=None):
-    columns = columns or shutil.get_terminal_size((80, 24)).columns
+    columns = columns or _terminal_columns()
     return max(1, int(columns) - 1)
 
 
@@ -192,13 +201,29 @@ def _product_version():
 
 
 def _bounded_json(value, limit=800):
-    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    rendered = sanitize_terminal_text(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    )
     if len(rendered) <= limit:
         return rendered
     return rendered[: limit - 1] + "…"
 
 
-def _provider_name(model_client):
+def _approval_detail(label, value, width):
+    return _truncate(f"  │ {label}: {value}", width) + "\n"
+
+
+def _wrap_receipt_semantics(text, width):
+    return textwrap.wrap(
+        text,
+        width=max(1, width),
+        subsequent_indent="  " if width > 2 else "",
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+
+
+def _protocol_label(model_client):
     transport = getattr(model_client, "_inner", model_client)
     provider_metadata = getattr(transport, "provider_metadata", {})
     protocol = (
@@ -206,15 +231,16 @@ def _provider_name(model_client):
         if isinstance(provider_metadata, dict)
         else ""
     )
-    return _PROTOCOL_PROVIDERS.get(str(protocol), "")
+    protocol = str(protocol)
+    return _one_line(_PROTOCOL_LABELS.get(protocol, protocol))
 
 
 def _model_label(agent, model):
-    provider = _provider_name(getattr(agent, "model_client", None))
+    protocol = _protocol_label(getattr(agent, "model_client", None))
     transport = getattr(getattr(agent, "model_client", None), "_inner", None)
     transport = transport or getattr(agent, "model_client", None)
     safe_model = _one_line(getattr(transport, "model", model))
-    return f"{provider}/{safe_model}" if provider else safe_model
+    return f"{protocol}/{safe_model}" if protocol else safe_model
 
 
 def _formatted_lines(value):
@@ -235,17 +261,35 @@ def _line_width(line):
     return sum(get_cwidth(text) for _style, text in line)
 
 
+def _conversation_block(label, text, width, *, label_style, content_style=""):
+    rendered = render_markdown(text, width=width, base_style=content_style)
+    fragments = [("", "\n"), (label_style, f"{label}\n")]
+    for line in _formatted_lines(rendered):
+        fragments.extend(line)
+        fragments.append((content_style, "\n"))
+    return FormattedText(fragments)
+
+
 def _user_block(text, width):
     content_width = max(1, width - 2)
     rendered = render_markdown(text, width=content_width, base_style="class:user")
-    fragments = [("", "\n"), ("class:user", " " * width + "\n")]
+    fragments = [("", "\n")]
     for line in _formatted_lines(rendered):
         used = min(content_width, _line_width(line))
+        fragments.append(("class:user.rail", "│"))
         fragments.append(("class:user", " "))
         fragments.extend(line)
-        fragments.append(("class:user", " " * (width - used - 1) + "\n"))
-    fragments.append(("class:user", " " * width + "\n"))
+        fragments.append(("class:user", " " * (width - used - 2) + "\n"))
     return FormattedText(fragments)
+
+
+def _assistant_block(text, width):
+    return _conversation_block(
+        "Pony",
+        text,
+        width,
+        label_style="class:assistant.label",
+    )
 
 
 def _one_line(value):
@@ -256,10 +300,21 @@ def _quoted(value):
     return json.dumps(_one_line(value), ensure_ascii=False)
 
 
-def _tool_summary(name, args, width):
+def _display_path(value):
+    path = _one_line(value) or "."
+    windows_path = PureWindowsPath(path)
+    posix_path = PurePosixPath(path)
+    if windows_path.drive or windows_path.is_absolute():
+        return windows_path.name or "[path]"
+    if posix_path.is_absolute():
+        return posix_path.name or "[path]"
+    return path
+
+
+def _tool_summary(name, args):
     name = _one_line(name) or "tool"
     args = args if isinstance(args, dict) else {}
-    path = _one_line(args.get("path", ".")) or "."
+    path = _display_path(args.get("path", "."))
     if name == "list_files":
         summary = f"list {path}"
     elif name == "read_file":
@@ -267,7 +322,7 @@ def _tool_summary(name, args, width):
     elif name == "search":
         summary = f"search {_quoted(args.get('pattern', ''))} in {path}"
     elif name == "run_shell":
-        summary = f"$ {_one_line(args.get('command', ''))}"
+        summary = "run shell command"
     elif name == "write_file":
         summary = f"write {path}"
     elif name == "patch_file":
@@ -281,6 +336,8 @@ def _tool_summary(name, args, width):
     elif name == "memory_save":
         scope = _one_line(args.get("scope", "workspace")) or "workspace"
         summary = f"save {scope} memory"
+    elif name == "read_tool_result":
+        summary = "read tool result"
     elif name == "repo_lookup":
         summary = f"look up {_one_line(args.get('symbol', 'symbol'))}"
     elif name == "delegate":
@@ -289,7 +346,68 @@ def _tool_summary(name, args, width):
         summary = "run isolated worktree agents"
     else:
         summary = name
-    return _truncate(summary, max(1, width - 2))
+    return summary
+
+
+def _tool_activity(name, args):
+    name = _one_line(name) or "tool"
+    args = args if isinstance(args, dict) else {}
+    path = _display_path(args.get("path", "."))
+    if name in {"read_file", "memory_read"}:
+        text = f"Reading {path}..."
+    elif name == "read_tool_result":
+        text = "Reading tool result..."
+    elif name == "list_files":
+        text = f"Listing {path}..."
+    elif name == "memory_list":
+        text = "Listing memory..."
+    elif name in {"memory_search", "repo_lookup"}:
+        text = "Searching..."
+    elif name == "search":
+        text = f"Searching {_quoted(args.get('pattern', ''))}..."
+    elif name == "run_shell":
+        text = "Running shell command..."
+    elif name in {"write_file", "memory_save"}:
+        text = f"Writing {path}..." if name == "write_file" else "Writing memory..."
+    elif name == "patch_file":
+        text = f"Patching {path}..."
+    elif name in {"delegate", "delegate_worktrees"}:
+        text = "Delegating..."
+    else:
+        text = f"Running {name}..."
+    return text
+
+
+def _result_view_detail(value):
+    view = project_result_view(value)
+    if view is None:
+        return "result details unavailable", True
+    delivery = view["delivery"]
+    if delivery == "inline":
+        return "", False
+    if delivery == "page":
+        detail = (
+            f"lines {view['start_line']}-{view['end_line']}/"
+            f"{view['total_lines']}"
+        )
+        if "next_start" in view:
+            detail += f" · more from {view['next_start']}"
+        elif "next_start_byte" in view:
+            detail += f" · more at byte {view['next_start_byte']}"
+    else:
+        detail = "output truncated"
+        if "exit_code" in view:
+            detail = f"exit {view['exit_code']} · {detail}"
+    reasons = view.get("reasons") or []
+    if reasons:
+        detail += f" · limit={'+'.join(reasons)}"
+    if delivery == "preview":
+        detail += (
+            " · recoverable until this turn ends"
+            if view["recoverable"]
+            else " · not recoverable"
+        )
+    return detail, delivery == "preview"
 
 
 class TuiRenderer:
@@ -297,43 +415,35 @@ class TuiRenderer:
 
     def __init__(self, *, no_color=False):
         self.style = _PLAIN_STYLE if no_color else _COLOR_STYLE
-        self._working_visible = False
-        self._working_width = 0
+        self._activity_visible = False
+        self._activity_width = 0
+        self._activity_text = ""
+        self._activity_source = ""
+        self._active_tool = ""
+        self._active_tool_activity = ""
 
     def _write(self, value, **kwargs):
         print_formatted_text(value, style=self.style, **kwargs)
 
     def welcome(self, agent, *, model, columns=None):
-        columns = columns or shutil.get_terminal_size((80, 24)).columns
+        columns = columns or _terminal_columns()
         width = max(1, columns - 1)
-        compact = columns < _COMPACT_STATUS_COLUMNS
-        description = (
-            "Repository-grounded coding agent" if compact else _PRODUCT_DESCRIPTION
-        )
         current_mode = getattr(agent, "current_permission_mode", None)
         permission_mode = display_permission_mode(
             current_mode()
             if callable(current_mode)
             else getattr(agent, "session", {}).get("permission_mode", "auto")
         )
-        model_summary = f"Using {_model_label(agent, model)}"
-        if not compact:
-            model_summary += f" · permission {permission_mode}"
-        shortcuts = (
-            "/ commands · ctrl+c twice exit"
-            if compact
-            else "/ commands · esc+enter newline · ctrl+c twice exit"
-        )
+        target = _model_label(agent, model)
         return FormattedText(
             [
                 *_logo_fragments(columns),
+                ("class:meta", f"\n{_centered(f'v{_product_version()}', width)}\n"),
+                ("class:meta", f"{_centered(_PRODUCT_DESCRIPTION, width)}\n"),
                 (
                     "class:meta",
-                    f"\n{_centered(f'v{_product_version()}', width)}\n",
+                    f"{_centered(f'Ready · {target} · permission {permission_mode}', width)}\n",
                 ),
-                ("class:meta", f"{_centered(description, width)}\n"),
-                ("class:meta", f"{_centered(model_summary, width)}\n"),
-                ("class:meta", f"{_centered(shortcuts, width)}\n"),
             ]
         )
 
@@ -354,26 +464,40 @@ class TuiRenderer:
         ) or "auto"
         permission_mode = display_permission_mode(permission_mode)
         right = f"{permission_mode} · {_model_label(agent, model)} "
-        gap = width - get_cwidth(left) - get_cwidth(right)
-        if gap < 1:
-            right = _truncate(right, max(1, min(get_cwidth(right), width * 2 // 3)))
-            left = _truncate(left, max(1, width - get_cwidth(right) - 1))
-            gap = max(1, width - get_cwidth(left) - get_cwidth(right))
+        candidates = (
+            f"{left} | {right}",
+            f" {repository} | {right}",
+            right,
+        )
+        footer = next(
+            (candidate for candidate in candidates if get_cwidth(candidate) <= width),
+            _truncate(right, width),
+        )
         return FormattedText(
             [
                 ("class:editor.border", f"{'─' * width}\n"),
-                ("class:footer", f"{left}{' ' * gap}{right}"),
+                ("class:footer", footer),
             ]
         )
 
-    def prompt(self, *, columns=None):
+    def prompt(self, *, columns=None, pending=0):
+        columns = columns or _terminal_columns()
         width = _terminal_width(columns)
-        return FormattedText(
-            [
-                ("class:editor.border", f"\n{'─' * width}\n"),
-                ("class:editor.prompt", " "),
-            ]
-        )
+        header = []
+        if columns < FULL_TUI_MINIMUM_COLUMNS:
+            header.append("Widen terminal")
+        if pending:
+            header.append(f"Queued {pending}/5")
+        fragments = [("class:editor.border", f"\n{'─' * width}\n")]
+        if header:
+            style = (
+                "class:warning"
+                if columns < FULL_TUI_MINIMUM_COLUMNS
+                else "class:meta"
+            )
+            fragments.append((style, f"{_truncate(' · '.join(header), width)}\n"))
+        fragments.append(("class:editor.prompt", "› "))
+        return FormattedText(fragments)
 
     def resume_card(self, projection):
         goal = projection["goal"]
@@ -408,21 +532,49 @@ class TuiRenderer:
         return FormattedText([("class:activity", f"\n{safe_text}\n")])
 
     def resume(self, projection):
-        self._clear_working()
+        self._clear_activity()
         self._write(self.resume_card(projection))
 
-    def user(self, text, *, columns=None):
-        self._clear_working()
+    def user(self, text, *, columns=None, restore_activity=False):
+        activity = self._activity_source if restore_activity else ""
+        self._clear_activity()
         self._write(_user_block(text, _terminal_width(columns)))
+        if activity:
+            self._show_activity(activity)
+
+    def turn_started(self, text, *, columns=None):
+        self.user(text, columns=columns)
+        self._show_activity("Working...", columns=columns)
 
     def answer(self, text, *, columns=None):
-        self._clear_working()
+        self._clear_activity()
         width = _terminal_width(columns)
-        markdown = render_markdown(text, width=width)
-        self._write(FormattedText([("", "\n"), *markdown]))
+        self._write(_assistant_block(text, width))
 
-    def approval(self, name, args):
-        self._clear_working()
+    def stream_committed(self):
+        self._show_activity("Receiving...")
+
+    def stream_preview(self, snapshot, *, columns=None):
+        safe_text = sanitize_terminal_line(snapshot)
+        if not safe_text:
+            return False
+        prefix = "Pony - "
+        width = _terminal_width(columns)
+        available = width - get_cwidth(prefix)
+        if available <= 3:
+            return False
+        projected = _truncate(safe_text, available)
+        if get_cwidth(safe_text) > available and projected == "...":
+            return False
+        self._show_activity(prefix + safe_text, columns=columns)
+        return True
+
+    def stream_finished(self):
+        self._clear_activity()
+
+    def approval(self, name, args, *, columns=None):
+        self._clear_activity()
+        width = _terminal_width(columns)
         safe_name = _one_line(name)
         if safe_name == "exit_plan_mode" and isinstance(args, dict):
             plan = str(args.get("plan", ""))
@@ -430,84 +582,196 @@ class TuiRenderer:
             self._write(
                 FormattedText(
                     [
-                        ("class:warning", "\n  ╷ PLAN APPROVAL REQUIRED\n"),
-                        ("", f"  │ revision {revision}\n"),
+                        (
+                            "class:warning",
+                            "\n" + _truncate("  ╷ PLAN APPROVAL REQUIRED", width) + "\n",
+                        ),
+                        ("", _truncate(f"  │ revision {revision}", width) + "\n"),
                     ]
                 )
             )
-            self._write(render_markdown(plan, width=_terminal_width()))
+            self._write(render_markdown(plan, width=width))
             self._write(
-                FormattedText([("class:warning", "\n  ╵ default: deny\n")])
+                FormattedText(
+                    [
+                        (
+                            "class:warning",
+                            "\n" + _truncate("  ╵ default: deny", width) + "\n",
+                        )
+                    ]
+                )
             )
             return
         self._write(
             FormattedText(
                 [
-                    ("class:warning", "\n  ╷ APPROVAL REQUIRED\n"),
-                    ("", f"  │ {safe_name}\n"),
-                    ("", f"  │ {_bounded_json(args)}\n"),
-                    ("class:warning", "  ╵ default: deny\n"),
+                    (
+                        "class:warning",
+                        "\n" + _truncate("  ╷ APPROVAL REQUIRED", width) + "\n",
+                    ),
+                    (
+                        "",
+                        _approval_detail(
+                            "action",
+                            _tool_summary(safe_name, args),
+                            width,
+                        ),
+                    ),
+                    ("", _approval_detail("details", _bounded_json(args), width)),
+                    (
+                        "class:warning",
+                        _truncate("  ╵ default: deny", width) + "\n",
+                    ),
                 ]
             )
         )
 
+    def approval_resolved(self, accepted):
+        self._clear_activity()
+        if accepted and self._active_tool_activity:
+            self._show_activity(self._active_tool_activity)
+
     def trace(self, envelope):
         event = str(envelope.get("event", ""))
         if event == "model_requested":
-            self._show_working()
+            self._show_activity("Working...")
         elif event == "tool_started":
-            self._clear_working()
-            width = _terminal_width()
-            summary = _tool_summary(
-                envelope.get("name", "tool"),
-                envelope.get("args", {}),
-                width,
-            )
-            self._write(FormattedText([("class:tool", f"› {summary}\n")]))
+            name = envelope.get("name", "tool")
+            args = envelope.get("args", {})
+            self._active_tool = _tool_summary(name, args)
+            self._active_tool_activity = _tool_activity(name, args)
+            self._show_activity(self._active_tool_activity)
         elif event == "tool_executed":
+            self._clear_activity()
             status = str(envelope.get("tool_status", ""))
-            if status in _FAILURE_STATUSES:
-                self._tool_failure(status, envelope.get("result", ""))
+            self._tool_receipt(
+                status,
+                envelope.get("tool_error_code", ""),
+                envelope.get("result_view", _MISSING_RESULT_VIEW),
+            )
+            self._active_tool = ""
+            self._active_tool_activity = ""
+        elif event in {"context_compacted", "context_recovery"}:
+            self._clear_activity()
+        elif event == "model_failed":
+            self._clear_activity()
+        elif event == "finalization_failed":
+            self._clear_activity()
         elif event == "tool_interrupted":
-            self._tool_failure("interrupted", "")
+            self._tool_receipt("interrupted", envelope.get("tool_error_code", ""))
+            self._active_tool = ""
+            self._active_tool_activity = ""
+        elif event == "run_finished":
+            self._clear_activity()
 
-    def notice(self, text, *, error=False):
-        self._clear_working()
+    def notice(self, text, *, error=False, restore_activity=False):
+        activity = self._activity_source if restore_activity else ""
+        self._clear_activity()
         style = "class:error" if error else "class:activity"
         prefix = "error: " if error else ""
         safe_text = sanitize_terminal_text(text).strip()
         self._write(FormattedText([(style, f"\n{prefix}{safe_text}\n")]))
+        if activity:
+            self._show_activity(activity)
 
     def close(self):
-        self._clear_working(newline=True)
+        self._clear_activity(newline=True)
 
-    def _show_working(self):
-        if self._working_visible:
+    def resize(self, columns):
+        if not self._activity_visible:
             return
-        text = "Working…"
-        self._working_visible = True
-        self._working_width = get_cwidth(text)
+        source = self._activity_source
+        projected = _truncate(source, _terminal_width(columns))
+        if projected == self._activity_text:
+            return
+        self._clear_activity(columns=columns)
+        self._show_activity(source, columns=columns)
+
+    def _show_activity(self, text, *, columns=None):
+        source = str(text)
+        projected = _truncate(source, _terminal_width(columns))
+        if self._activity_visible and self._activity_text == projected:
+            self._activity_source = source
+            return
+        self._clear_activity()
+        self._activity_visible = True
+        self._activity_width = get_cwidth(projected)
+        self._activity_text = projected
+        self._activity_source = source
         self._write(
-            FormattedText([("class:activity", text)]),
+            FormattedText([("class:activity", projected)]),
             end="",
             flush=True,
         )
 
-    def _clear_working(self, *, newline=False):
-        if not self._working_visible:
+    def _clear_activity(self, *, newline=False, columns=None):
+        if not self._activity_visible:
             return
         suffix = "\n" if newline else ""
-        sys.stdout.write(f"\r{' ' * self._working_width}\r{suffix}")
+        clear_width = min(self._activity_width, _terminal_width(columns))
+        sys.stdout.write(f"\r{' ' * clear_width}\r{suffix}")
         sys.stdout.flush()
-        self._working_visible = False
-        self._working_width = 0
+        self._activity_visible = False
+        self._activity_width = 0
+        self._activity_text = ""
+        self._activity_source = ""
 
-    def _tool_failure(self, status, result):
+    def _tool_receipt(self, status, error_code, result_view=_MISSING_RESULT_VIEW):
+        self._clear_activity()
         width = _terminal_width()
-        detail = _one_line(result)
-        message = f"{status}: {detail}" if detail else status
+        summary = self._active_tool or "tool"
+        detail = ""
+        result_warning = False
+        if result_view is not _MISSING_RESULT_VIEW:
+            detail, result_warning = _result_view_detail(result_view)
+        marker = (
+            "!"
+            if status in {"ok", "partial_success"} and result_warning
+            else "✓"
+            if status == "ok"
+            else "!"
+            if status == "partial_success"
+            else "×"
+        )
+        style = "class:tool" if status == "ok" else "class:tool.error"
+        prefix = marker
+        if status != "ok":
+            prefix += f" {(_one_line(status) or 'error')}"
+            safe_code = _one_line(error_code)
+            if safe_code:
+                prefix += f" · code={safe_code}"
+        separator = " " if status == "ok" else " · "
+        available = width - get_cwidth(prefix) - get_cwidth(separator)
+        receipt = prefix
+        if summary and available > 3:
+            receipt += separator + _truncate(summary, available)
+        if not detail:
+            if get_cwidth(receipt) <= width:
+                self._write(FormattedText([(style, f"{receipt}\n")]))
+                return
+            lines = _wrap_receipt_semantics(prefix, width)
+            if summary:
+                indent = "  " if width > 2 else ""
+                summary_width = max(1, width - get_cwidth(indent))
+                lines.append(indent + _truncate(summary, summary_width))
+            self._write(FormattedText([(style, f"{line}\n") for line in lines]))
+            return
+        combined = f"{receipt} · {detail}"
+        if get_cwidth(combined) <= width:
+            self._write(FormattedText([(style, f"{combined}\n")]))
+            return
+        indent = "  " if width > 2 else ""
+        detail_width = max(1, width - get_cwidth(indent))
+        lines = (
+            [receipt]
+            if get_cwidth(receipt) <= width
+            else _wrap_receipt_semantics(prefix, width)
+        )
+        if receipt != prefix and get_cwidth(receipt) > width:
+            lines.append(indent + _truncate(summary, detail_width))
         self._write(
             FormattedText(
-                [("class:tool.error", f"  ↳ {_truncate(message, width - 4)}\n")]
+                [(style, f"{line}\n") for line in lines]
+                + [(style, indent + _truncate(detail, detail_width) + "\n")]
             )
         )

@@ -142,9 +142,8 @@ wheel 环境中取得，只证明阻断项已复现并修复；它不是 clean e
   `session.prompt()` 返回边界保留第二层规范化。原生 `WriteConsoleInputW(KEY_EVENT_RECORD)` 把高、低 surrogate 作为两个
   独立记录注入后，输入框、用户块、Provider request 与 durable Session 均保留一个真实马 emoji。
 - 启动欢迎页改由首个 PromptSession live render 持有；startup 期间列数变化会使用 prompt-toolkit 原生 clear/invalidate
-  清理 Windows Terminal 旧宽行重排。该阶段曾验证 112 列以下隐藏 Logo，但这一视觉降级随后被用户明确否决，不属于现行
-  产品合同；现行 TUI 必须显示完整大版，启动宽度不足时直接拒绝进入交互界面。
-- 从最新 dirty wheel 完成一次 loopback Ollama-contract E2E：低对比用户块、瞬态 `Working…`、标题、列表、行内代码、代码块和
+  清理 Windows Terminal 旧宽行重排。112 列及以上保持冻结的完整大版；80/111 列拒绝进入交互界面，不提供 compact 状态。
+- 从最新 dirty wheel 完成一次 loopback Ollama-contract E2E：无标签低对比用户块、瞬态运行状态、标题、列表、行内代码、代码块和
   表格均可读；HTTP 为 `/api/chat`，Run 为 `completed/final_answer_returned`，trace 为 1 model request、0 retry。
 - 在用户明确授权后，以显式 `openai-chat`、标准 HTTPS endpoint 和 `deepseek-v4-flash` 完成一次收费 G8；resolution 为
   explicit、probe 为 0、transport attempt 为 1、retry 为 0，返回指定 Markdown、中文与真实马 emoji。该结果只适用于本次
@@ -181,17 +180,18 @@ Git Bash、IDE 内嵌终端或 dirty worktree 外推结果。
 1. 分别从 Windows Terminal 的 PowerShell 与 Command Prompt profile 直接运行 `pony --help`、`pony` 和 `pony repl`；两种
    交互入口必须进入同一 TUI，`/exit` 后终端输入、光标和按键处理恢复正常。不得只验证 CLI 帮助或 import。
 2. 在 PowerShell profile 中分别以 80、111、112、120 列重新启动 `pony` 并记录终端实际列数。80/111 列必须以 usage
-   error 明确要求至少 112 列，且不能进入纯文本 REPL 或无 Logo TUI；112/120 列必须显示同一个完整尺寸马形 Logo 与块状
-   `PONY CODE` 字标，不得出现 medium、micro、缩放、单行或隐藏版。可用宽度下不得裁切、重叠、残留重绘或水平滚动；
+   error 明确要求至少 112 列，且不能进入纯文本 REPL 或无 Logo TUI；112/120 列必须显示同一个完整尺寸马形 Logo 与
+   块状 `PONY CODE` 字标，不得出现 compact、缩放、单行或隐藏版。可用宽度下不得裁切、重叠、残留重绘或水平滚动；
    footer 不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
 3. 在 120 列会话中输入 `/`，确认 completion 菜单最多五项；输入七行文本，确认输入框最多增长六行且光标/滚动正常；
    输入中文、英文和 emoji，确认用户消息为无角色标签的低对比块。使用已授权 Provider 发送固定最小请求，要求返回标题、
-   列表、行内代码、代码块和表格，确认 Markdown 降级可读、控制字符不可见且 `Working…` 在正式输出前清除。
+   列表、行内代码、代码块和表格，确认 `›` 输入、无色 `│` 用户侧轨、一次 `Pony` Answer 标识、Markdown 降级可读、控制字符
+   不可见且 `Working…` 在正式输出前清除。只读 Tool 必须先显示瞬态动作，完成后只留下恰好一条语义回执。
 4. 会话空闲时按一次 `Ctrl+C` 清空非空输入，再按两次 `Ctrl+C` 验证退出提示与退出；重新进入后以 `Ctrl+D` 退出。
    退出后键盘、光标和终端模式必须恢复，不能遗留输入 hook。
 5. 分别运行 `pony --no-color` 和设置 `NO_COLOR=1` 后运行 `pony`，确认布局与文本仍完整且没有 ANSI 颜色；清除环境变量后
-   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认完整大版不会切换为无 Logo 状态，且没有旧
-   footer、菜单或消息残影。
+   重新启动，确认颜色能力恢复。再进行一次 120→80→120 的运行中缩放，确认窄宽时只显示有界扩宽提示并暂停提交，恢复后
+   重新显示唯一完整资产，且没有 compact、Logo 溢出、旧 footer、菜单或消息残影。
 
 验收记录至少包含以下字段，并作为候选 tag 的发布附件或 CI 关联 artifact 保存；截图必须先检查不含 Key、完整 API Base、
 私有 prompt、绝对私有路径或 Session 标识：
@@ -278,17 +278,28 @@ uv run pytest -q \
 必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、非 TTY fallback、交互 TTY 的
 `TERM=dumb`/80/111 列稳定拒绝、`NO_COLOR`、112/120 列完整尺寸马形 `PONY CODE` 欢迎页与精简 footer、五项 slash
 completion、六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
-欢迎页测试必须同时锁定 112 列最低宽度、完整尺寸马形 Logo、块状字标、版本、模型/permission 摘要和可用宽度上限，并证明
-窄交互 TTY 不会进入无 Logo fallback，运行中缩窄也不会隐藏 Logo；只有用户明确要求修改设计时才可更新这些断言，不能把
-门禁弱化为“包含任意 PONY 文本”。
+欢迎页测试必须同时锁定 112 列最低宽度、112/120 列完整尺寸马形 Logo、块状字标、版本、模型/permission 摘要和可用宽度
+上限，并证明运行中缩放不会切换到 compact 或隐藏品牌状态；只有用户明确要求修改设计时才可更新这些
+断言，不能把门禁弱化为“包含任意 PONY 文本”。
 
 Input queue 测试必须同时覆盖 plain/TUI：单 worker FIFO、五条 pending 上限、满队列拒绝、`/queue clear` 零 Session
 写、queued prompt 只在 dequeue 后按序进入 Canonical Messages、approval answer 由 UI 接收且不入队，以及 `/exit` 等待
-active turn 而不声称取消 Provider/Tool。聚焦入口是 `tests/test_input_queue.py` 与 `tests/tui/test_app.py`。
+active turn 而不声称取消 Provider/Tool。approval/wake 异常必须 deny 并清除 pending confirmation。聚焦入口是
+`tests/test_input_queue.py` 与 `tests/tui/test_app.py`。
 
-事件投影测试必须证明 `Working…` 会在正式输出前清除、自动 checkpoint 零输出、成功 Tool 只输出一行、失败与中断
-可见，并且 footer 不泄露绝对路径、Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
+事件投影测试必须证明 `›` 输入、无色 `│` 用户侧轨、一次 `Pony` Answer 标识，且
+`Working -> Reading/Running -> Result -> Working -> Answer` 与真实事件一一对应；turn worker 必须在本地 request preflight 前
+立即显示第一个 `Working…`，后续 `model_requested` 只确认同一状态。`Working…` 会在正式输出前清除、自动 checkpoint 零输出、
+成功 Tool 只输出一行、分页/截断/失败与中断可见，approval 批准后恢复 pending Tool activity，并且 footer 不泄露绝对路径、
+Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
 permission prompt 参数脱敏与 prompt fail closed 仍是阻断项；离线 contract 不得描述为 Provider reasoning 或 streaming 验证。
+
+Model/Provider 回归还必须覆盖：任意 model id 零 warning 和 128K/16K 默认；256K/32K 显式 profile；32K/16K 自动
+compaction turn；非法 TOML 组合在 runtime 构造前回退；default/project/CLI/mixed source 在 delegate/worktree 中不漂移；
+OpenAI nested strict schema、default 清理与 unsupported composition 拒绝；generic compatible Chat `max_tokens` 与官方 Chat
+endpoint `max_completion_tokens`。聚焦入口是
+`tests/test_model_capabilities.py`、`tests/test_pony_toml_end_to_end.py`、`tests/test_agent_loop.py`、
+`tests/test_provider_openai_wire.py` 和 `tests/test_provider_openai_chat_completions.py`。
 
 Permission/Plan 合同还必须覆盖：Session v5 的 `auto` runtime 默认值；v1-v4 inspection 零写与 crash-safe explicit
 migration；六种公开 mode 与 `manual -> default` 边界；dangerous bypass 双开关、picker capability 与 resume preflight；
@@ -465,7 +476,7 @@ Fake Provider 单测只证明 fresh workspace、hidden grader 隔离、productio
 comparison。完整证据和旧 `23/24` 历史见本页前述结果文档。
 
 
-## Compaction efficiency 与非流式 Provider latency
+## Compaction efficiency、Provider latency 与 Streaming TTFT
 
 `scripts/evaluation/run_efficiency_evaluation.py` 只回答两个有明确决策的问题：
 
@@ -490,9 +501,17 @@ compacted 事实保留失败或 horizon 内仍无净收益为 `reject`；Provide
 容忍一个无效 pair 的随机噪声，但不隐藏 compacted regression。dirty worktree 的 measured effect 只作探索，顶层 decision
 强制 `inconclusive`。
 
-Production adapter 当前全部 `stream=False` 并在 body 完整读取后返回，所以真实首 token 时间不可观察。Artifact 固定写
-`ttft_status: unavailable_non_streaming`，不得用 `provider_complete_ms` 冒充 TTFT。延迟只在成功 trial 上解释并报告
-p50/p95；Provider failure type/count、retry 和 usage completeness 单独报告，即使 Agent 后续 retry 成功也不抹除失败。
+默认 evaluator latency trial 保持 final-only；其 Artifact 固定写 `ttft_status: unavailable_non_streaming`，不得用
+`provider_complete_ms` 或首 wire event 冒充 TTFT。该 evaluator 不启动真实 TTY，因此不得写 `safe_preview_observed`。
+
+Streaming 测量分成两层：offline 使用 fake monotonic clock 和 acknowledged preview sink 验证 true、false、异常、重复 callback；
+`first_preview_ms` 从 Agent 即将调用 `complete_stream()` 起算，是 safe-preview latency，不称为 wire-level TTFT。live 只在完整 TTY
+TUI 实际显示首个已脱敏非空文本时记录 `ttft_status: safe_preview_observed` 和 `first_preview_ms`。只有
+`Receiving...`、tool/reasoning delta、终态 body 或 callback 被禁用时记录 `ttft_status: no_visible_text_preview`。final-only 与
+Streaming latency 分开报告，不混为同一分布。
+
+延迟只在成功 trial 上解释并报告 p50/p95；Provider failure type/count、stream committed、retry 和 usage completeness 单独报告，
+即使 Agent 后续 retry 成功也不抹除失败。任一有效流事件后的失败必须为 `retryable=false`，否则 Streaming gate 直接失败。
 
 已授权收费请求时，在 clean exact HEAD 上运行：
 
@@ -508,6 +527,13 @@ Runner 复用 production config resolver 和 Transport factory；不拥有 Provi
 只保存 SHA/dirty、Provider/protocol/model、聚合 usage、延迟、重试和 opaque grader 结果，不保存 `.env`、API Base/Key、
 prompt、answer、raw response 或 reasoning。当前一次运行只能描述一个 target；Provider 间比较必须分别从各自 canonical
 repo root 产生脱敏 artifact，并在 Provider、model、workload、预算和 trial 数一致时离线比较。
+
+Streaming 的自动 contract 还必须覆盖 Anthropic SSE、Responses SSE、Chat SSE 与 Ollama NDJSON 的文本/tool/usage/stop
+组装等价；Chat `include_usage` 与 usage-only chunk；非法 UTF-8、256 KiB line、16 MiB body、100000 event、缺失终止帧；跨 chunk、
+已知多行/短 secret 与跨行 PEM private key；callback 异常；首事件后断连零 retry；以及
+success/error/interrupt/resize/`NO_COLOR` 后 preview 清理。Resize 测试必须覆盖 busy + queued 的 `120→80→120`，并证明
+`Widen terminal · Queued N/5` 两项都不丢、同一安全 snapshot 在扩宽后能重新投影，不依赖新的 model delta。Fixture 只能保存
+合成数据，不能保存 live response。
 
 ## Provider live
 
@@ -528,9 +554,9 @@ Live harness 的每个 designed turn 必须由 task state、report 与 trace 一
 缺失/不一致都必须使 Behavior gate 失败，并停止后续收费 turn。
 
 Harness 仅暴露 `read_file` 与 `memory_read` 两个只读工具：前者验证 workspace tool round-trip，后者允许模型按
-已注入的 Memory 索引读取命中笔记。每 turn 最多三个 tool step，为“读取 Memory、读取 workspace、返回结论”保留
-完成路径。Memory recall turn 固定为一次 `memory_read` 后返回结论；workspace tool round-trip 由独立 digest turn
-验证。它不暴露写入、shell、delegate 或 Memory 写入能力。
+已注入的 Memory 索引读取命中笔记。每 turn 最多三个 Agent step。Memory recall turn 固定为一次 `memory_read` 后
+返回结论；workspace tool round-trip 固定为首次 `read_file`、使用工具返回的 exact continuation 再读一次、然后返回
+Final。它不暴露写入、shell、delegate 或 Memory 写入能力。
 
 Live report 不应保存 prompt、answer、raw response、Key、header 或完整 URL；只记录 Provider、模型、exact SHA、固定 caps、
 行为标签、计数、usage、wall time 和稳定错误码。账号错误、配额、模型不可用与协议失败应明确区分。
@@ -549,6 +575,22 @@ Canonical Messages 或 durable trace，也不得推荐当前 permission mode 隐
 Provider auto 的 G8 证据至少覆盖：省略 Provider、`openai` family、init 写 resolved 值、doctor 零写、
 run/repl 进程内解析、native tool continuation 和 usage complete/degraded。比较 `.env` 时必须记录
 bytes、inode、mtime 与 mode；报告仍不得保存真实 prompt/answer/response。
+
+Streaming G8 使用相同 canonical `.env`，先完成 final-only 只读 turn，再用完整交互 TUI 的 `--stream` 完成一个只读 tool
+continuation turn。报告必须证明 exact Target、单 HTTP attempt、非空 Final、工具零重复、preview 零持久化及 TTFT status；一次
+Target 通过不能外推其他三种协议。若模型只产生 tool delta 或无换行单段而没有安全文本 preview，功能可以通过但 TTFT 必须记为
+`no_visible_text_preview`，不能补造数值。
+
+可复现的 TTY 步骤是在安装当前 exact HEAD 后，于包含 canonical `.env` 的测试仓库运行：
+
+```bash
+pony repl --stream
+```
+
+提交固定的只读 tool-continuation prompt，等待 Final 后使用 `pony runs` 检查同一 Run 的低敏计数/终态，再退出。记录终端类型、
+宽度、exact SHA、Provider/protocol/model、final-only/streaming 模式、HTTP attempt、tool count、TTFT status 和稳定错误码；不得
+记录 prompt、answer、preview 文本、raw response、Key 或完整 endpoint。busy 时按 Ctrl+C 只验证 queue clear，当前流必须继续；
+另用合成 Provider interruption 验证 preview 清理，不能为该失败额外产生收费请求。
 
 ## 版本晋级
 

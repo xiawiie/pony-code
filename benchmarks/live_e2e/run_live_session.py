@@ -312,10 +312,18 @@ min_score = 0.2
 
 
 SEED_NOTE_REL = Path(".pony/memory/notes/cache-invariant.md")
-TOOL_DIGEST_FIXTURE_REL = Path(
-    "benchmarks/live_e2e/fixtures/live_tool_digest_fixture.txt"
+TOOL_PAGE_FIXTURE_REL = Path(
+    "benchmarks/live_e2e/fixtures/live_tool_page_fixture.txt"
 )
-TOOL_DIGEST_FIXTURE_TEXT = "digest-fixture-token " * 5_000 + "\n"
+TOOL_PAGE_FIXTURE_TEXT = "".join(f"p{index:04d}\n" for index in range(3_000))
+_TOOL_PAGE_PROMPT = (
+    "Call the API-provided native read_file tool for the full file starting at line "
+    f"1, with path set to {TOOL_PAGE_FIXTURE_REL.as_posix()}. Use only path, or path "
+    "plus start=1; omit end. Then call read_file exactly once more using the exact "
+    "continuation arguments returned by the first result. After the second result, "
+    "do not call any tool again; return a concise final summary. Do not emit XML "
+    "tool text."
+)
 PONY_TOML_REL = Path("pony.toml")
 BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pony.toml.bak")
 COMPACTION_FIXTURE_MESSAGES = 80
@@ -353,10 +361,10 @@ class FixtureManager:
       2. Write ``FIXTURE_PONY_TOML`` to ``<repo_root>/pony.toml``.
       3. Write the fixture seed note to
          ``<repo_root>/.pony/memory/notes/cache-invariant.md``.
-      4. Write one large-line read fixture that deterministically triggers digest.
+      4. Write one 3,000-line fixture that deterministically requires two pages.
 
     On exit (never raises):
-      1. Remove the seed note and digest fixture if present.
+      1. Remove the seed note and page fixture if present.
       2. Restore original pony.toml from backup, or delete the fixture
          copy if no backup existed.
     """
@@ -376,13 +384,13 @@ class FixtureManager:
     def __enter__(self) -> "FixtureManager":
         pony_toml = self.repo_root / PONY_TOML_REL
         backup = self.repo_root / BACKUP_REL
-        digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
+        page_target = self.repo_root / TOOL_PAGE_FIXTURE_REL
         try:
-            digest_target.lstat()
+            page_target.lstat()
         except FileNotFoundError:
             pass
         else:
-            raise FileExistsError(f"live fixture already exists: {digest_target}")
+            raise FileExistsError(f"live fixture already exists: {page_target}")
         # 1. Snapshot if present
         if pony_toml.exists():
             self._had_pony_toml = True
@@ -416,8 +424,8 @@ class FixtureManager:
                 encoding="utf-8",
             )
             ensure_private_file(seed_target)
-            digest_target.parent.mkdir(parents=True, exist_ok=True)
-            digest_target.write_text(TOOL_DIGEST_FIXTURE_TEXT, encoding="utf-8")
+            page_target.parent.mkdir(parents=True, exist_ok=True)
+            page_target.write_bytes(TOOL_PAGE_FIXTURE_TEXT.encode("utf-8"))
         except Exception:
             self.__exit__(*sys.exc_info())
             raise
@@ -429,9 +437,9 @@ class FixtureManager:
             seed_target = self.repo_root / SEED_NOTE_REL
             if seed_target.exists():
                 seed_target.unlink()
-            digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
-            if os.path.lexists(digest_target):
-                digest_target.unlink()
+            page_target = self.repo_root / TOOL_PAGE_FIXTURE_REL
+            if os.path.lexists(page_target):
+                page_target.unlink()
         except OSError:
             self.cleanup_errors.append("seed_remove_failed")
             print("[live-e2e] teardown: could not remove seed note", file=sys.stderr)
@@ -454,7 +462,7 @@ class FixtureManager:
         pony_toml = self.repo_root / PONY_TOML_REL
         backup = self.repo_root / BACKUP_REL
         seed = self.repo_root / SEED_NOTE_REL
-        digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
+        page_target = self.repo_root / TOOL_PAGE_FIXTURE_REL
         try:
             config_restored = (
                 pony_toml.read_bytes() == self._original_pony_toml
@@ -464,7 +472,7 @@ class FixtureManager:
             restored = (
                 not self.cleanup_errors
                 and not seed.exists()
-                and not os.path.lexists(digest_target)
+                and not os.path.lexists(page_target)
                 and not backup.exists()
                 and config_restored
             )
@@ -1127,7 +1135,7 @@ class AssertionEngine:
         if turn == 1:
             return checks + self.check_turn_1_recall(result)
         if turn == 2:
-            return checks + self.check_turn_2_digest(result, pony)
+            return checks + self.check_turn_2_pages(result, pony)
         if turn == 3:
             return checks + self.check_turn_3_source_allocator(result)
         if turn == 4:
@@ -1234,90 +1242,214 @@ class AssertionEngine:
         )
         return out
 
-    def check_turn_2_digest(self, result: TurnResult, pony) -> list[Assertion]:
-        """Verify digest application and native per-call trace evidence.
-
-        Search is restricted to messages added THIS turn (via the
-        session-count-before/after window on ``result``). Within that
-        window, we prefer the FIRST tool_result whose _pony_meta says
-        digest_applied=True — that's the read_file result we intended
-        to observe. If none is digested, we fall back to the last
-        tool_result in the window so failures still surface a concrete
-        actual value.
-        """
+    def check_turn_2_pages(self, result: TurnResult, pony) -> list[Assertion]:
+        """Verify lossless paging, exact continuation, and native trace evidence."""
         out = []
         messages = getattr(pony, "session", {}).get("messages", []) or []
         turn_slice = messages[
             result.session_message_count_before : result.session_message_count_after
         ]
-        tool_result_msg = None
+        tool_result_contents = []
+        tool_result_metadata = []
+        tool_result_ids = []
+        tool_inputs = []
+        tool_use_ids = []
         for msg in turn_slice:
-            content = msg.get("content")
-            if isinstance(content, list) and any(
-                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-            ):
-                pm = msg.get("_pony_meta") or {}
-                if pm.get("digest_applied"):
-                    tool_result_msg = msg
-                    break
-        if tool_result_msg is None:
-            for msg in reversed(turn_slice):
-                content = msg.get("content")
-                if isinstance(content, list) and any(
-                    isinstance(b, dict) and b.get("type") == "tool_result"
-                    for b in content
-                ):
-                    tool_result_msg = msg
-                    break
-
-        meta = (tool_result_msg or {}).get("_pony_meta") or {}
-        digest_applied = bool(meta.get("digest_applied"))
-        out.append(
-            Assertion(
-                name="digest_applied_flag_true",
-                passed=digest_applied,
-                expected="last tool_result message has _pony_meta.digest_applied=True",
-                actual=str(digest_applied),
-            )
-        )
-
-        # tool_result content should start with [digest]
-        tr_content = ""
-        if tool_result_msg is not None:
-            content = tool_result_msg.get("content") or []
+            content = msg.get("content") or []
+            if not isinstance(content, list):
+                continue
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    tr_content = str(block.get("content") or "")
-                    break
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("name") == "read_file":
+                    tool_inputs.append(block.get("input"))
+                    tool_use_ids.append(block.get("id"))
+                elif block.get("type") == "tool_result":
+                    tool_result_contents.append(str(block.get("content") or ""))
+                    tool_result_metadata.append(dict(msg.get("_pony_meta") or {}))
+                    tool_result_ids.append(block.get("tool_use_id"))
+
+        def parse_page(content):
+            lines = content.splitlines(keepends=True)
+            if not lines or not lines[0].startswith("[page] "):
+                return None
+            try:
+                header = json.loads(lines[0][len("[page] ") :])
+                continuation = None
+                body_lines = lines[1:]
+                if body_lines and body_lines[-1].startswith("[continuation] "):
+                    continuation = json.loads(
+                        body_lines[-1][len("[continuation] ") :]
+                    )
+                    body_lines = body_lines[:-1]
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+            if not isinstance(header, dict) or (
+                continuation is not None and not isinstance(continuation, dict)
+            ):
+                return None
+            return header, "".join(body_lines), continuation
+
+        pages = [parse_page(content) for content in tool_result_contents]
+        two_pages = len(pages) == 2 and all(page is not None for page in pages)
         out.append(
             Assertion(
-                name="tool_result_content_starts_with_digest",
-                passed=tr_content.strip().startswith("[digest]"),
-                expected="tool_result content starts with '[digest]'",
-                actual=tr_content[:80] if tr_content else "(empty)",
+                name="two_paged_results_observed",
+                passed=two_pages,
+                expected="exactly two model-visible [page] tool results",
+                actual=str(len(tool_result_contents)),
             )
         )
 
-        source_hash = str(meta.get("source_hash", "") or "")
-        valid_source_hash = len(source_hash) == 16 and all(
-            char in "0123456789abcdef" for char in source_hash
+        first_header, first_body, first_continuation = (
+            pages[0] if two_pages else ({}, "", None)
         )
-        expected_raw_result_id = f"raw_result_id: tool_result:{source_hash}"
+        source_hash = str(first_header.get("sha256", ""))
+        fixture_hash = hashlib.sha256(
+            TOOL_PAGE_FIXTURE_TEXT.encode("utf-8")
+        ).hexdigest()
+        expected_continuation = {
+            "path": TOOL_PAGE_FIXTURE_REL.as_posix(),
+            "start": 2_001,
+            "expected_sha256": source_hash,
+        }
+        first_page_valid = bool(
+            two_pages
+            and source_hash == fixture_hash
+            and first_header.get("path") == TOOL_PAGE_FIXTURE_REL.as_posix()
+            and first_header.get("start") == 1
+            and first_header.get("end") == 2_000
+            and first_header.get("total_lines") == 3_000
+            and first_header.get("range_complete") is False
+            and first_header.get("file_complete") is False
+            and first_continuation == expected_continuation
+        )
         out.append(
             Assertion(
-                name="tool_result_content_contains_logical_raw_result_id",
-                passed=valid_source_hash and expected_raw_result_id in tr_content,
-                expected="tool_result content contains its logical raw-result id",
-                actual="found" if expected_raw_result_id in tr_content else "not found",
+                name="first_page_has_exact_continuation",
+                passed=first_page_valid,
+                expected="lines 1-2000 with exact start=2001 continuation",
+                actual=str(first_header),
+            )
+        )
+
+        exact_tool_inputs = bool(
+            len(tool_inputs) == 2
+            and tool_inputs[0]
+            in (
+                {"path": TOOL_PAGE_FIXTURE_REL.as_posix()},
+                {"path": TOOL_PAGE_FIXTURE_REL.as_posix(), "start": 1},
+            )
+            and tool_inputs[1] == first_continuation
+        )
+        out.append(
+            Assertion(
+                name="read_file_inputs_follow_exact_continuation",
+                passed=exact_tool_inputs,
+                expected=(
+                    "line-1 full-file read followed by exact continuation input"
+                ),
+                actual=str(tool_inputs),
+            )
+        )
+
+        second_header, second_body, second_continuation = (
+            pages[1] if two_pages else ({}, "", None)
+        )
+        second_page_valid = bool(
+            two_pages
+            and second_header.get("path") == TOOL_PAGE_FIXTURE_REL.as_posix()
+            and second_header.get("start") == 2_001
+            and second_header.get("end") == 3_000
+            and second_header.get("total_lines") == 3_000
+            and second_header.get("range_complete") is True
+            and second_header.get("file_complete") is True
+            and second_header.get("sha256") == source_hash
+            and second_continuation is None
+        )
+        out.append(
+            Assertion(
+                name="second_page_completes_file",
+                passed=second_page_valid,
+                expected="lines 2001-3000 complete the same source",
+                actual=str(second_header),
+            )
+        )
+
+        body_complete = two_pages and first_body + second_body == TOOL_PAGE_FIXTURE_TEXT
+        out.append(
+            Assertion(
+                name="page_bodies_reconstruct_source",
+                passed=body_complete,
+                expected="concatenated page bodies equal the fixture",
+                actual=str(body_complete),
+            )
+        )
+
+        metadata_exact = bool(
+            len(tool_result_metadata) == 2
+            and len(tool_result_ids) == len(tool_use_ids) == 2
+            and all(
+                meta.get("digest_applied") is False
+                and meta.get("source_hash") is None
+                and meta.get("tool_status") == "ok"
+                and meta.get("effect_class") == "read_only"
+                and meta.get("tool_use_id") == result_id == use_id
+                and "result_view" not in meta
+                for meta, result_id, use_id in zip(
+                    tool_result_metadata,
+                    tool_result_ids,
+                    tool_use_ids,
+                )
+            )
+        )
+        out.append(
+            Assertion(
+                name="paged_result_metadata_exact",
+                passed=metadata_exact,
+                expected=(
+                    "successful canonical page metadata omits presentation result_view"
+                ),
+                actual=str(tool_result_metadata),
+            )
+        )
+
+        preview_absent = all(
+            marker not in content
+            for content in tool_result_contents
+            for marker in ("[digest]", "[preview]", "raw_result_id")
+        )
+        out.append(
+            Assertion(
+                name="paged_results_have_no_preview_markers",
+                passed=preview_absent,
+                expected="page results contain no digest, preview, or raw-result marker",
+                actual=str(preview_absent),
             )
         )
 
         try:
             run_dir = Path(pony.run_store.run_dir(result.run_id))
-        except (AttributeError, TypeError, ValueError):
+            raw_dir = run_dir / "tool_results"
+            raw_spill_absent = not raw_dir.exists() or not any(raw_dir.iterdir())
+        except (AttributeError, OSError, TypeError, ValueError):
             run_dir = None
+            raw_spill_absent = False
+        out.append(
+            Assertion(
+                name="run_has_no_raw_tool_results",
+                passed=raw_spill_absent,
+                expected="paged read creates no raw tool-result file",
+                actual="absent" if raw_spill_absent else "present or unreadable",
+            )
+        )
+
         host_path_hidden = bool(
-            run_dir and str(run_dir) not in tr_content and "raw at " not in tr_content
+            run_dir
+            and all(
+                str(run_dir) not in content and "raw at " not in content
+                for content in tool_result_contents
+            )
         )
         out.append(
             Assertion(
@@ -1328,50 +1460,28 @@ class AssertionEngine:
             )
         )
 
-        raw_path = (
-            run_dir / "tool_results" / f"{source_hash}.txt"
-            if run_dir is not None and valid_source_hash
-            else None
-        )
-        raw_exists = bool(raw_path and raw_path.is_file())
+        exact_tool_calls = result.tool_name_counts == {"read_file": 2}
         out.append(
             Assertion(
-                name="raw_file_exists_on_disk",
-                passed=raw_exists,
-                expected="trusted raw-result artifact exists",
-                actual="exists" if raw_exists else "missing",
+                name="read_file_called_exactly_twice",
+                passed=exact_tool_calls,
+                expected="two read_file calls and no other tools",
+                actual=str(result.tool_name_counts),
             )
         )
-
-        raw_sha256 = ""
-        if raw_exists:
-            try:
-                with raw_path.open("rb") as handle:
-                    raw_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
-            except OSError:
-                raw_sha256 = ""
-        visible_sha256 = f"content_sha256: sha256:{raw_sha256}"
+        durable_tools_succeeded = bool(
+            result.tool_status_counts == {"ok": 2}
+            and result.error_code_counts == {}
+        )
         out.append(
             Assertion(
-                name="raw_file_digest_matches_visible_sha256",
-                passed=bool(
-                    raw_sha256
-                    and source_hash == raw_sha256[:16]
-                    and visible_sha256 in tr_content
+                name="read_file_calls_succeeded",
+                passed=durable_tools_succeeded,
+                expected="two durable ok statuses and no error codes",
+                actual=(
+                    f"statuses={result.tool_status_counts}, "
+                    f"errors={result.error_code_counts}"
                 ),
-                expected="raw artifact digest matches the model-visible SHA-256",
-                actual="matches"
-                if raw_sha256 and visible_sha256 in tr_content
-                else "mismatch",
-            )
-        )
-
-        out.append(
-            Assertion(
-                name="raw_file_source_hash_recorded",
-                passed=valid_source_hash,
-                expected="_pony_meta.source_hash is a 16-character lowercase hex digest",
-                actual=source_hash or "(empty)",
             )
         )
 
@@ -1379,16 +1489,16 @@ class AssertionEngine:
         out.append(
             Assertion(
                 name="provider_tool_action_observed",
-                passed="native_tool_use" in result.action_origins,
-                expected="native_tool_use in action_origins",
+                passed=result.action_origins.count("native_tool_use") == 2,
+                expected="exactly two native_tool_use actions",
                 actual=str(result.action_origins),
             )
         )
         out.append(
             Assertion(
-                name="native_tool_roundtrip_uses_multiple_model_turns",
-                passed=model_turns >= 2,
-                expected="model_turns_this_turn >= 2",
+                name="paged_tool_roundtrip_uses_three_model_turns",
+                passed=model_turns == 3,
+                expected="model_turns_this_turn == 3",
                 actual=str(model_turns),
             )
         )
@@ -2410,14 +2520,14 @@ def do_reset(repo_root: Path) -> int:
         seed.unlink()
         removed.append(str(seed.relative_to(repo_root)))
 
-    digest_target = repo_root / TOOL_DIGEST_FIXTURE_REL
+    page_target = repo_root / TOOL_PAGE_FIXTURE_REL
     if (
-        digest_target.is_file()
-        and not digest_target.is_symlink()
-        and digest_target.read_text(encoding="utf-8") == TOOL_DIGEST_FIXTURE_TEXT
+        page_target.is_file()
+        and not page_target.is_symlink()
+        and page_target.read_text(encoding="utf-8") == TOOL_PAGE_FIXTURE_TEXT
     ):
-        digest_target.unlink()
-        removed.append(str(digest_target.relative_to(repo_root)))
+        page_target.unlink()
+        removed.append(str(page_target.relative_to(repo_root)))
 
     backup = repo_root / BACKUP_REL
     pony_toml = repo_root / PONY_TOML_REL
@@ -2462,7 +2572,7 @@ def main() -> int:
     warn_if_dirty_working_tree(repo_root)
     if any(
         os.path.lexists(repo_root / relative)
-        for relative in (SEED_NOTE_REL, TOOL_DIGEST_FIXTURE_REL)
+        for relative in (SEED_NOTE_REL, TOOL_PAGE_FIXTURE_REL)
     ):
         print(
             "[live-e2e] live fixture already exists — run with --reset first",
@@ -2504,13 +2614,6 @@ def main() -> int:
     pony_root = repo_root / ".pony"
     artifact_baseline = snapshot_private_artifacts(pony_root)
 
-    digest_fixture = TOOL_DIGEST_FIXTURE_REL.as_posix()
-    tool_prompt = (
-        "Call the API-provided native read_file tool exactly once for "
-        f"{digest_fixture}. After its result, do not call any tool again. The result "
-        "may be a [digest] summary; treat that digest as complete evidence and return "
-        "a concise final summary. Do not emit XML tool text."
-    )
     turns = [
         (
             1,
@@ -2521,7 +2624,7 @@ def main() -> int:
         ),
         (
             2,
-            tool_prompt,
+            _TOOL_PAGE_PROMPT,
             "provider_tool_roundtrip",
         ),
         (

@@ -70,6 +70,17 @@ def bound_fake_client(
     return client
 
 
+def streaming_bound_fake_client(outputs, *, model="gpt-test"):
+    client = bound_fake_client(outputs, model=model)
+
+    def complete_stream(*, on_stream_committed, on_text_delta, **kwargs):
+        on_stream_committed()
+        return client.complete(**kwargs)
+
+    client.complete_stream = complete_stream
+    return client
+
+
 def set_raw_file_summary(agent, path, summary):
     memorylib.set_file_summary_dict(
         agent.session["memory"]["file_summaries"],
@@ -89,6 +100,21 @@ def test_pony_constructor_uses_coding_agent_defaults(tmp_path):
 
     assert agent.max_steps == DEFAULT_MAX_STEPS == 12
     assert agent.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS == 16_384
+
+
+def test_runtime_model_budget_override_preserves_compaction_invariants(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        context_window=256_000,
+        max_output_tokens=32_768,
+    )
+
+    assert agent.model_capabilities.context_window == 256_000
+    assert agent.max_output_tokens == 32_768
+    assert agent.model_budget.reserve_tokens == 32_768
+    assert agent.model_budget.input_limit == 223_232
+    assert agent.model_capabilities.source == "cli"
 
 
 def test_new_runtime_persists_current_messages_only(tmp_path):
@@ -123,6 +149,48 @@ def test_new_session_persists_provider_binding(tmp_path):
     assert (
         store.load(agent.session["id"])["provider_binding"] == client.provider_binding
     )
+
+
+def test_streaming_constructor_rejects_unsupported_client_before_session_write(
+    tmp_path,
+):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    before = tuple(store.root.iterdir())
+
+    with pytest.raises(ValueError, match="^streaming_unavailable$"):
+        Pony(
+            model_client=FakeModelClient([]),
+            workspace=workspace,
+            session_store=store,
+            options=RuntimeOptions(project_trusted=True, stream=True),
+        )
+
+    assert tuple(store.root.iterdir()) == before
+
+
+def test_streaming_resume_capability_failure_does_not_change_revision(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    original = Pony(
+        model_client=bound_fake_client([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(project_trusted=True),
+    )
+    path = Path(original.session_path)
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError, match="^streaming_unavailable$"):
+        Pony.from_session(
+            model_client=bound_fake_client([]),
+            workspace=workspace,
+            session_store=store,
+            session_id=original.session["id"],
+            options=RuntimeOptions(project_trusted=True, stream=True),
+        )
+
+    assert path.read_bytes() == before
 
 
 def test_resume_rejects_a_different_model_session_binding(tmp_path):
@@ -184,6 +252,62 @@ def test_model_switch_persists_and_resumes_with_the_new_binding(tmp_path):
         ),
     )
     assert resumed.current_model_binding()["model"] == "gpt-next"
+
+
+def test_streaming_model_switch_rejects_unsupported_candidate_before_write(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+
+    def factory(model):
+        return bound_fake_client([], model=model)
+
+    client = streaming_bound_fake_client([], model="gpt-test")
+    agent = Pony(
+        model_client=client,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+            stream=True,
+        ),
+    )
+    path = Path(agent.session_path)
+    before = path.read_bytes()
+    binding = agent.current_model_binding()
+
+    with pytest.raises(ValueError, match="^streaming_unavailable$"):
+        agent.set_model("gpt-next")
+
+    assert agent.model_client is client
+    assert agent.current_model_binding() == binding
+    assert path.read_bytes() == before
+
+
+def test_model_switch_accepts_unseen_model_without_budget_warning(tmp_path, capsys):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+
+    def factory(model):
+        return bound_fake_client([], model=model)
+
+    agent = Pony(
+        model_client=factory("initial-model"),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+    capsys.readouterr()
+
+    agent.set_model("vendor-future-model-2030")
+
+    assert agent.model_capabilities.context_window == 128_000
+    assert agent.max_output_tokens == 16_384
+    assert agent.model_capabilities.source == "default"
+    assert capsys.readouterr().err == ""
 
 
 def test_model_switch_rejects_session_change_during_client_factory(tmp_path):
@@ -913,6 +1037,45 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
     assert secret not in json.dumps(safe)
 
 
+@pytest.mark.parametrize(
+    ("pony_toml", "runtime_overrides", "expected_source"),
+    [
+        ("", {}, "default"),
+        ("[model]\ncontext_window = 90000\noutput_limit = 12000\n", {}, "project"),
+        ("", {"context_window": 256_000, "max_output_tokens": 32_768}, "cli"),
+        ("", {"context_window": 256_000}, "mixed"),
+    ],
+)
+def test_delegate_preserves_model_budget_provenance(
+    tmp_path,
+    monkeypatch,
+    pony_toml,
+    runtime_overrides,
+    expected_source,
+):
+    if pony_toml:
+        (tmp_path / "pony.toml").write_text(pony_toml, encoding="utf-8")
+    children = []
+    agent = build_agent(
+        tmp_path,
+        [],
+        delegate_model_client_factory=lambda: FakeModelClient([]),
+        **runtime_overrides,
+    )
+
+    def fake_ask(child, _task):
+        children.append(child)
+        return "safe"
+
+    monkeypatch.setattr(Pony, "ask", fake_ask)
+
+    assert agent.spawn_delegate({"task": "inspect", "max_steps": 1}) == (
+        "delegate_result:\nsafe"
+    )
+    assert agent.model_capabilities.source == expected_source
+    assert children[0].model_capabilities.source == expected_source
+
+
 def test_supplied_legacy_session_is_rejected_outside_store_migration(
     tmp_path,
 ):
@@ -1502,11 +1665,14 @@ def test_build_agent_detects_missing_provider_without_writing_project_env(tmp_pa
         agent = build_cli_agent(args)
 
     after = env_path.stat()
-    assert agent.model_client.provider_binding["protocol_family"] == "openai_responses"
+    assert (
+        agent.model_client.provider_binding["protocol_family"]
+        == "openai_chat_completions"
+    )
     assert [call.args[0] for call in builder.call_args_list] == [
+        "openai_responses",
         "openai_chat_completions",
-        "openai_responses",
-        "openai_responses",
+        "openai_chat_completions",
     ]
     assert env_path.read_bytes() == before_bytes
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)

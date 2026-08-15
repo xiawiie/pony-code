@@ -9,7 +9,12 @@ from pony.security.workspace_files import read_regular_bytes_anchored
 
 
 _PONY_TOML_WARNING = "warning: invalid pony.toml; using defaults"
+_PONY_TOML_BUDGET_WARNING = (
+    "warning: invalid pony.toml model/context budget; using defaults"
+)
 MAX_PONY_TOML_BYTES = 1024 * 1024
+MAX_MODEL_OUTPUT_TOKENS = 384_000
+_MIN_EFFECTIVE_INPUT_TOKENS = 16_384
 _MISSING = object()
 _REMOVED_CONTEXT_KEYS = (
     "history_soft_cap",
@@ -36,13 +41,31 @@ def _table(parent, key, path):
 
 
 def _bounded_int(parent, key, default, minimum, maximum, path):
+    return _bounded_int_setting(
+        parent,
+        key,
+        default,
+        minimum,
+        maximum,
+        path,
+    )[0]
+
+
+def _bounded_int_setting(parent, key, default, minimum, maximum, path):
     value = parent.get(key, _MISSING)
     if value is _MISSING:
-        return default
+        return default, False
     if type(value) is int and minimum <= value <= maximum:
-        return value
+        return value, True
     _warn_invalid_pony_toml_field(path)
-    return default
+    return default, False
+
+
+def _tool_result_tokens(parent, key, default, minimum, maximum, path):
+    value = parent.get(key, _MISSING)
+    if type(value) is int and 1 <= value < minimum:
+        raise ValueError("tool_result_budget_too_small")
+    return _bounded_int(parent, key, default, minimum, maximum, path)
 
 
 def _bounded_bool(parent, key, default, path):
@@ -70,10 +93,8 @@ def _bounded_float(parent, key, default, minimum, maximum, path):
 
 
 def _validated_model(model, context):
-    context_explicit = "context_window" in model
-    output_explicit = "output_limit" in model
-    if context_explicit:
-        context_window = _bounded_int(
+    if "context_window" in model:
+        context_window, context_explicit = _bounded_int_setting(
             model,
             "context_window",
             128000,
@@ -82,7 +103,7 @@ def _validated_model(model, context):
             "model.context_window",
         )
     elif "total_budget_hard_cap" in context:
-        context_window = _bounded_int(
+        context_window, context_explicit = _bounded_int_setting(
             context,
             "total_budget_hard_cap",
             128000,
@@ -90,9 +111,17 @@ def _validated_model(model, context):
             2_000_000,
             "context.total_budget_hard_cap",
         )
-        context_explicit = True
     else:
         context_window = 128000
+        context_explicit = False
+    output_limit, output_explicit = _bounded_int_setting(
+        model,
+        "output_limit",
+        16384,
+        1,
+        MAX_MODEL_OUTPUT_TOKENS,
+        "model.output_limit",
+    )
     return {
         "_meta": {
             "model_context_explicit": context_explicit,
@@ -100,14 +129,7 @@ def _validated_model(model, context):
         },
         "model": {
             "context_window": context_window,
-            "output_limit": _bounded_int(
-                model,
-                "output_limit",
-                16384,
-                1,
-                384000,
-                "model.output_limit",
-            ),
+            "output_limit": output_limit,
         },
     }
 
@@ -157,19 +179,19 @@ def _validated_context(context):
             ),
         },
         "tool_results": {
-            "inline_tokens": _bounded_int(
+            "inline_tokens": _tool_result_tokens(
                 tool_results,
                 "inline_tokens",
-                4096,
-                1,
+                16384,
+                256,
                 100000,
                 "context.tool_results.inline_tokens",
             ),
-            "digest_tokens": _bounded_int(
+            "digest_tokens": _tool_result_tokens(
                 tool_results,
                 "digest_tokens",
                 512,
-                1,
+                128,
                 16384,
                 "context.tool_results.digest_tokens",
             ),
@@ -265,9 +287,22 @@ def _validated_pony_toml(raw):
     model = _table(raw, "model", "model")
     context = _table(raw, "context", "context")
     memory = _table(raw, "memory", "memory")
-    validated = _validated_model(model, context)
+    validated_model = _validated_model(model, context)
+    validated_context = _validated_context(context)
+    effective_reserve = max(
+        validated_model["model"]["output_limit"],
+        validated_context["compaction"]["reserve_tokens"],
+    )
+    if (
+        validated_model["model"]["context_window"] - effective_reserve
+        < _MIN_EFFECTIVE_INPUT_TOKENS
+    ):
+        print(_PONY_TOML_BUDGET_WARNING, file=sys.stderr)
+        validated_model = _validated_model({}, {})
+        validated_context["compaction"]["reserve_tokens"] = 16_384
+    validated = validated_model
     validated.update(
-        context=_validated_context(context),
+        context=validated_context,
         memory={
             "recall": _validated_recall(_table(memory, "recall", "memory.recall")),
             "retrieval": _validated_retrieval(

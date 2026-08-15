@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
 import json
 import logging
 import time
@@ -18,9 +19,12 @@ from pony.state.checkpoint import (
 )
 from pony.agent.compaction import CompactionError, CompactionNoProgress
 from pony.agent.context_manager import ContextBudgetExceeded
+from pony.agent.model_capabilities import automatic_compaction_keep_recent
+from pony.agent.streaming import SafeTextPreview
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
 from pony.security.command_policy import assess_command
+from pony.security.text import project_terminal_text
 from pony.state.task_state import (
     STOP_REASON_PERSISTENCE_ERROR,
     STATUS_RUNNING,
@@ -35,6 +39,7 @@ from pony.tools.executor import (
     _effect_class,
     _metadata,
 )
+from pony.tools.result_view import project_result_view, render_overflow_preview
 
 logger = logging.getLogger("pony")
 
@@ -101,6 +106,11 @@ def _is_context_length_error(error):
             "prompt too long",
         )
     )
+
+
+def _streaming_attempt_committed(request_metadata):
+    streaming = request_metadata.get("streaming")
+    return isinstance(streaming, dict) and streaming.get("committed") is True
 
 
 def _empty_usage_totals():
@@ -195,6 +205,7 @@ def _record_model_failure(
     failure_phase,
     error,
     completion_usage=None,
+    request_metadata=None,
 ):
     attempts, retries, complete = _record_transport(
         model_execution,
@@ -224,6 +235,8 @@ def _record_model_failure(
         }
         if completion_usage is not None:
             payload["completion_usage"] = completion_usage
+        if request_metadata is not None:
+            payload["request_metadata"] = deepcopy(request_metadata)
         agent.emit_trace(
             task_state,
             "model_failed",
@@ -352,12 +365,15 @@ def _safe_tool_name(agent, name):
 
 def _sanitize_action(agent, action):
     if isinstance(action, FinalAction):
-        return replace(action, text=agent.redact_text(action.text)), None
+        return replace(
+            action,
+            text=project_terminal_text(action.text, agent.redact_text),
+        ), None
     if isinstance(action, RetryAction):
         return replace(
             action,
-            notice=agent.redact_text(action.notice),
-            excerpt=agent.redact_text(action.excerpt),
+            notice=project_terminal_text(action.notice, agent.redact_text),
+            excerpt=project_terminal_text(action.excerpt, agent.redact_text),
         ), None
 
     action = replace(action, name=_safe_tool_name(agent, action.name))
@@ -565,39 +581,18 @@ def _prepare_tool_result(
     tool_args: dict | None = None,
     digest_applied: bool = False,
     source_hash: str | None = None,
+    result_view: dict | None = None,
 ):
-    """Prepare a tool result for a later atomic pair commit.
-
-    Task 26: when the raw ``content`` exceeds the digest threshold
-    (see ``pony.context.digest.should_digest``), we:
-
-    1. Write the raw body to ``<run_dir>/tool_results/<hash>.txt`` so a
-       later turn can recover the full output on demand.
-    2. Replace ``content`` with the rendered digest (title + bullets +
-       content SHA-256 and logical raw-result id) — the agent still sees
-       the shape of the result without learning a Project State host path.
-    3. Return ``digest_applied`` and ``source_hash`` so the atomic pair
-       commit can distinguish digested messages from inline ones.
-
-    When ``agent.current_run_dir`` is unavailable (e.g. mid-test), we
-    still emit the digest without a ``raw_result_id`` — no crash.
-    Callers can override the auto-digest by passing
-    ``digest_applied=True`` up-front (used by explicit callers that
-    have already digested the content themselves).
-    """
+    """Prepare one already-redacted result for the canonical transcript."""
     safe_content = str(agent.redact_text(content))
+    view = project_result_view(result_view) or {}
+    if view.get("delivery") == "page" and view.get("truncated") is False:
+        return safe_content, {
+            "digest_applied": False,
+            "source_hash": None,
+            "result_view": view,
+        }
 
-    # Lazy import to avoid the agent_loop → context.digest → ... cycle risk.
-    from pony.context.digest import (
-        digest_tool_result,
-        render_digest_content,
-        should_digest,
-    )
-
-    display_content = safe_content
-    tool_args = tool_args or {}
-
-    # Tool result limits are model-token budgets, shared with Context accounting.
     cfg = getattr(agent, "context_config", None)
     if not isinstance(cfg, dict):
         cfg = {}
@@ -605,45 +600,49 @@ def _prepare_tool_result(
     tool_result_config = (
         tool_result_config if isinstance(tool_result_config, dict) else {}
     )
-    inline_tokens = int(tool_result_config.get("inline_tokens", 4_096))
+    inline_tokens = int(tool_result_config.get("inline_tokens", 16_384))
     digest_tokens = int(tool_result_config.get("digest_tokens", 512))
-    # Only run the digest heuristic if the caller hasn't already digested.
-    if not digest_applied and should_digest(
-        safe_content,
-        threshold_tokens=inline_tokens,
-        token_counter=agent.token_accounting.count_text,
+    if (
+        digest_applied
+        or agent.token_accounting.count_text(safe_content) <= inline_tokens
     ):
-        # Task D1: single-call digest. Compute the digest once (per-tool
-        # summarizer runs exactly once); then attach a logical result id
-        # after the content-addressed body is durably written.
-        from dataclasses import replace as _dc_replace
+        return safe_content, {
+            "digest_applied": digest_applied,
+            "source_hash": source_hash,
+            "result_view": {
+                "delivery": "inline",
+                "truncated": False,
+            },
+        }
 
-        digest = digest_tool_result(tool_name, tool_args, safe_content)
-        source_hash = digest.source_hash
-        run_dir = getattr(agent, "current_run_dir", None)
-        raw_result_id = ""
-        if run_dir is not None:
-            try:
-                agent.run_store.write_tool_result(
-                    agent.current_task_state,
-                    source_hash,
-                    safe_content,
-                )
-                raw_result_id = f"tool_result:{source_hash}"
-            except (OSError, ValueError) as exc:
-                logger.debug("raw tool_result write failed: %s", type(exc).__name__)
-        if raw_result_id:
-            digest = _dc_replace(digest, raw_result_id=raw_result_id)
-        display_content = render_digest_content(
-            digest,
-            max_tokens=digest_tokens,
-            token_counter=agent.token_accounting.count_text,
-        )
-        digest_applied = True
-
+    source_hash = hashlib.sha256(safe_content.encode("utf-8")).hexdigest()
+    raw_result_id = None
+    if getattr(agent, "current_run_dir", None) is not None:
+        try:
+            agent.run_store.write_tool_result(
+                agent.current_task_state,
+                source_hash,
+                safe_content,
+            )
+            raw_result_id = f"tool_result:{source_hash}"
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.debug("raw tool_result write failed: %s", type(exc).__name__)
+    display_content = render_overflow_preview(
+        safe_content,
+        content_sha256=source_hash,
+        raw_result_id=raw_result_id,
+        max_tokens=digest_tokens,
+        token_counter=agent.token_accounting.count_text,
+    )
     return display_content, {
-        "digest_applied": digest_applied,
+        "digest_applied": True,
         "source_hash": source_hash,
+        "result_view": {
+            "delivery": "preview",
+            "truncated": True,
+            "reasons": ["tokens"],
+            "recoverable": raw_result_id is not None,
+        },
     }
 
 
@@ -739,9 +738,9 @@ def _build_attempt_request(
             )
             if not enabled or compaction_attempt >= 2:
                 raise
-            keep_recent = max(
-                1_024,
-                agent.model_budget.keep_recent_tokens // (2**compaction_attempt),
+            keep_recent = automatic_compaction_keep_recent(
+                agent.model_budget,
+                compaction_attempt,
             )
             try:
                 compaction_result = agent.compact_session(
@@ -751,7 +750,9 @@ def _build_attempt_request(
                     model_observer=compaction_observer,
                 )
                 session_guard["leaf_id"] = compaction_result.entry["id"]
-            except (CompactionError, CompactionNoProgress) as compaction_error:
+            except CompactionNoProgress:
+                continue
+            except CompactionError as compaction_error:
                 raise budget_error from compaction_error
             agent.emit_trace(
                 task_state,
@@ -799,6 +800,14 @@ def _build_attempt_request(
             "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
         },
     )
+    if agent.stream_enabled:
+        request_metadata["streaming"] = {
+            "requested": True,
+            "committed": False,
+            "preview_emitted": False,
+            "first_preview_ms": None,
+        }
+        agent.last_request_metadata = dict(request_metadata)
     if (
         attempts == 1
         and request_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS
@@ -848,15 +857,43 @@ def _complete_model_attempt(
     model_execution,
     attempt_origin,
 ):
+    preview = None
+    if agent.stream_enabled:
+        preview = SafeTextPreview(
+            redact_text=agent.redact_text,
+            secret_values=(
+                value for _name, value in agent.detected_secret_env_items()
+            ),
+            on_stream_committed=agent._stream_committed_callback,
+            on_safe_preview=agent._stream_preview_callback,
+            clock=time.monotonic,
+        )
     try:
-        response = agent.model_client.complete(
+        complete = (
+            agent.model_client.complete_stream
+            if preview is not None
+            else agent.model_client.complete
+        )
+        callback_args = (
+            {
+                "on_stream_committed": preview.stream_committed,
+                "on_text_delta": preview.text_delta,
+            }
+            if preview is not None
+            else {}
+        )
+        response = complete(
             system=request["system"],
             tools=request["tools"],
             messages=request["messages"],
             max_tokens=agent.max_output_tokens,
             cache_breakpoints=request["cache_control_breakpoints"],
+            **callback_args,
         )
     except KeyboardInterrupt as exc:
+        if preview is not None:
+            request_metadata["streaming"] = preview.metadata()
+            agent.last_request_metadata = dict(request_metadata)
         _record_model_failure(
             agent,
             task_state,
@@ -865,9 +902,13 @@ def _complete_model_attempt(
             outcome="interrupted",
             failure_phase="provider_complete",
             error=exc,
+            request_metadata=request_metadata,
         )
         raise
     except Exception as exc:
+        if preview is not None:
+            request_metadata["streaming"] = preview.metadata()
+            agent.last_request_metadata = dict(request_metadata)
         _record_model_failure(
             agent,
             task_state,
@@ -876,8 +917,19 @@ def _complete_model_attempt(
             outcome="error",
             failure_phase="provider_complete",
             error=exc,
+            request_metadata=request_metadata,
         )
         return None, None, exc
+    finally:
+        if preview is not None and callable(agent._stream_finished_callback):
+            try:
+                agent._stream_finished_callback()
+            except Exception:
+                pass
+
+    if preview is not None:
+        request_metadata["streaming"] = preview.metadata()
+        agent.last_request_metadata = dict(request_metadata)
 
     completion_usage = dict(response.usage or {})
     request_id = _safe_provider_request_id(completion_usage.pop("request_id", None))
@@ -899,6 +951,7 @@ def _complete_model_attempt(
             outcome="error",
             failure_phase="response_processing",
             error=exc,
+            request_metadata=request_metadata,
         )
         raise
     transport_attempts, transport_retries, evidence_complete = _transport_evidence(
@@ -910,7 +963,13 @@ def _complete_model_attempt(
         request_metadata["last_transport_attempts"] = transport_attempts
     provider_metadata = getattr(agent.model_client, "provider_metadata", None)
     if isinstance(provider_metadata, dict):
-        request_metadata.update(provider_metadata)
+        request_metadata.update(
+            {
+                key: value
+                for key, value in provider_metadata.items()
+                if key != "streaming"
+            }
+        )
     agent.last_request_metadata = dict(request_metadata)
     action_payload = _action_trace_payload(action)
     try:
@@ -950,6 +1009,7 @@ def _complete_model_attempt(
             outcome="error",
             failure_phase="response_processing",
             error=exc,
+            request_metadata=request_metadata,
         )
         raise
     _record_transport(model_execution, agent.model_client)
@@ -1029,7 +1089,9 @@ def _apply_tool_action(
         content=result,
         tool_name=name,
         tool_args=args,
+        result_view=metadata.get("result_view"),
     )
+    metadata["result_view"] = digest_meta.pop("result_view")
     if blocked_tool_result is not None:
         digest_meta.update(
             {
@@ -1147,7 +1209,8 @@ def _run_agent_attempts(
             _validate_model_session_guard(agent, session_guard)
         if model_error is not None:
             if (
-                _is_context_length_error(model_error)
+                not _streaming_attempt_committed(request_metadata)
+                and _is_context_length_error(model_error)
                 and context_recovery_count < 1
                 and attempts < max_attempts
             ):
@@ -1194,7 +1257,8 @@ def _run_agent_attempts(
                     attempt_origin = "model_retry"
                     continue
             if (
-                isinstance(model_error, ProviderTransportError)
+                not _streaming_attempt_committed(request_metadata)
+                and isinstance(model_error, ProviderTransportError)
                 and model_error.retryable
                 and model_retry_count < len(_MODEL_RETRY_DELAYS)
                 and attempts < max_attempts
@@ -1263,6 +1327,18 @@ def _run_agent_attempts(
             attempt_origin = "tool_followup"
             continue
         if isinstance(action, RetryAction):
+            if _streaming_attempt_committed(request_metadata):
+                final = (
+                    "Stopped after a malformed streamed response without a valid "
+                    "tool call or final answer."
+                )
+                task_state.stop_retry_limit(final)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", final),),
+                    session_guard=session_guard,
+                )
+                return final, task_state.stop_reason, None, None
             if retry_action_count >= 1:
                 final = (
                     "Stopped after repeated malformed model responses without "
@@ -1281,7 +1357,7 @@ def _run_agent_attempts(
             attempt_origin = "retry_action"
             continue
 
-        final = agent.redact_text(action.text)
+        final = action.text
         _commit_session(
             agent,
             messages=(_plain_message("assistant", final),),

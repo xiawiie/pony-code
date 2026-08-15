@@ -6,6 +6,7 @@ from pathlib import Path
 from pony.config.environment import read_project_env
 from pony.config.model import (
     MODEL_ENV_NAME,
+    capabilities_for_target,
     resolve_model_config,
     resolve_session_provider_binding,
 )
@@ -17,7 +18,7 @@ from pony.runtime.application import (
     _build_redaction_snapshot,
     _session_requires_bypass_permission_capability,
 )
-from pony.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions, require_streaming_client
 from pony.runtime.legacy import (
     LegacySandboxResumeError,
     preflight_legacy_sandbox_resume,
@@ -31,6 +32,9 @@ from pony.workspace.context import WorkspaceContext
 from .arguments import dangerous_bypass_enabled
 from .errors import CLI_EXIT_APPROVAL, CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .migration import migration_preflight
+
+
+_TRUST_STATE_HINT = "Restore current-user-only permissions on ~/.pony, then retry."
 
 
 def _build_transport_client(
@@ -92,7 +96,6 @@ def _model_client_factory(config, timeout):
     base_url = config.get("base_url", {}).get("value", "")
     api_key = config.get("api_key", {}).get("value", "")
     auth_mode = config.get("auth_mode", {}).get("value", "")
-    capabilities = config.get("capabilities", {})
     if (
         not isinstance(protocol, str)
         or not protocol
@@ -103,7 +106,6 @@ def _model_client_factory(config, timeout):
         or not isinstance(api_key, str)
         or type(timeout) not in {int, float}
         or not isinstance(auth_mode, str)
-        or not isinstance(capabilities, dict)
     ):
         raise ValueError("delegate model client factory is not configured")
     kwargs = {
@@ -111,11 +113,15 @@ def _model_client_factory(config, timeout):
         "api_key": api_key,
         "timeout": timeout,
         "auth_mode": auth_mode,
-        "capabilities": dict(capabilities),
     }
 
     def build_client(selected_model=model):
-        return build_transport_client(protocol, model=selected_model, **kwargs)
+        return build_transport_client(
+            protocol,
+            model=selected_model,
+            capabilities=capabilities_for_target(protocol, base_url, selected_model),
+            **kwargs,
+        )
 
     return build_client
 
@@ -136,6 +142,7 @@ def _trusted_project_root(args, trust_store, confirm):
         raise CliError(
             code="project_trust_invalid",
             message="Project trust state is invalid",
+            hint=_TRUST_STATE_HINT,
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
     if store.is_trusted(project_root):
@@ -168,6 +175,7 @@ def _trusted_project_root(args, trust_store, confirm):
         raise CliError(
             code="project_trust_invalid",
             message="Project trust state is invalid",
+            hint=_TRUST_STATE_HINT,
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
     if not store.is_trusted(project_root):
@@ -286,8 +294,6 @@ def _build_agent(args, source_workspace):
                 exit_code=CLI_EXIT_USAGE,
             )
     workspace = source_workspace
-    if store is None:
-        store = SessionStore(session_store_root, redactor=redactor)
     model, resolved_model_config = _build_transport_client(
         args,
         project_env=project_env,
@@ -295,6 +301,17 @@ def _build_agent(args, source_workspace):
         session_store=store if args.resume and session_id else None,
         session_id=session_id if args.resume else None,
     )
+    if getattr(args, "stream", False):
+        try:
+            require_streaming_client(model)
+        except ValueError as exc:
+            raise CliError(
+                code="streaming_unavailable",
+                message="The selected model client does not support streaming",
+                exit_code=CLI_EXIT_USAGE,
+            ) from exc
+    if store is None:
+        store = SessionStore(session_store_root, redactor=redactor)
     model_client_factory = _model_client_factory(
         resolved_model_config,
         args.request_timeout_seconds,
@@ -322,6 +339,7 @@ def _build_agent(args, source_workspace):
                 max_steps=args.max_steps,
                 max_output_tokens=max_output_tokens,
                 context_window=getattr(args, "context_window", None),
+                stream=getattr(args, "stream", False),
                 secret_env_names=configured_secret_names,
                 redaction_env=redaction_env,
                 trusted_redaction_env=True,
@@ -343,6 +361,7 @@ def _build_agent(args, source_workspace):
             max_steps=args.max_steps,
             max_output_tokens=max_output_tokens,
             context_window=getattr(args, "context_window", None),
+            stream=getattr(args, "stream", False),
             secret_env_names=configured_secret_names,
             redaction_env=redaction_env,
             trusted_redaction_env=True,

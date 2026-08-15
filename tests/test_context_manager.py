@@ -57,6 +57,23 @@ def test_tool_schema_keeps_integer_and_risk_contract():
     assert "approval" in converted["description"].lower()
 
 
+@pytest.mark.parametrize("tool_name", ("read_file", "memory_read"))
+def test_read_tool_provider_contract_explains_bounded_paging(tmp_path, tool_name):
+    tools = _build_tools_list(_agent(tmp_path).visible_tools())
+    read_tool = next(tool for tool in tools if tool["name"] == tool_name)
+
+    assert read_tool["input_schema"]["required"] == ["path"]
+    assert read_tool["input_schema"]["properties"]["start"] == {"type": "integer"}
+    assert read_tool["input_schema"]["properties"]["end"] == {
+        "type": ["integer", "null"],
+        "minimum": 1,
+        "default": None,
+    }
+    assert "one bounded page" in read_tool["description"]
+    assert "Omit end to read toward EOF" in read_tool["description"]
+    assert "exact continuation arguments" in read_tool["description"]
+
+
 def test_update_plan_is_absent_from_native_tool_schema(tmp_path):
     tools = _build_tools_list(_agent(tmp_path).visible_tools())
 

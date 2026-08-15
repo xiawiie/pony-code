@@ -31,9 +31,8 @@ git log -1 --oneline
 ```
 
 - 用户修改、未跟踪文件和其他 worktree 不覆盖、不移动、不重置、不顺手清理。
-- 生产收口、大型重构和发布准备从最新 `origin/main` 建独立 worktree 与 `codex/<topic>` 分支；先确保干净再 fetch，
-  fetch 失败即停止。
-- 若 `origin/main` 已前进，在干净 worktree 中 rebase 后再修改；不得操作主工作区的用户文件。
+- 生产收口、大型重构和发布准备从用户指定或已验证的干净基线建独立 worktree 与 `codex/<topic>` 分支；记录
+  base SHA，不得操作主工作区的用户文件。
 - 普通任务不隐含 commit、push、tag、PR、Release 或 PyPI 授权。
 - 搜索优先使用 `rg` / `rg --files`。先定位责任模块、最窄测试和文档真源，再动代码。
 
@@ -75,7 +74,7 @@ CLI/TUI 合同：
   不再具有清空语义。
 - 忙碌时最多保留五条内存 follow-up input；单一 worker 只在完整 turn 结束后按 FIFO 调用同一 REPL handler。
   `/queue [clear]` 只查询或清空未执行输入，零 Session 写；approval 始终先回到前台，local slash command 不抢占当前 turn。
-  不持久化队列，不修改 immutable request，不实现 Provider/tool cancel、streaming、daemon 或第二 Session writer。
+  不持久化队列，不修改 immutable request，不实现 Provider/tool cancel、daemon 或第二 Session writer。
 - 仓库 Skill 只从受信 root 的 `.claude/skills/<name>/SKILL.md` 发现，且仅由显式 `/name` 作为本 turn 的只读 context
   调用；可选 `resources` 只显式列出同一 Skill 目录内 bounded UTF-8 文件，不递归、不 glob。严格 frontmatter、
   bounded/no-follow/single-link/root identity 与 secret gate 任一失败即 catalog fail closed。用户请求优先于项目规则，项目
@@ -91,13 +90,25 @@ CLI/TUI 合同：
 - 完整尺寸的马形 Logo、块状字标、欢迎页布局和视觉语言是用户冻结的产品资产。只有用户明确要求修改设计时才可变更；
   重构、Claude Code/Codex 交互对齐、性能优化和代码精简都不是修改授权。允许修复宽度、裁切、颜色能力和字符兼容 bug，
   但必须保持“完整大版是唯一 TUI 状态”的视觉意图，并通过 80/111 列拒绝、112/120 列完整大版和运行中缩放回归测试。
-- 用户消息使用低对比块且不加角色标签；Assistant 使用内置、安全的 Markdown renderer，消息块之间只留一个视觉间距。
-- `Working…` 是可清除的瞬态状态；自动 checkpoint 不进入对话区，成功 Tool 只显示一条语义摘要，失败与中断必须可见。
+- 用户消息使用低对比块、无色侧轨且不加角色标签；Assistant Answer 以一次低对比 `Pony` 标识开始并使用内置、安全的
+  Markdown renderer，输入使用非空 `› ` prompt，消息块之间只留一个视觉间距。
+- `Working…` 是唯一可清除的瞬态活动状态；Tool 开始只原位替换为具体动作，完成后只显示一条永久语义回执；自动
+  checkpoint 不进入对话区，成功、分页、截断、失败与中断必须可见。
 - 输入框最多增长六行，completion 菜单最多显示五项。footer 只保留仓库/分支、permission mode、Provider/model，窄终端
   优先保留安全和模型信息；不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
-- 不显示或持久化 Provider reasoning，不增加 streaming、全屏 transcript、主题系统或新的运行时依赖。
+- 不显示或持久化 Provider reasoning，不增加全屏 transcript、主题系统或新的运行时依赖。Streaming 只由完整交互 TUI 的
+  `--stream` 显式启用；默认、`run`、非 TTY、doctor、probe、resolution、compaction 和 delegate 保持 final-only。它不写
+  配置或 Session，不 fallback；四种 adapter 各自解析协议流并返回完整 `Response`，完整 decode 前工具零执行。
 - UI listener 只能在 trace durable append 后收到脱敏副本；Tool 摘要需要的参数/结果仅存在于该内存副本，不扩大
-  durable trace 的低敏字段；approval UI 异常必须 fail closed，退出时恢复 hook。
+  durable trace 的低敏字段。Streaming preview 不走 listener：它只通过当前 `complete_stream()` 的单向内存 callback，把
+  累计完整行后的已脱敏普通文本投影到单行有界动态区；Agent 不读取终端宽度，TUI 独占前缀、裁剪和 resize 重投影；不显示
+  reasoning/tool args，不进入 scrollback 或任何 durable state。冻结 secret snapshot 含 CR/LF 或短于 substring-redaction
+  阈值的已知值时整次文本 preview fail closed；private-key BEGIN 行必须在显示前永久禁用本次剩余 preview。
+  首个有效 event 只触发无 payload committed callback，把 `Working…` 更新为 `Receiving...`；安全文本 callback 只有在 TUI
+  实际显示模型字符后才确认 preview latency。
+  低敏证据只进入既有 `request_metadata.streaming` 子结构，由 `model_requested` 写初始、`model_turn|model_failed` 写终态；
+  该子结构使用 exact key/type/invariant validator，不新增 trace envelope 字段或 schema version。
+  任一有效流事件后的失败不可 retry；approval UI 异常必须 fail closed，退出时恢复 hook。
 
 ## 4. Provider 与 `.env` 合同
 
@@ -131,6 +142,14 @@ PONY_MODEL
   普通 benchmark 只以 `--cwd` / `--repo-root` 选择 `.env`，对 unresolved target fail closed，不拥有第二套 detection。
 - Provider resolution trace 只投影 source、protocol、candidate count、probe call count 和 usage status；不保存
   probe payload、response、完整 endpoint 或 reasoning。
+- 任意合法 model id 不查型号 catalog、不产生 unknown warning，未显式配置时统一使用 128000 context / 16384 output；
+  CLI 和 `pony.toml` 可显式提高或降低完整预算，例如 256000 / 32768。不得根据 model name 静默换档。
+- OpenAI Responses 与 Chat Completions 可共享认证、User-Agent、system 文本和 function schema 原语，但必须保留独立
+  endpoint、request/response codec、tool continuation、opaque state 和 streaming parser。协议字段可按 exact
+  protocol/endpoint 决定；官方 Responses 的 stateless reasoning continuation 属于 endpoint 合同，strict、parallel 等型号
+  增强只能按有证据的 exact Target 收紧应用，不能按官方 endpoint 向未来型号放大。
+- Streaming 只改变 selected adapter 的 response framing，不改变 Provider resolution、Target identity、预算、认证或真实任务
+  fallback 合同。Transport 只共享有界 SSE/NDJSON framing；tool/content/usage/stop/state 的组装仍归所属 adapter。
 - API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随
   redirect、不在失败后切换 Transport。
 - Session binding 的 protocol 或 endpoint 变化返回稳定的 `model_session_mismatch`。model 只能通过专用 Session writer
@@ -197,6 +216,7 @@ uv run --frozen pytest -q <relevant-test-files>
 
 纯移动先运行 `pytest --collect-only`。各领域变更运行所属专项；安全回归优先补可复现的聚焦测试。
 CLI/TUI 变更至少运行 parser、commands、error envelope 与 `tests/tui/`。
+Streaming 变更还须覆盖四种协议 framing/assembly、跨 chunk secret、commit 后失败零 retry、Final 单次渲染与 TUI resize。
 Worktree agent 变更还须运行 `tests/test_worktree_agents.py`。
 
 结构、Provider、安全边界、版本、分发或发布变更必须在干净 exact HEAD 运行：

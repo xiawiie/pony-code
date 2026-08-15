@@ -7,7 +7,6 @@ import hashlib
 import json
 import math
 import unicodedata
-import warnings
 
 
 DEFAULT_CONTEXT_WINDOW = 128_000
@@ -40,11 +39,17 @@ class ModelBudget:
 
     @property
     def compaction_summary_tokens(self):
-        return math.floor(self.reserve_tokens * 0.8)
+        return min(
+            math.floor(self.reserve_tokens * 0.8),
+            max(1_024, math.floor(self.input_limit * 0.25)),
+        )
 
     @property
     def split_turn_summary_tokens(self):
-        return math.floor(self.reserve_tokens * 0.5)
+        return min(
+            math.floor(self.reserve_tokens * 0.5),
+            max(1_024, math.floor(self.input_limit * 0.125)),
+        )
 
     @property
     def branch_summary_tokens(self):
@@ -68,14 +73,6 @@ class RequestTokenCount:
     anchor_candidate: tuple[str, tuple[str, ...]]
 
 
-# Pony only claims builtin limits for its fixed public model. Internal benchmark
-# clients and custom endpoints use explicit project limits or the conservative
-# fallback.
-BUILTIN_MODEL_CAPABILITIES = {
-    "deepseek-v4-flash": (DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT_TOKENS),
-}
-
-
 def _positive_int(value, *, name):
     if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
@@ -83,52 +80,40 @@ def _positive_int(value, *, name):
 
 
 def resolve_model_capabilities(
-    model,
     *,
     model_config=None,
     context_window=None,
     max_output_tokens=None,
-    warning_sink=None,
 ):
-    """Resolve limits in CLI -> project config -> builtin -> fallback order."""
-    model_name = str(model or "").strip()
+    """Resolve request limits without inferring capabilities from a model name."""
     config = model_config if isinstance(model_config, dict) else {}
-    builtin = BUILTIN_MODEL_CAPABILITIES.get(model_name.casefold())
-    fallback = builtin or (DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT_TOKENS)
     config_context = config.get("context_window")
     config_output = config.get("output_limit")
 
     resolved_context = (
         context_window
         if context_window is not None
-        else config_context if config_context is not None else fallback[0]
+        else config_context if config_context is not None else DEFAULT_CONTEXT_WINDOW
     )
     resolved_output = (
         max_output_tokens
         if max_output_tokens is not None
-        else config_output if config_output is not None else fallback[1]
+        else config_output if config_output is not None else DEFAULT_MAX_OUTPUT_TOKENS
     )
     resolved_context = _positive_int(resolved_context, name="context_window")
     resolved_output = _positive_int(resolved_output, name="max_output_tokens")
 
-    if context_window is not None or max_output_tokens is not None:
-        source = "cli"
-    elif config_context is not None or config_output is not None:
-        source = "config"
-    elif builtin is not None:
-        source = "builtin"
-    else:
-        source = "fallback"
-        if model_name:
-            message = (
-                f"warning: unknown model {model_name!r}; using conservative "
-                f"fallback {DEFAULT_CONTEXT_WINDOW} context / "
-                f"{DEFAULT_MAX_OUTPUT_TOKENS} output tokens. Set [model] limits or CLI overrides."
-            )
-            if warning_sink is not None:
-                warning_sink(message)
-            else:
-                warnings.warn(message, RuntimeWarning, stacklevel=2)
+    context_source = (
+        "cli"
+        if context_window is not None
+        else "project" if config_context is not None else "default"
+    )
+    output_source = (
+        "cli"
+        if max_output_tokens is not None
+        else "project" if config_output is not None else "default"
+    )
+    source = context_source if context_source == output_source else "mixed"
 
     return ModelCapabilities(
         context_window=resolved_context,
@@ -188,6 +173,16 @@ def build_model_budget(
         source_pool_tokens=scaled_source_pool,
         keep_recent_tokens=keep_recent_tokens,
     )
+
+
+def automatic_compaction_keep_recent(budget, attempt):
+    """Return a progressively smaller tail target bounded by input capacity."""
+    if type(attempt) is not int or attempt < 0:
+        raise ValueError("compaction_attempt must be a non-negative integer")
+    divisor = 2**attempt
+    configured_target = budget.keep_recent_tokens // divisor
+    capacity_target = budget.input_limit // (4 * divisor)
+    return max(1_024, min(configured_target, capacity_target))
 
 
 def _is_cjk(char):

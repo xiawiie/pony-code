@@ -81,6 +81,56 @@ def test_partial_pony_toml_only_overrides_provided_keys(tmp_path):
     assert cfg["memory"]["recall"]["top_k"] == 6
 
 
+def test_default_model_budget_is_not_projected_as_explicit_config(tmp_path):
+    agent = Pony(
+        FakeModelClient([]),
+        WorkspaceContext.build(tmp_path),
+        SessionStore(tmp_path / ".pony" / "sessions"),
+    )
+
+    assert agent.model_capabilities.context_window == 128_000
+    assert agent.max_output_tokens == 16_384
+    assert agent.model_capabilities.source == "default"
+
+
+def test_invalid_model_budget_is_not_projected_as_explicit_config(tmp_path, capsys):
+    (tmp_path / "pony.toml").write_text(
+        '[model]\ncontext_window = "large"\noutput_limit = -1\n',
+        encoding="utf-8",
+    )
+    agent = Pony(
+        FakeModelClient([]),
+        WorkspaceContext.build(tmp_path),
+        SessionStore(tmp_path / ".pony" / "sessions"),
+    )
+
+    assert agent.model_capabilities.context_window == 128_000
+    assert agent.max_output_tokens == 16_384
+    assert agent.model_capabilities.source == "default"
+    assert "invalid pony.toml field model.context_window" in capsys.readouterr().err
+
+
+def test_invalid_combined_budget_is_repaired_before_pony_construction(
+    tmp_path,
+    capsys,
+):
+    (tmp_path / "pony.toml").write_text(
+        "[model]\ncontext_window = 4096\noutput_limit = 384000\n",
+        encoding="utf-8",
+    )
+
+    agent = Pony(
+        FakeModelClient([]),
+        WorkspaceContext.build(tmp_path),
+        SessionStore(tmp_path / ".pony" / "sessions"),
+    )
+
+    assert agent.model_capabilities.context_window == 128_000
+    assert agent.max_output_tokens == 16_384
+    assert agent.model_capabilities.source == "default"
+    assert "invalid pony.toml model/context budget" in capsys.readouterr().err
+
+
 def test_pony_parses_once_per_instance_without_cross_instance_cache(
     tmp_path,
     monkeypatch,

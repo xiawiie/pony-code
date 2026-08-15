@@ -126,6 +126,49 @@ def test_read_file_updates_working_memory_and_raw_file_summary(tmp_path, monkeyp
     )
 
 
+def test_read_file_summary_strips_valid_page_envelopes_only():
+    result = (
+        '[page] {"path":"sample.txt","start":1,"end":2,"total_lines":3,'
+        '"range_complete":false,"file_complete":false,'
+        '"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n'
+        "alpha\nbeta\n"
+        '[continuation] {"path":"sample.txt","start":3,'
+        '"expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    )
+
+    assert memorylib.summarize_read_result(result) == "alpha | beta"
+    assert memorylib.summarize_read_result(
+        '[page] {"path":"sample.md","start":1,"end":2,"total_lines":2,'
+        '"range_complete":true,"file_complete":true,'
+        '"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n'
+        "# Heading\nbody"
+    ) == "body"
+    assert memorylib.summarize_read_result("[page] not-json\nalpha") == (
+        "[page] not-json | alpha"
+    )
+    assert memorylib.summarize_read_result(
+        '[continuation] {"path":"literal.md","start":2}'
+    ) == '[continuation] {"path":"literal.md","start":2}'
+    incomplete = (
+        '[page] {"path":"literal.md","start":1,"end":1,"total_lines":2,'
+        '"range_complete":false,"file_complete":false,'
+        '"sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}\n'
+        "literal body"
+    )
+    assert memorylib.summarize_read_result(incomplete, limit=500) == incomplete.replace(
+        "\n", " | "
+    )
+    no_locator = (
+        '[page] {"start":1,"end":1,"total_lines":1,'
+        '"range_complete":true,"file_complete":true,'
+        '"sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}\n'
+        "literal body"
+    )
+    assert memorylib.summarize_read_result(no_locator, limit=500) == no_locator.replace(
+        "\n", " | "
+    )
+
+
 def test_write_file_invalidates_raw_summary_and_keeps_recent_files_synced(
     tmp_path, monkeypatch
 ):

@@ -67,6 +67,21 @@ def test_default_store_no_input_rejection_does_not_create_home_state(
     workspace.assert_not_called()
 
 
+def test_invalid_default_trust_store_has_actionable_hint(tmp_path, monkeypatch):
+    def invalid_store(_root):
+        raise ValueError("private file permissions are unsafe")
+
+    monkeypatch.setattr(assembly, "ProjectTrustStore", invalid_store)
+
+    with pytest.raises(CliError) as raised:
+        assembly.build_agent(_args(tmp_path))
+
+    assert raised.value.code == "project_trust_invalid"
+    assert raised.value.hint == (
+        "Restore current-user-only permissions on ~/.pony, then retry."
+    )
+
+
 def test_rejected_trust_stops_before_workspace_and_provider(tmp_path, monkeypatch):
     workspace = Mock()
     downstream = Mock()

@@ -88,6 +88,12 @@ def test_parse_repl_command():
     assert invocation.command_args == []
 
 
+def test_parse_stream_for_repl():
+    invocation = parse_cli_invocation(["--stream", "repl"], build_arg_parser())
+
+    assert invocation.runtime_args.stream is True
+
+
 def test_parse_bare_pony_as_interactive_repl():
     invocation = parse_cli_invocation([], build_arg_parser())
 
@@ -195,7 +201,7 @@ def test_parser_rejects_removed_max_new_tokens_flag():
         ("--max-steps", "1", 1),
         ("--max-steps", "100", 100),
         ("--max-output-tokens", "1", 1),
-        ("--max-output-tokens", "32768", 32768),
+        ("--max-output-tokens", "384000", 384000),
     ),
 )
 def test_runtime_resource_arguments_accept_documented_boundaries(
@@ -217,7 +223,7 @@ def test_runtime_resource_arguments_accept_documented_boundaries(
         ("--max-steps", "0"),
         ("--max-steps", "101"),
         ("--max-output-tokens", "0"),
-        ("--max-output-tokens", "32769"),
+        ("--max-output-tokens", "384001"),
     ),
 )
 def test_runtime_resource_arguments_reject_out_of_range_values(flag, value):

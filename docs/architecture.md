@@ -114,6 +114,23 @@ flowchart LR
 Provider、protocol、model 与 endpoint hash 会写入 Session binding。`auto`/OpenAI family 可在用户任务前做 bounded synthetic
 resolution；真实任务失败不 fallback，也不会跨协议重放 Session。
 
+model id 是不透明 Target 身份，不参与准入或预算推断。任意合法 model id 使用所选 protocol baseline；未显式配置预算时
+统一采用 128K/16K，不显示 unknown warning。`doctor --check-api` 只提供 exact Target 当次证据，不写 catalog。
+
+OpenAI Responses 与 Chat Completions 是同一产品 family 的两个独立 Transport。`providers/openai_wire.py` 只拥有两者重复的
+User-Agent、system instructions、function schema 与 optional-null 原语；两个 adapter 分别拥有 endpoint、request/response
+codec、tool continuation、opaque state 与 error normalization。future/unknown model 使用 ProtocolCore；协议字段可由 exact
+protocol/endpoint 决定，官方 Responses 的 stateless reasoning continuation 属于 endpoint 合同；strict、parallel 等型号增强
+只在有合同的 exact Target 上启用。详见
+[Model Target 与预算设计](model-target-and-budget-design.md)。
+
+交互 TUI 可由 `--stream` 显式选择同一 adapter 的流式入口；它不参与 resolution 或 Session binding。Transport 只提供有界
+SSE/NDJSON framing，四个 adapter 各自组装协议事件并仍返回唯一终态 `Response`。普通文本 delta 先在 Agent 内累计为完整行并
+脱敏，再经当前 request 私有 callback 投影到 TUI 动态区；冻结 snapshot 含多行/短 secret，或行内出现 private-key BEGIN marker
+时文本 preview fail closed。TUI 独占前缀、当前宽度裁剪与 resize 重投影。reasoning、tool args 与 opaque state 不进入 preview。
+Preview 不走 durable trace listener，不写 Session/Canonical Messages，终态 decode 完成前也不执行工具。详见
+[ADR-0052](adr/0052-safe-streaming-preview.md)。
+
 ## Permission 与 Host 执行
 
 ```mermaid
@@ -191,6 +208,8 @@ flowchart LR
 
 Pony 优先保留 primary failure：cleanup、observer 或 finalizer 的次生失败不能覆盖它。trace、doctor、Provider 报错和 UI
 只投影稳定 code 与低敏事实，不保存 API Key、完整 endpoint、prompt、raw response 或 Provider reasoning。
+流式请求在首个有效 wire event 后进入 committed 状态；之后失败不可 retry，也不能切回 final-only 重放。Preview callback
+或 renderer 失败只禁用本次瞬态显示，不能取消 Provider 请求或覆盖其终态。
 
 ## 分发与发布边界
 

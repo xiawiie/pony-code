@@ -1149,13 +1149,16 @@ def test_pony_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
     assert agent.tool_executor.agent is agent
     assert "read_file" in agent.tools
     assert "run_shell" in agent.tools
-    assert (
-        "# README.md"
-        in agent.execute_tool(
-        "read_file",
-        {"path": "README.md", "start": 1, "end": 1},
-    ).content
-    )
+    agent.begin_permission_turn()
+    try:
+        result = agent.execute_tool(
+            "read_file",
+            {"path": "README.md", "start": 1, "end": 1},
+        )
+    finally:
+        agent.end_permission_turn()
+    assert result.metadata["tool_status"] == "ok"
+    assert "demo" in result.content
 
 
 def _init_git_repo(root):

@@ -1,11 +1,4 @@
-"""Task 26: agent_loop tool_result auto-digest.
-
-- Small results (<= threshold) go into messages verbatim.
-- Large results (> threshold) are digested; raw body written to
-  ``<run_dir>/tool_results/<source_hash>.txt``; message content carries
-  the [digest] rendering with a content hash and logical raw-result id.
-- Returned ``digest_applied`` and ``source_hash`` reflect what happened.
-"""
+"""Agent-loop shaping for inline, pageable, and overflow tool results."""
 
 import hashlib
 import os
@@ -38,10 +31,14 @@ def test_small_result_stored_inline(tmp_path):
         tool_args={"path": "x"},
     )
     assert content == "tiny result"
-    assert metadata == {"digest_applied": False, "source_hash": None}
+    assert metadata == {
+        "digest_applied": False,
+        "source_hash": None,
+        "result_view": {"delivery": "inline", "truncated": False},
+    }
 
 
-def test_large_result_digested_and_written_to_disk(tmp_path):
+def test_large_result_preview_is_recoverable_only_after_private_write(tmp_path):
     a = _stub_agent(tmp_path)
     big = "x = 1\n" * 5000  # > 4,096 estimated model tokens
     content, metadata = _prepare_tool_result(
@@ -56,10 +53,18 @@ def test_large_result_digested_and_written_to_disk(tmp_path):
     raw_files = list((a.current_run_dir / "tool_results").glob(f"{source_hash}.txt"))
     assert len(raw_files) == 1
     assert raw_files[0].read_text(encoding="utf-8") == big
-    assert "[digest]" in content
+    assert "[preview] output truncated" in content
     assert source_hash in content
     assert hashlib.sha256(big.encode("utf-8")).hexdigest() in content
-    assert f"raw_result_id: tool_result:{source_hash}" in content
+    assert f"raw_result_id=tool_result:{source_hash}" in content
+    assert "recoverable=true" in content
+    assert "scope=current_run expires=end_of_turn" in content
+    assert metadata["result_view"] == {
+        "delivery": "preview",
+        "truncated": True,
+        "reasons": ["tokens"],
+        "recoverable": True,
+    }
     assert str(a.current_run_dir) not in content
 
 
@@ -108,7 +113,9 @@ def test_raw_tool_result_write_failure_omits_reference(tmp_path, monkeypatch):
     )
 
     assert calls == [(agent.current_task_state, metadata["source_hash"], body)]
-    assert "raw_result_id:" not in content
+    assert "raw_result_id=" not in content
+    assert "recoverable=false" in content
+    assert metadata["result_view"]["recoverable"] is False
     assert str(agent.current_run_dir) not in content
 
 
@@ -120,7 +127,7 @@ def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
         "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
     }
     body = "safe body\n" * 200
-    source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
     raw_dir = agent.current_run_dir / "tool_results"
     raw_dir.mkdir(parents=True)
     outside = tmp_path / "outside-raw.txt"
@@ -139,12 +146,12 @@ def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
     assert outside.read_text(encoding="utf-8") == "outside\n"
     if os.name == "posix":
         assert stat.S_IMODE(outside.stat().st_mode) == 0o644
-    assert "raw_result_id:" not in content
+    assert "raw_result_id=" not in content
+    assert "recoverable=false" in content
     assert str(agent.current_run_dir) not in content
 
 
-def test_large_result_without_run_dir_still_digests(tmp_path):
-    """Without a run dir, the digest applies without a logical raw-result id."""
+def test_large_result_without_run_dir_is_an_unrecoverable_preview(tmp_path):
     a = _stub_agent(tmp_path)
     a.current_run_dir = None
     big = "z" * 20_000
@@ -155,37 +162,58 @@ def test_large_result_without_run_dir_still_digests(tmp_path):
         tool_args={"pattern": "z"},
     )
     assert metadata["digest_applied"] is True
-    assert "[digest]" in content
-    assert "content_sha256: sha256:" in content
-    assert "raw_result_id:" not in content
+    assert "[preview] output truncated" in content
+    assert "content_sha256=sha256:" in content
+    assert "raw_result_id=" not in content
+    assert "recoverable=false" in content
+    assert metadata["result_view"]["recoverable"] is False
 
 
-def test_digest_computed_exactly_once(tmp_path, monkeypatch):
-    """Task D1: _prepare_tool_result must not run per-tool summarizer twice."""
-    import pony.context.digest as digest_mod
-    from pony.agent.loop import _prepare_tool_result
+def test_page_result_bypasses_preview_and_raw_spill(tmp_path):
+    agent = _stub_agent(tmp_path)
+    agent.context_config = {
+        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
+    }
+    page = "[page] metadata\n" + ("x = 1\n" * 500)
+    result_view = {
+        "delivery": "page",
+        "truncated": False,
+        "start_line": 1,
+        "end_line": 500,
+        "total_lines": 1_000,
+        "next_start": 501,
+        "reasons": ["tokens"],
+    }
 
-    original = digest_mod._digest_read_file
-    call_count = {"n": 0}
-
-    def counting_digest_read_file(args, result):
-        call_count["n"] += 1
-        return original(args, result)
-
-    monkeypatch.setattr(digest_mod, "_digest_read_file", counting_digest_read_file)
-    monkeypatch.setitem(digest_mod._DIGESTERS, "read_file", counting_digest_read_file)
-
-    a = MagicMock()
-    a.current_run_dir = tmp_path / ".pony" / "runs" / "r1"
-    a.current_run_dir.mkdir(parents=True, exist_ok=True)
-    a.token_accounting = TokenAccounting()
-    a.context_config = {"tool_results": {"inline_tokens": 100, "digest_tokens": 512}}
-    a.redact_text.side_effect = lambda value: value
-
-    _prepare_tool_result(
-        a,
-        content="x = 1\n" * 500,
+    content, metadata = _prepare_tool_result(
+        agent,
+        content=page,
         tool_name="read_file",
         tool_args={"path": "big.py"},
+        result_view=result_view,
     )
-    assert call_count["n"] == 1, f"_digest_read_file called {call_count['n']} times"
+
+    assert content == page
+    assert metadata["digest_applied"] is False
+    assert metadata["result_view"] == result_view
+    assert not (agent.current_run_dir / "tool_results").exists()
+
+
+def test_malformed_page_metadata_cannot_bypass_preview(tmp_path):
+    agent = _stub_agent(tmp_path)
+    agent.context_config = {
+        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
+    }
+
+    content, metadata = _prepare_tool_result(
+        agent,
+        content="x = 1\n" * 500,
+        result_view={
+            "delivery": "page",
+            "truncated": False,
+            "path": "must-not-reach-listener.txt",
+        },
+    )
+
+    assert "[preview] output truncated" in content
+    assert metadata["result_view"]["delivery"] == "preview"

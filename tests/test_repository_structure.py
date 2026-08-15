@@ -31,7 +31,10 @@ MAINTAINER_DOCS = {
     "docs/adr/0048-product-and-support-boundary.md",
     "docs/adr/0049-benchmark-evaluation-design.md",
     "docs/adr/0050-windows-native-support.md",
+    "docs/adr/0051-model-compatibility-contract.md",
+    "docs/adr/0052-safe-streaming-preview.md",
     "docs/context-and-sessions.md",
+    "docs/model-target-and-budget-design.md",
 }
 MAINTAINER_ASSETS = {
     "docs/assets/terminal/pony-tui-welcome.png",
@@ -188,9 +191,12 @@ def test_product_docs_lock_current_execution_and_support_contract():
     assert "Phase 5 结论：PASS 或 FAIL" in verification
     assert "bounded synthetic" in readme
     assert "真实任务失败不 fallback" in readme
-    assert "冻结的产品资产" in readme
-    assert "不可隐藏的唯一欢迎状态" in readme
-    assert "不会进入无 Logo" in readme
+    assert "完整资产本身保持冻结" in readme
+    assert "80/111 列要求扩宽" in readme
+    assert "用户消息为无标签的低对比块" in readme
+    assert "Assistant Answer 使用 `Pony` 锚点" in readme
+    assert "`Message Pony`" not in readme
+    assert "128,000 context / 16,384" in readme
     assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(
         readme.split()
     )
@@ -369,9 +375,10 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
         "--dangerously-skip-permissions",
         "--disallowed-tools",
         "--format",
-            "--help",
-            "--model",
-            "--permission-mode",
+        "--help",
+        "--model",
+        "--permission-mode",
+        "--stream",
         "--sandbox",
         "--version",
         "agents",

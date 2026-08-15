@@ -10,8 +10,12 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   事实保留和 Provider failure 证据的 compaction 净 token/break-even 与非流式 Provider latency 测量。
 - 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
 - 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pony init`。
-- 参考 Pi 消息层级的行内 TUI：完整尺寸马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
-  可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
+- 参考 Pi 消息层级的行内 TUI：完整 `PONY CODE` 品牌状态、无标签低对比用户块、`Pony` Assistant 锚点、`›` 输入、
+  内置 Markdown、slash command menu、可增长多行输入、历史搜索、精简状态栏与 fail-closed 审批。
+- 完整交互 TUI 可用 `--stream` 显式启用安全文本 preview；四个 Provider adapter 各自解析有界流事件，最终 Answer 与
+  Canonical Messages 保持唯一权威，preview 不持久化且 committed stream 不重放。
+- `read_file`、`memory_read` 与 `read_tool_result` 共用 2,000 行、50 KiB UTF-8 和 inline token 三重分页；不可重放的
+  大结果可在当前 Run 内通过完整 SHA-256 id 恢复，turn 结束后稳定过期。
 - `pony --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
 - PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
 - Session v5 的 `manual|auto|acceptEdits|bypassPermissions|dontAsk|plan` permission mode、exact tool-name
@@ -37,6 +41,29 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- Project trust 启动会自动重新硬化仍由当前用户拥有的 `~/.pony` 根目录，修复宿主沙箱附加只读 ACL 后每次启动都报
+  `Project trust state is invalid` 的问题；`trust.json` 继续严格验证，同一 worktree 后续启动不重复确认，新 worktree
+  仍需首次显式授权，真正无效状态会返回 current-user-only 权限修复提示。
+- `read_file` 与 `memory_read` 的模型可见合同现在采用 1-based inclusive 分页，默认从第 1 行读到 EOF，但每次结果同时受
+  2,000 行、50 KiB UTF-8 和 inline token 上限约束；continuation 可无损读取后续页面。
+- 任意合法 model id 现在零 catalog 接入，不再触发 unknown-model warning；统一默认预算保持 128K context / 16K output，
+  显式 256K/16K 等覆盖继续可用，非法 `pony.toml` 默认值不再冒充项目配置来源。
+- 预算组合在 config snapshot 边界联合校验；32K/16K 自动 compaction 会按 input limit 缩小 tail，child runtime 保留
+  default/config/CLI/mixed 来源，不把父级有效值误报成 CLI。
+- OpenAI Responses 与 Chat Completions 只共享 User-Agent、system/function schema 与 optional-null 原语；endpoint、codec、
+  continuation 和 opaque state 继续独立。future/unknown model 使用 ProtocolCore，官方 optional wire behavior 不再向整个
+  endpoint 的所有型号泄漏；OpenAI family 的不明确 endpoint 按 Responses-first 做 bounded resolution。
+- OpenAI strict tool schema 要求 object 根，递归覆盖嵌套 object/array/`anyOf`，并拒绝无法安全转换的组合结构；generic
+  compatible Chat 保持 `max_tokens`，官方 Chat endpoint 按当前协议使用 `max_completion_tokens`，官方 Responses 对 future
+  model 保持 stateless reasoning continuation；strict schema 不再把本地 `default` 注解发送给服务端，所有字段均不按未知
+  model name 猜测。
+- OpenAI-compatible Responses streaming 允许 terminal object 省略已流式发送的 reasoning 和非语义 output item id；终态仍是
+  可见内容与工具调用的唯一权威，启用 reasoning replay 时只补回已完成的 opaque provider state，并继续拒绝语义 identity
+  漂移。
+- TUI 在 80/111 列稳定拒绝，112 列及以上保留冻结的完整马形资产；无标签用户块、`Pony` Answer、`›` 输入、
+  `Working`/`Receiving`/工具回执和 permission/protocol-model footer 让聊天与运行阶段可辨识；turn worker 在本地 context
+  准备前立即显示 `Working`，提交后不再出现无反馈空窗。busy Ctrl+C 明确不取消当前请求，approval UI 异常继续 fail closed；
+  运行中缩窄保留输入并有界渲染，transport cancel 仍未实现。
 - Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
   model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
   绕过用户配置的 output limit。
@@ -58,17 +85,16 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 - 裸 `pony` 现在直接进入交互 TUI；`pony repl` 保留为显式同义入口，`pony run <prompt...>` 与管理子命令继续使用
   生产分支的显式 CLI 合同。
-- 恢复并冻结完整尺寸马形 `PONY CODE` 欢迎页；它成为 TUI 不可隐藏的唯一状态，`--quiet` 也不能抑制。交互 TTY 低于
-  112 列时返回稳定 usage error，不能进入无 Logo 的纯文本界面，也不显示缩小变体；非 TTY fallback 不显示 banner，
-  `pony run` 只输出执行结果。
+- 恢复并冻结 112 列及以上的完整尺寸马形 `PONY CODE` 欢迎页；低于 112 列返回稳定 usage error，不提供 compact、缩放或
+  单行替代版。完整资产不可隐藏，`--quiet` 也不能抑制；非 TTY fallback 不显示 banner，`pony run` 只输出执行结果。
 - TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
   smoke 在隔离环境中离线验证锁定依赖和 TUI import。
-- TUI 运行事件收束为瞬态 `Working…`、单行 Tool 摘要、一次性 permission prompt 和明确的失败/中断；自动 checkpoint
-  不再进入对话区，footer 不再显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 与
-  streaming 不属于 1.0 展示面。
+- TUI 运行事件投影为唯一瞬态活动行和单条永久 Tool 回执，保留一次性 permission prompt 和 fail-closed 审批；自动
+  checkpoint 不进入对话区，footer 不显示绝对路径、Session ID、API Base 或 checkpoint ID。Provider reasoning 不属于
+  1.0 展示面；streaming 只显示 request-scoped 的已脱敏普通文本 preview。
 - Windows TUI 在实时编辑缓冲合并可能跨 Console input batch 到达的 UTF-16 surrogate pair，提交边界继续保持严格 UTF-8；
-  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时完整大版仍保持而不切换为无 Logo 状态，首条输入后仍保留
-  原生 inline scrollback。
+  启动欢迎页由 prompt-toolkit 按当前列数重绘，运行中缩窄时进入有界扩宽提示且不绘制替代 Logo，首条输入后仍保留原生
+  inline scrollback。
 - Windows 候选宿主增加固定版本/哈希的 ripgrep 安装脚本；它把 WinGet 来源复制到 protected Program Files 工具根，拒绝
   reparse point、意外内容和 ACL 漂移，不把用户可写 package root 或符号链接加入受信 executable 集合。
 - 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`runtime`、`security`、`state`、

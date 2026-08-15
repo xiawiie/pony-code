@@ -74,12 +74,11 @@ def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="defau
 
 def test_model_client_factory_rebuilds_the_resolved_transport():
     config = {
-        "protocol": {"value": "openai_chat_completions"},
-        "model": {"value": "gpt-test"},
-        "base_url": {"value": "https://api.example/v1"},
+        "protocol": {"value": "openai_responses"},
+        "model": {"value": "gpt-5.4"},
+        "base_url": {"value": "https://api.openai.com/v1"},
         "api_key": {"value": "test-key"},
         "auth_mode": {"value": "bearer"},
-        "capabilities": {"strict_tools": True},
     }
 
     factory = _model_client_factory(config, 30)
@@ -91,6 +90,8 @@ def test_model_client_factory_rebuilds_the_resolved_transport():
     assert second.provider_binding == first.provider_binding
     assert second.capabilities == first.capabilities
     assert replacement.model == "gpt-next"
+    assert first.capabilities["reasoning_replay"] is True
+    assert replacement.capabilities == {"reasoning_replay": True}
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
@@ -416,6 +417,55 @@ def test_invalid_no_input_repl_is_rejected_before_agent_build(
     assert "--no-input cannot be used" in capsys.readouterr().err
 
 
+def test_stream_rejects_run_before_agent_build(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--stream", "run", "inspect"]) == 2
+    assert "Streaming is only available" in capsys.readouterr().err
+
+
+def test_stream_rejects_non_tui_before_agent_build(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+    monkeypatch.setattr("pony.tui.app.tui_capability", lambda: (False, "not a TTY"))
+
+    assert main(["--cwd", str(tmp_path), "--stream", "repl"]) == 2
+    assert "Streaming requires the full interactive TUI" in capsys.readouterr().err
+
+
+def test_streaming_client_preflight_does_not_create_fresh_session_store(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent
+    from pony.cli.errors import CliError
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    args = build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--stream", "repl"]
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: (SimpleNamespace(), {}),
+    )
+
+    with pytest.raises(CliError) as caught:
+        _build_agent(args, workspace)
+
+    assert caught.value.code == "streaming_unavailable"
+    assert not (tmp_path / ".pony" / "sessions").exists()
+
+
 @pytest.mark.parametrize(
     ("extra", "expected"),
     (([], True), (["--format", "json"], False)),
@@ -493,6 +543,8 @@ def test_help_command_shows_examples(capsys):
     assert "pony\n" in out
     assert "also the default for bare `pony`" in out
     assert "--no-color" in out
+    assert "--stream" in out
+    assert "pony --stream" in out
     assert "--sandbox" not in out
     assert "sandbox      " not in out
     assert 'pony run "inspect the failing tests"' in out

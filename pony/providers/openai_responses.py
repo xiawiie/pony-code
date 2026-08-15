@@ -1,7 +1,6 @@
 """OpenAI Responses native provider adapter."""
 
 from copy import deepcopy
-from importlib.metadata import PackageNotFoundError, version
 import json
 import urllib.request
 
@@ -9,7 +8,9 @@ from .transport import (
     ProviderTransportError,
     _decode_json_object,
     _extract_usage_cache_details,
+    _iter_sse_events,
     _open_provider_request,
+    _open_provider_response,
     _provider_auth_headers,
     _provider_protocol_error,
     _model_binding,
@@ -17,90 +18,31 @@ from .transport import (
     _record_effective_model,
     _resource_url,
     _validate_number,
+    _StreamCallbacks,
+    _stream_failure_after_commit,
 )
 from .response import Response, StopReason
+from .openai_wire import (
+    OPENAI_USER_AGENT,
+    drop_optional_null_arguments,
+    prepare_function_tools,
+    render_system_instructions,
+)
 
 
-try:
-    OPENAI_USER_AGENT = f"pony/{version('pony-code')}"
-except PackageNotFoundError:  # pragma: no cover - only an unpackaged source tree.
-    OPENAI_USER_AGENT = "pony/unknown"
 MAX_PROVIDER_STATE_ITEMS = 32
 MAX_PROVIDER_STATE_BYTES = 1024 * 1024
 
 
-def _closed_object_schema(schema):
-    copied = deepcopy(schema)
-    if not isinstance(copied, dict):
-        raise ValueError("tool parameters must be an object")
-    if copied.get("type") == "object":
-        copied["additionalProperties"] = False
-        properties = copied.get("properties", {})
-        if not isinstance(properties, dict):
-            raise ValueError("tool properties must be an object")
-        copied["properties"] = {
-            name: _closed_object_schema(value) for name, value in properties.items()
-        }
-    if copied.get("type") == "array" and "items" in copied:
-        copied["items"] = _closed_object_schema(copied["items"])
-    for keyword in ("anyOf", "oneOf", "allOf"):
-        if keyword in copied:
-            values = copied[keyword]
-            if not isinstance(values, list):
-                raise ValueError("schema alternatives must be a list")
-            copied[keyword] = [_closed_object_schema(value) for value in values]
-    return copied
-
-
-def _openai_tools(tools, *, strict):
-    prepared = []
-    optional_by_name = {}
-    for tool in list(tools or []):
-        if not isinstance(tool, dict):
-            raise ValueError("tool must be an object")
-        name = tool.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError("tool name must be text")
-        parameters = _closed_object_schema(tool.get("input_schema") or {})
-        required = parameters.get("required", [])
-        properties = parameters.get("properties", {})
-        if not isinstance(required, list) or not all(
-            isinstance(value, str) for value in required
-        ):
-            raise ValueError("tool required must be a list of names")
-        optional = set(properties) - set(required)
-        optional_by_name[name] = optional
-        if strict:
-            for argument in sorted(optional):
-                properties[argument] = {
-                    "anyOf": [properties[argument], {"type": "null"}]
-                }
-            parameters["required"] = list(properties)
-        item = {
+def _responses_tools(tools, *, strict):
+    prepared, optional_by_name = prepare_function_tools(tools, strict=strict)
+    return [
+        {
             "type": "function",
-            "name": name,
-            "description": str(tool.get("description", "") or ""),
-            "parameters": parameters,
+            **tool,
         }
-        if strict:
-            item["strict"] = True
-        prepared.append(item)
-    return prepared, optional_by_name
-
-
-def _system_instructions(system):
-    if not isinstance(system, list):
-        raise ValueError("system must be a list")
-    parts = []
-    for block in system:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            raise ValueError("system block must be text")
-        text = block.get("text")
-        if not isinstance(text, str):
-            raise ValueError("system text must be text")
-        if text:
-            parts.append(text)
-    return "\n\n".join(parts)
+        for tool in prepared
+    ], optional_by_name
 
 
 def _validated_provider_state(value):
@@ -269,9 +211,7 @@ def _response_content(data, *, optional_by_name, preserve_reasoning):
                     stage="tool_call",
                     reason="tool_arguments_invalid",
                 )
-            for argument in optional_by_name.get(name, set()):
-                if parsed.get(argument) is None:
-                    parsed.pop(argument, None)
+            drop_optional_null_arguments(parsed, optional_by_name.get(name, set()))
             content.append(
                 {
                     "type": "tool_use",
@@ -327,6 +267,210 @@ def _stop_reason(data, content, refusal):
     return StopReason.END_TURN
 
 
+def _responses_request(client, *, system, tools, messages, max_tokens, stream):
+    _validate_number("max_tokens", max_tokens, minimum=1, integer=True)
+    auth_headers = _provider_auth_headers(
+        client.base_url,
+        client.api_key,
+        auth_mode=client.auth_mode,
+        family="OpenAI",
+    )
+    strict = bool(client.capabilities.get("strict_tools"))
+    prepared_tools, optional_by_name = _responses_tools(tools, strict=strict)
+    replay_reasoning = bool(client.capabilities.get("reasoning_replay"))
+    payload = {
+        "model": client.model,
+        "instructions": render_system_instructions(system),
+        "input": _canonical_input(messages, replay_reasoning=replay_reasoning),
+        "max_output_tokens": max_tokens,
+        "store": False,
+        "stream": stream,
+    }
+    if prepared_tools:
+        payload["tools"] = prepared_tools
+    if client.temperature is not None:
+        payload["temperature"] = client.temperature
+    if client.capabilities.get("parallel_tool_control"):
+        payload["parallel_tool_calls"] = False
+    if replay_reasoning:
+        payload["include"] = ["reasoning.encrypted_content"]
+    request = urllib.request.Request(
+        _resource_url(client.base_url, "responses"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
+            "User-Agent": OPENAI_USER_AGENT,
+            **auth_headers,
+        },
+        method="POST",
+    )
+    return request, optional_by_name, replay_reasoning
+
+
+def _decode_responses_response(
+    client,
+    data,
+    response_headers,
+    *,
+    optional_by_name,
+    replay_reasoning,
+    omitted_reasoning=(),
+):
+    if "choices" in data or data.get("error") or data.get("status") == "failed":
+        raise ValueError("not a successful Responses object")
+    content, provider_state, refusal = _response_content(
+        data,
+        optional_by_name=optional_by_name,
+        preserve_reasoning=replay_reasoning,
+    )
+    if replay_reasoning and not provider_state and omitted_reasoning:
+        provider_state = _validated_provider_state(omitted_reasoning)
+    usage = _extract_usage_cache_details(data)
+    _record_effective_model(client, data)
+    request_id = response_headers.get("x-request-id") or data.get("id")
+    if isinstance(request_id, str) and request_id:
+        usage["request_id"] = request_id
+    return Response(
+        stop_reason=_stop_reason(data, content, refusal),
+        content=content,
+        usage=usage,
+        provider_state=provider_state,
+    )
+
+
+def _responses_stream_object(event_name, payload):
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        raise ValueError("invalid Responses stream event") from None
+    if not isinstance(data, dict):
+        raise ValueError("invalid Responses stream event")
+    item_type = data.get("type")
+    if (
+        not isinstance(item_type, str)
+        or not item_type.startswith("response.") and item_type != "error"
+        or event_name is not None and event_name != item_type
+    ):
+        raise ValueError("invalid Responses stream event")
+    return item_type, data
+
+
+def _record_responses_item(seen_items, data, *, require_existing):
+    index = data.get("output_index")
+    item = data.get("item")
+    if type(index) is not int or index < 0 or not isinstance(item, dict):
+        raise ValueError("invalid Responses output item")
+    identity = (item.get("id"), item.get("type"))
+    if not all(isinstance(value, str) and value for value in identity):
+        raise ValueError("invalid Responses output item")
+    if identity[1] == "function_call":
+        identity += (item.get("call_id"), item.get("name"))
+        if not all(isinstance(value, str) and value for value in identity[2:]):
+            raise ValueError("invalid Responses output item")
+    if require_existing:
+        if seen_items.get(index) != identity:
+            raise ValueError("Responses output item identity changed")
+    elif index in seen_items or index != len(seen_items):
+        raise ValueError("invalid Responses output index")
+    else:
+        seen_items[index] = identity
+
+
+def _completed_item_matches(item, identity):
+    if item.get("type") != identity[1] or item.get("id") not in {None, identity[0]}:
+        return False
+    if identity[1] == "function_call":
+        return (item.get("call_id"), item.get("name")) == identity[2:]
+    return True
+
+
+def _validate_completed_items(response, seen_items, done_indices):
+    output = response.get("output")
+    if not isinstance(output, list):
+        raise ValueError("invalid completed Responses output")
+    expected = list(seen_items.items())
+    if not any(
+        isinstance(item, dict) and item.get("type") == "reasoning" for item in output
+    ):
+        omitted = {
+            index for index, identity in expected if identity[1] == "reasoning"
+        }
+        if not omitted.issubset(done_indices):
+            raise ValueError("completed Responses item missing")
+        expected = [item for item in expected if item[1][1] != "reasoning"]
+    for terminal_index, (_stream_index, identity) in enumerate(expected):
+        if terminal_index >= len(output) or not isinstance(
+            output[terminal_index], dict
+        ):
+            raise ValueError("completed Responses item missing")
+        item = output[terminal_index]
+        if not _completed_item_matches(item, identity):
+            raise ValueError("completed Responses item identity changed")
+
+
+def _validate_responses_sequence(state, data):
+    sequence = data.get("sequence_number")
+    if sequence is None:
+        return
+    if type(sequence) is not int or sequence <= state["last_sequence"]:
+        raise ValueError("invalid Responses stream sequence")
+    state["last_sequence"] = sequence
+
+
+def _read_responses_stream(response_stream, callbacks, *, preserve_reasoning):
+    state = {"last_sequence": -1}
+    seen_items = {}
+    done_indices = set()
+    completed_reasoning = {}
+    completed = None
+    for event_name, payload in _iter_sse_events(response_stream, family="OpenAI"):
+        item_type, data = _responses_stream_object(event_name, payload)
+        _validate_responses_sequence(state, data)
+        callbacks.commit()
+        if item_type in {"error", "response.failed"}:
+            raise ProviderTransportError("OpenAI error: backend_error", code="backend_error")
+        if item_type == "response.output_item.added":
+            _record_responses_item(seen_items, data, require_existing=False)
+        elif item_type == "response.output_item.done":
+            _record_responses_item(seen_items, data, require_existing=True)
+            index = data["output_index"]
+            if index in done_indices:
+                raise ValueError("duplicate Responses output item completion")
+            done_indices.add(index)
+            if preserve_reasoning and data["item"].get("type") == "reasoning":
+                completed_reasoning[index] = data["item"]
+        elif item_type == "response.output_text.delta":
+            output_index = data.get("output_index")
+            content_index = data.get("content_index")
+            if (
+                type(output_index) is not int
+                or type(content_index) is not int
+                or output_index < 0
+                or content_index < 0
+                or seen_items.get(output_index, (None, None))[1] != "message"
+            ):
+                raise ValueError("invalid Responses text delta target")
+            delta = data.get("delta")
+            if not isinstance(delta, str):
+                raise ValueError("invalid Responses text delta")
+            callbacks.text(delta)
+        elif item_type in {"response.completed", "response.incomplete"}:
+            completed = data.get("response")
+            if not isinstance(completed, dict):
+                raise ValueError("invalid terminal Responses object")
+            _validate_completed_items(completed, seen_items, done_indices)
+            break
+    if completed is None:
+        raise ValueError("Responses stream missing terminal response")
+    if any(
+        isinstance(item, dict) and item.get("type") == "reasoning"
+        for item in completed["output"]
+    ):
+        completed_reasoning = {}
+    return completed, [completed_reasoning[index] for index in sorted(completed_reasoning)]
+
+
 class OpenAIResponsesModelClient:
     def __init__(
         self,
@@ -377,45 +521,13 @@ class OpenAIResponsesModelClient:
         del cache_breakpoints
         self.last_completion_metadata = {}
         self.last_transport_attempts = 0
-        _validate_number("max_tokens", max_tokens, minimum=1, integer=True)
-        auth_headers = _provider_auth_headers(
-            self.base_url,
-            self.api_key,
-            auth_mode=self.auth_mode,
-            family="OpenAI",
-        )
-        strict = bool(self.capabilities.get("strict_tools"))
-        prepared_tools, optional_by_name = _openai_tools(tools, strict=strict)
-        replay_reasoning = bool(self.capabilities.get("reasoning_replay"))
-        payload = {
-            "model": self.model,
-            "instructions": _system_instructions(system),
-            "input": _canonical_input(
-                messages,
-                replay_reasoning=replay_reasoning,
-            ),
-            "max_output_tokens": max_tokens,
-            "store": False,
-            "stream": False,
-        }
-        if prepared_tools:
-            payload["tools"] = prepared_tools
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
-        if self.capabilities.get("parallel_tool_control"):
-            payload["parallel_tool_calls"] = False
-        if replay_reasoning:
-            payload["include"] = ["reasoning.encrypted_content"]
-        request = urllib.request.Request(
-            _resource_url(self.base_url, "responses"),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": OPENAI_USER_AGENT,
-                **auth_headers,
-            },
-            method="POST",
+        request, optional_by_name, replay_reasoning = _responses_request(
+            self,
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=False,
         )
         response_body, response_headers = _open_provider_request(
             self,
@@ -425,23 +537,12 @@ class OpenAIResponsesModelClient:
         )
         try:
             data = _decode_json_object(response_body)
-            if "choices" in data or data.get("error") or data.get("status") == "failed":
-                raise ValueError("not a successful Responses object")
-            content, provider_state, refusal = _response_content(
+            response = _decode_responses_response(
+                self,
                 data,
+                response_headers,
                 optional_by_name=optional_by_name,
-                preserve_reasoning=replay_reasoning,
-            )
-            usage = _extract_usage_cache_details(data)
-            _record_effective_model(self, data)
-            request_id = response_headers.get("x-request-id") or data.get("id")
-            if isinstance(request_id, str) and request_id:
-                usage["request_id"] = request_id
-            response = Response(
-                stop_reason=_stop_reason(data, content, refusal),
-                content=content,
-                usage=usage,
-                provider_state=provider_state,
+                replay_reasoning=replay_reasoning,
             )
         except ProviderTransportError:
             raise
@@ -451,5 +552,62 @@ class OpenAIResponsesModelClient:
                 stage="response_decode",
                 reason="response_shape_invalid",
             ) from None
-        self.last_completion_metadata = usage
+        self.last_completion_metadata = response.usage
+        return response
+
+    def complete_stream(
+        self,
+        *,
+        system,
+        tools,
+        messages,
+        max_tokens,
+        cache_breakpoints=None,
+        on_stream_committed,
+        on_text_delta,
+    ):
+        del cache_breakpoints
+        self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        callbacks = _StreamCallbacks(on_stream_committed, on_text_delta)
+        request, optional_by_name, replay_reasoning = _responses_request(
+            self,
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        try:
+            with _open_provider_response(
+                self,
+                request,
+                family="OpenAI",
+                retryable=True,
+            ) as response_stream:
+                headers = getattr(response_stream, "headers", {}) or {}
+                data, omitted_reasoning = _read_responses_stream(
+                    response_stream,
+                    callbacks,
+                    preserve_reasoning=replay_reasoning,
+                )
+            response = _decode_responses_response(
+                self,
+                data,
+                headers,
+                optional_by_name=optional_by_name,
+                replay_reasoning=replay_reasoning,
+                omitted_reasoning=omitted_reasoning,
+            )
+        except ProviderTransportError as exc:
+            if callbacks.committed:
+                raise _stream_failure_after_commit(exc) from None
+            raise
+        except Exception:
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
+            ) from None
+        self.last_completion_metadata = response.usage
         return response

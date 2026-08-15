@@ -28,6 +28,8 @@ MAX_WORKSPACE_SEARCH_BYTES = 64 * 1024 * 1024
 MAX_WORKSPACE_SEARCH_MATCHES = 200
 
 CONTROL_PLANE_PATH_NAMES = frozenset({".git", ".pony"})
+_FULL_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_TOOL_RESULT_ID_RE = re.compile(r"^tool_result:[0-9a-f]{64}$")
 
 
 class SensitiveToolError(ValueError):
@@ -185,6 +187,27 @@ def _refuse_control_plane_write(context, path):
         raise SensitiveToolError("control_plane_write_block")
 
 
+def _validate_page_arguments(args, *, allowed):
+    if set(args) - set(allowed):
+        raise ValueError("invalid page arguments")
+    start = args.get("start", 1)
+    if type(start) is not int or start < 1:
+        raise ValueError("invalid line range")
+    end = args.get("end")
+    if end is not None and (type(end) is not int or end < start):
+        raise ValueError("invalid line range")
+    start_byte = args.get("start_byte")
+    if start_byte is not None and (
+        type(start_byte) is not int or start_byte < 0
+    ):
+        raise ValueError("invalid start_byte")
+    expected_sha256 = args.get("expected_sha256")
+    if expected_sha256 is not None and not _FULL_SHA256_RE.fullmatch(
+        str(expected_sha256)
+    ):
+        raise ValueError("invalid expected_sha256")
+
+
 def validate_tool(context, name, args):
     args = args or {}
 
@@ -201,6 +224,16 @@ def validate_tool(context, name, args):
         return
 
     if name == "read_file":
+        _validate_page_arguments(
+            args,
+            allowed={
+                "path",
+                "start",
+                "end",
+                "start_byte",
+                "expected_sha256",
+            },
+        )
         path, _ = _lexical_tool_target(context, args["path"])
         info = _target_stat(path)
         if info is None:
@@ -215,12 +248,6 @@ def validate_tool(context, name, args):
                 "workspace_file_limit_exceeded",
                 "workspace file exceeds the configured limit",
             )
-        start = int(args.get("start", 1))
-        end = int(args.get("end", 200))
-        if start < 1 or end < start:
-            raise ValueError("invalid line range")
-        if end - start + 1 > 200:
-            raise ValueError("read_file accepts at most 200 lines")
         return
 
     if name == "search":
@@ -350,6 +377,16 @@ def validate_tool(context, name, args):
         return
 
     if name == "memory_read":
+        _validate_page_arguments(
+            args,
+            allowed={
+                "path",
+                "start",
+                "end",
+                "start_byte",
+                "expected_sha256",
+            },
+        )
         path = str(args.get("path", "")).strip()
         if not path:
             raise ValueError("path must not be empty")
@@ -357,10 +394,15 @@ def validate_tool(context, name, args):
             raise ValueError("invalid path format")
         if ".." in path.split("/") or path.startswith("/"):
             raise ValueError("path traversal not allowed")
-        start = int(args.get("start", 1) or 1)
-        end = int(args.get("end", 200) or 200)
-        if start < 1 or end < start:
-            raise ValueError("invalid line range")
+        return
+
+    if name == "read_tool_result":
+        _validate_page_arguments(
+            args,
+            allowed={"tool_result_id", "start", "end", "start_byte"},
+        )
+        if not _TOOL_RESULT_ID_RE.fullmatch(str(args.get("tool_result_id", ""))):
+            raise ValueError("invalid tool result id")
         return
 
     if name == "memory_search":
