@@ -544,6 +544,7 @@ class TuiRenderer:
 
     def turn_started(self, text, *, columns=None):
         self.user(text, columns=columns)
+        self._show_activity("Working...", columns=columns)
 
     def answer(self, text, *, columns=None):
         self._clear_activity()

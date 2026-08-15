@@ -24,7 +24,9 @@ Host 中实际运行的命令/依赖。模型输出、仓库内容、`.env` 文�
 - lexical repository root 是配置和状态锚点；不向父仓库、兄弟 worktree 或外部目录搜索。
 - `.env` 与 `pony.toml` 从可信 root no-follow 读取，拒绝 symlink、hardlink、FIFO、device、directory、root/parent
   replacement 和超限文件。
-- `.pony/` 与 `~/.pony/` 私有目录使用 owner-only 权限；私有文件读写前后复验 identity、mode 与 link count。
+- `.pony/` 与 `~/.pony/` 私有目录使用 owner-only 权限；当前用户拥有的既有 trust 根目录会在读取授权记录前重新硬化，
+  以恢复宿主工具造成的 ACL 漂移。`trust.json` 本身不自动放宽或修复，仍严格复验 owner、identity、mode/DACL 与 link count；
+  owner、路径或记录事实不安全时 fail closed。
 - 文件工具逐层锚定 root descriptor，只接受普通 single-link 文件；路径 traversal 和 root escape fail closed。
 - write/patch 使用同目录 private temp、fsync、atomic replace；patch 以读取 digest 做 CAS。
 - 目录、文件、字节、结果、进程输出和 timeout 都有上限，避免不受控资源消耗。

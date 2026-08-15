@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import threading
 
 import pytest
@@ -9,6 +10,29 @@ import pytest
 from pony.security.private_files import private_directory_identity
 from pony.security.trust import ProjectTrustStore
 import pony.security.trust as trust_module
+
+
+def _grant_other_read(path, *, directory):
+    if os.name == "posix":
+        path.chmod(0o755 if directory else 0o644)
+        return
+    permission = "(OI)(CI)(RX)" if directory else "(R)"
+    subprocess.run(
+        ["icacls", str(path), "/grant", f"*S-1-1-0:{permission}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_private_directory(path):
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+        return
+    from pony.security import windows_native
+
+    with windows_native.open_path(path, directory=True) as handle:
+        windows_native.require_private(handle)
 
 
 def test_reading_missing_trust_store_has_no_side_effects(tmp_path):
@@ -21,6 +45,65 @@ def test_reading_missing_trust_store_has_no_side_effects(tmp_path):
     assert not state.exists()
     assert store.is_trusted(project) is False
     assert not state.exists()
+
+
+def test_existing_trust_root_permissions_are_repaired(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+    ProjectTrustStore(state).trust(project)
+    _grant_other_read(state, directory=True)
+
+    store = ProjectTrustStore(state)
+
+    _assert_private_directory(state)
+    assert store.is_trusted(project) is True
+
+
+def test_root_repair_does_not_accept_shared_trust_file(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+    ProjectTrustStore(state).trust(project)
+    _grant_other_read(state, directory=True)
+    _grant_other_read(state / "trust.json", directory=False)
+
+    store = ProjectTrustStore(state)
+
+    _assert_private_directory(state)
+    assert store.is_trusted(project) is False
+    with pytest.raises(ValueError, match="permissions"):
+        store.trust(project)
+
+
+def test_root_identity_error_does_not_trigger_permission_repair(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    original_identity = trust_module.private_directory_identity
+    identity = original_identity(state)
+    changed_identity = identity._replace(
+        file_id=(
+            bytes([identity.file_id[0] ^ 1]) + identity.file_id[1:]
+            if isinstance(identity.file_id, bytes)
+            else identity.file_id + 1
+        )
+    )
+    repair_calls = []
+
+    def mismatched_identity(path):
+        return changed_identity if Path(path) == state else original_identity(path)
+
+    def record_repair(path):
+        repair_calls.append(Path(path))
+        return Path(path)
+
+    monkeypatch.setattr(trust_module, "private_directory_identity", mismatched_identity)
+    monkeypatch.setattr(trust_module, "ensure_private_dir", record_repair)
+
+    with pytest.raises(ValueError, match="trust store root changed"):
+        ProjectTrustStore(state)
+
+    assert repair_calls == []
 
 
 def test_project_trust_is_private_persistent_and_revocable(tmp_path):

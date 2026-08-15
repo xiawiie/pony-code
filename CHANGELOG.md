@@ -41,6 +41,9 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- Project trust 启动会自动重新硬化仍由当前用户拥有的 `~/.pony` 根目录，修复宿主沙箱附加只读 ACL 后每次启动都报
+  `Project trust state is invalid` 的问题；`trust.json` 继续严格验证，同一 worktree 后续启动不重复确认，新 worktree
+  仍需首次显式授权，真正无效状态会返回 current-user-only 权限修复提示。
 - `read_file` 与 `memory_read` 的模型可见合同现在采用 1-based inclusive 分页，默认从第 1 行读到 EOF，但每次结果同时受
   2,000 行、50 KiB UTF-8 和 inline token 上限约束；continuation 可无损读取后续页面。
 - 任意合法 model id 现在零 catalog 接入，不再触发 unknown-model warning；统一默认预算保持 128K context / 16K output，
@@ -58,8 +61,9 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   可见内容与工具调用的唯一权威，启用 reasoning replay 时只补回已完成的 opaque provider state，并继续拒绝语义 identity
   漂移。
 - TUI 在 80/111 列稳定拒绝，112 列及以上保留冻结的完整马形资产；无标签用户块、`Pony` Answer、`›` 输入、
-  `Working`/`Receiving`/工具回执和 permission/protocol-model footer 让聊天与运行阶段可辨识。busy Ctrl+C 明确不取消当前
-  请求，approval UI 异常继续 fail closed；运行中缩窄保留输入并有界渲染，transport cancel 仍未实现。
+  `Working`/`Receiving`/工具回执和 permission/protocol-model footer 让聊天与运行阶段可辨识；turn worker 在本地 context
+  准备前立即显示 `Working`，提交后不再出现无反馈空窗。busy Ctrl+C 明确不取消当前请求，approval UI 异常继续 fail closed；
+  运行中缩窄保留输入并有界渲染，transport cancel 仍未实现。
 - Compaction、split-turn 与 branch summary 现在把 Provider 输出预算和持久化 summary hard cap 分离：请求遵守冻结的
   model output limit，正文仍按原 context hard cap 裁切，避免 thinking tokens 挤占全部摘要正文或 reserve 较大时
   绕过用户配置的 output limit。

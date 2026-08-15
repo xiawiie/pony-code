@@ -288,9 +288,10 @@ active turn 而不声称取消 Provider/Tool。approval/wake 异常必须 deny �
 `tests/test_input_queue.py` 与 `tests/tui/test_app.py`。
 
 事件投影测试必须证明 `›` 输入、无色 `│` 用户侧轨、一次 `Pony` Answer 标识，且
-`Working -> Reading/Running -> Result -> Working -> Answer` 与真实事件一一对应；`Working…` 会在正式输出前清除、自动
-checkpoint 零输出、成功 Tool 只输出一行、分页/截断/失败与中断可见，approval 批准后恢复 pending Tool activity，并且 footer
-不泄露绝对路径、Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
+`Working -> Reading/Running -> Result -> Working -> Answer` 与真实事件一一对应；turn worker 必须在本地 request preflight 前
+立即显示第一个 `Working…`，后续 `model_requested` 只确认同一状态。`Working…` 会在正式输出前清除、自动 checkpoint 零输出、
+成功 Tool 只输出一行、分页/截断/失败与中断可见，approval 批准后恢复 pending Tool activity，并且 footer 不泄露绝对路径、
+Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
 permission prompt 参数脱敏与 prompt fail closed 仍是阻断项；离线 contract 不得描述为 Provider reasoning 或 streaming 验证。
 
 Model/Provider 回归还必须覆盖：任意 model id 零 warning 和 128K/16K 默认；256K/32K 显式 profile；32K/16K 自动

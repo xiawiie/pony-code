@@ -34,6 +34,9 @@ from .errors import CLI_EXIT_APPROVAL, CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .migration import migration_preflight
 
 
+_TRUST_STATE_HINT = "Restore current-user-only permissions on ~/.pony, then retry."
+
+
 def _build_transport_client(
     args,
     *,
@@ -139,6 +142,7 @@ def _trusted_project_root(args, trust_store, confirm):
         raise CliError(
             code="project_trust_invalid",
             message="Project trust state is invalid",
+            hint=_TRUST_STATE_HINT,
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
     if store.is_trusted(project_root):
@@ -171,6 +175,7 @@ def _trusted_project_root(args, trust_store, confirm):
         raise CliError(
             code="project_trust_invalid",
             message="Project trust state is invalid",
+            hint=_TRUST_STATE_HINT,
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
     if not store.is_trusted(project_root):

@@ -82,6 +82,11 @@ pony config show
 pony doctor
 ```
 
+首次执行需要运行 Agent 或 mutation 管理命令的操作时，Pony 会显示 `Trust project ...? [y/N]`。授权绑定当前 lexical
+root 的路径与目录身份，不绑定 branch/HEAD：同一 worktree 切换分支不会重复询问，新建 sibling worktree 需要单独确认一次。
+Pony 会自动恢复当前用户拥有的 `~/.pony` trust 根目录权限漂移，但不会自动授予项目；owner、symlink/reparse、记录文件权限、
+hardlink 或内容不安全时返回 `project_trust_invalid` 及 current-user-only 权限修复提示。
+
 `init` 依次询问 Provider（默认 `auto`）、API Base、模型和 API Key。输入已有 Key 时留空会保留
 原值；本地 Ollama 允许空 Key。强制 Provider 只做本地校验；`auto` 或 `openai` 先执行 fixed synthetic
 tool/continuation probe，只有完整通过后才把 resolved Provider 与另外三项一次性原子写入根目录 `.env`。

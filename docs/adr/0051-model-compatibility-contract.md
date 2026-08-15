@@ -85,9 +85,10 @@ TUI 又把 `tool_started` 显示为永久工具行、成功完成保持静默，
 - 交互必须区分 Waiting input、Model working、Tool running、Tool result 和 Assistant answer 五态。
 - 用户块使用无角色标签的低对比背景和无色侧轨；Assistant answer 只在块首显示一次低对比 `Pony` 标识，input 使用非空
   `› ` prompt。颜色只能增强，不能承担唯一状态语义。
-- presentation 只维护一个非持久化活动行；durable listener 驱动 `model_requested`/`tool_started` 等状态。ADR-0052 定义的
-  current-request、无 durable writer 的 Streaming preview callback 是唯一例外，只能把同一行从 `Working…` 更新为
-  `Receiving...`/安全文本。Final/error/interrupt/approval/close 必须幂等清除；`Working` 不包含 Provider reasoning。
+- presentation 只维护一个非持久化活动行；turn worker 在本地 context/RepoMap 准备前立即显示 `Working…`，durable
+  `model_requested` 只确认同一状态，`tool_started` 等后续事件继续由 listener 驱动。ADR-0052 定义的 current-request、
+  无 durable writer 的 Streaming preview callback 只能把同一行更新为 `Receiving...`/安全文本。
+  Final/error/interrupt/approval/close 必须幂等清除；`Working` 不包含 Provider reasoning。
 - approval 隐藏 activity 但保留 pending tool summary；批准后由 approval callback 恢复 Tool running，拒绝后等待 rejected 回执，
   不增加第二个 `tool_started` 或新的 runtime event。
 - listener/resize 次生渲染错误不得覆盖 primary result；approval UI 任一步异常必须按拒绝/中断 fail closed，工具不得执行，
@@ -118,6 +119,6 @@ TUI 又把 `tool_started` 显示为永久工具行、成功完成保持静默，
 - 默认体验至少维持现有 `128K/16K`，用户可显式扩大到 `256K`；Pony 不虚构远端物理上限。
 - 大窗口获得真实可用的文件正文：常见仓库约 97% 文件单页完成，其余结果有准确 continuation。
 - 不可重放大输出只有在真实保存成功时才声称当前 turn 可恢复；历史 preview 明确标注过期，不把它描述成永久能力。
-- 用户能持续看见思考、工具运行、分页/截断、失败和下一次输入状态，不再把等待误认为 bug。
+- 用户能持续看见当前 turn、工具运行、分页/截断、失败和下一次输入状态，不再把等待误认为 bug。
 - 实现已同步修改 model budget、tool schema/validation/runner、memory read、RunStore、Agent result shaping、TUI listener/render
   及其聚焦测试；完整门禁和收费 live 验证仍是独立验收证据。

@@ -134,6 +134,9 @@ pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
 
 `pony` 与 `pony repl` 是同一个交互会话；`pony run` 一次执行后退出。未知首 token 不会被静默当作 prompt。
+每个新 worktree 首次运行会显示 `Trust project ...? [y/N]`；确认只绑定该 lexical root 的目录身份，同一路径切换分支或
+后续启动不会重复询问，也不会把授权扩散到 sibling worktree。机器级 `~/.pony` trust 目录若仍由当前用户拥有但 ACL
+发生漂移，Pony 会在读取授权记录前恢复 owner-only 权限；owner、路径或记录文件不安全时仍 fail closed，并给出修复提示。
 TUI 要求 stdin/stdout 为 TTY 且至少 112 列；非 Windows 还要求有效且非 `dumb` 的 `TERM`。低于 112 列返回稳定 usage
 error，不会静默进入纯文本或缩小版界面；112 列及以上只显示完整马形 Logo 与块状字标。只有非 TTY 自动化输入才使用纯文本
 REPL。

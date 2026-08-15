@@ -382,6 +382,9 @@ Input -> Working -> Tool running -> Tool result -> Working -> Answer -> Input
 该序列由真实事件驱动，不补造中间状态。`tool_executed` 后只有收到下一次 `model_requested` 才重新显示 `Working…`；Final、
 error、interrupt、approval 和关闭路径都必须幂等清除活动行。
 
+用户 turn worker 启动时必须在本地 context/RepoMap 准备前立即显示第一个 `Working…`；后续 durable `model_requested`
+只确认同一个活动状态，不追加第二行。这样本地安全准备仍完整执行，但提交后不会出现无反馈空窗。
+
 最小无色稳态线框如下；颜色只能增强，不得成为唯一差异：
 
 ```text
@@ -408,7 +411,8 @@ Pony
 
 | 事件 | UI 动作 |
 | --- | --- |
-| `model_requested` | `set_activity(model, "Working…")` |
+| turn worker started | 立即 `set_activity(model, "Working…")` |
+| `model_requested` | 确认同一个 `Working…`，不追加永久内容 |
 | `tool_started` | 原位替换为工具特定动作，不写永久行 |
 | `tool_executed` | 清除活动行，再写恰好一条永久结果回执 |
 | `tool_interrupted` | 清除活动行，再写永久中断回执 |
@@ -565,7 +569,8 @@ scrollback。
 - 不携带 protocol event、request id、tool args、reasoning、raw id、usage 或 endpoint；
 - callback/render 异常或 false acknowledgment 只禁用本次 preview，Provider 流继续完成，次生 UI 错误不得覆盖 primary result；
 - success、Provider error、interrupt 和 close 都在 `finally` 幂等清除 preview，随后 Final Markdown 只渲染一次；
-- `model_requested` durable listener 仍先显示 `Working...`。Adapter 在内部把首个合法 wire event 标记 committed 后调用无
+- turn worker 在本地 request preflight 前先显示 `Working...`，`model_requested` durable listener 继续确认同一状态。Adapter
+  在内部把首个合法 wire event 标记 committed 后调用无
   payload 的 `on_stream_committed()`，把状态改为 `Receiving...`；它不携带协议事件、不计 TTFT，异常只禁用状态更新。
 - `SafeTextPreview` 调用 `on_safe_preview(snapshot) -> bool`；TUI 只有在同步完成有界投影且实际显示至少一个模型文本字符时
   返回 true。收到安全行后显示 `Pony - <preview>`；Tool 流只显示 `Receiving...`，不泄露参数。

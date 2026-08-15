@@ -1468,6 +1468,22 @@ def test_prompt_and_assistant_have_identity_anchors(monkeypatch):
     assert prompt.endswith("\n› ")
 
 
+def test_turn_started_shows_working_before_request_preflight(monkeypatch):
+    output = []
+    monkeypatch.setattr("pony.tui.render.sys.stdout", io.StringIO())
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.turn_started("Inspect the repository", columns=112)
+
+    rendered = ["".join(fragment[1] for fragment in value) for value in output]
+    assert any("Inspect the repository" in value for value in rendered)
+    assert rendered[-1] == "Working..."
+
+
 def test_editor_header_combines_runtime_width_and_queue_state():
     renderer = TuiRenderer(no_color=True)
 
