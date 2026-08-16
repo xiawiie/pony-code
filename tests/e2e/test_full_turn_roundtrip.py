@@ -1,6 +1,7 @@
 """E2E: one Pony.ask exercises injection + paged read + recall together."""
 
 from pony.providers.response import Response, StopReason
+from pony.security.private_files import ensure_private_dir
 from pony.runtime.application import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
@@ -21,6 +22,7 @@ class _SniffProvider:
 
 
 def test_full_turn_injects_recall_and_keeps_large_read_as_a_page(tmp_path):
+    tmp_path = ensure_private_dir(tmp_path)
     (tmp_path / "pony.toml").write_text(
         "[context.tool_results]\ninline_tokens = 256\ndigest_tokens = 128\n",
         encoding="utf-8",
@@ -57,7 +59,7 @@ def test_full_turn_injects_recall_and_keeps_large_read_as_a_page(tmp_path):
             ),
         ]
     )
-    workspace = WorkspaceContext.build(tmp_path)
+    workspace = WorkspaceContext.build(tmp_path, repo_root_override=tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
     pony = Pony(
         model_client=provider,
@@ -103,6 +105,7 @@ def test_full_turn_injects_recall_and_keeps_large_read_as_a_page(tmp_path):
 
 def test_history_is_never_silently_dropped(tmp_path):
     """History below the request limit remains intact; compaction is the only exit."""
+    tmp_path = ensure_private_dir(tmp_path)
     provider = _SniffProvider(
         [
             Response(
@@ -112,7 +115,7 @@ def test_history_is_never_silently_dropped(tmp_path):
             ),
         ]
     )
-    workspace = WorkspaceContext.build(tmp_path)
+    workspace = WorkspaceContext.build(tmp_path, repo_root_override=tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
     pony = Pony(
         model_client=provider,
