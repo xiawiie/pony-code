@@ -6,7 +6,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from pony import Pony
-from pony.security.private_files import ensure_private_dir
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.providers.anthropic_messages import AnthropicMessagesModelClient
@@ -246,7 +245,6 @@ def _tool_result_from_followup(family, body):
 def test_native_adapter_agent_loop_closes_two_round_tool_flow(
     tmp_path, family, scenario
 ):
-    tmp_path = ensure_private_dir(tmp_path)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     responses = _provider_responses(family, scenario)
 

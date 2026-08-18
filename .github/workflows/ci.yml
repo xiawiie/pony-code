@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}
+    name: Python focused (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -42,26 +42,36 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
-      - name: Prime locked runtime cache for offline install smoke
-        if: matrix.python-version == '3.12'
-        shell: bash
+      - name: Static and lock checks
         run: |
-          requirements="${RUNNER_TEMP}/pony-runtime-requirements.txt"
-          primer="${RUNNER_TEMP}/pony-cache-primer"
-          uv export --frozen --no-dev --no-emit-project --output-file "${requirements}"
-          uv venv --python .venv/bin/python "${primer}"
-          uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
+          uv lock --check
+          uv run --frozen ruff check .
 
-      - name: Python 3.11 compatibility tests
-        if: matrix.python-version == '3.11'
-        run: uv run --frozen pytest -q tests
-
-      - name: Exact-head offline gate
-        if: matrix.python-version == '3.12'
-        run: ./scripts/check.sh
+      - name: Focused compatibility and core tests
+        run: >-
+          uv run --frozen pytest -q
+          tests/e2e/test_full_turn_roundtrip.py
+          tests/e2e/test_native_provider_roundtrip.py
+          tests/test_cli_commands.py
+          tests/test_cli_diagnostics.py
+          tests/test_cli_error_envelope.py
+          tests/test_cli_parser.py
+          tests/test_cli_workflow.py
+          tests/test_config.py
+          tests/test_input_queue.py
+          tests/test_permissions.py
+          tests/test_provider_anthropic.py
+          tests/test_provider_clients.py
+          tests/test_provider_openai_chat_completions.py
+          tests/test_provider_probe.py
+          tests/test_provider_response.py
+          tests/test_scripts.py
+          tests/tui/test_app.py
 
   windows-capabilities:
     uses: ./.github/workflows/windows-verification.yml
+    with:
+      full_gate: false
 
   macos-focused:
     name: macOS focused (Python 3.12)

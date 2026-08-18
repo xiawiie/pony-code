@@ -79,6 +79,7 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "environment: pypi" in workflow
     assert "verify-windows:" in workflow
     assert "uses: ./.github/workflows/windows-verification.yml" in workflow
+    assert "full_gate: true" in workflow
     assert "needs: verify-windows" in workflow
     assert "uv sync --frozen --dev" in workflow
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
@@ -109,12 +110,25 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "secrets." not in workflow
 
 
-def test_linux_ci_uses_the_single_exact_head_gate():
+def test_linux_ci_uses_focused_core_gates():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     linux, _macos = workflow.split("macos-focused:", 1)
 
-    assert linux.count("./scripts/check.sh") == 1
-    assert linux.count("uv run --frozen pytest -q tests") == 1
+    assert "./scripts/check.sh" not in linux
+    assert "uv run --frozen pytest -q tests" not in linux
+    assert "uv lock --check" in linux
+    assert "uv run --frozen ruff check ." in linux
+    assert "Focused compatibility and core tests" in linux
+    for path in (
+        "tests/e2e/test_full_turn_roundtrip.py",
+        "tests/e2e/test_native_provider_roundtrip.py",
+        "tests/test_config.py",
+        "tests/test_input_queue.py",
+        "tests/test_provider_clients.py",
+        "tests/test_scripts.py",
+        "tests/tui/test_app.py",
+    ):
+        assert path in linux
     assert "scripts/evaluation/evaluate.py" not in linux
     assert "scripts/release/verify_distribution.py" not in linux
     assert "uv build" not in linux
@@ -128,7 +142,13 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
 
     assert "windows-capabilities:" in ci
     assert "uses: ./.github/workflows/windows-verification.yml" in ci
+    assert "full_gate: false" in ci
     assert "workflow_call:" in windows
+    assert "full_gate:" in windows
+    assert "type: boolean" in windows
+    assert "default: false" in windows
+    assert "if: ${{ inputs.full_gate }}" in windows
+    assert "if: ${{ !inputs.full_gate }}" in windows
     assert "runs-on: windows-2025" in windows
     assert '          - "3.11"' in windows
     assert '          - "3.12"' in windows
@@ -137,6 +157,16 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "uv export --frozen --no-dev --no-emit-project" in windows
     assert 'uv venv --python .venv\\Scripts\\python.exe $primer' in windows
     assert "uv pip install --refresh --python $primerPython" in windows
+    assert "Run focused Windows tests" in windows
+    for path in (
+        "tests/e2e/test_full_turn_roundtrip.py",
+        "tests/e2e/test_native_provider_roundtrip.py",
+        "tests/test_file_lock.py",
+        "tests/test_input_queue.py",
+        "tests/test_private_paths.py",
+        "tests/test_workspace_io_security.py",
+    ):
+        assert path in windows
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
     assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
     assert "python scripts/windows/probe_private_files_backend.py" in windows
@@ -391,8 +421,7 @@ def test_ci_has_macos_security_and_durability_gate():
     assert "runs-on: macos-latest" in macos
     assert 'python-version: "3.12"' in macos
     assert macos.count("uv sync --frozen --dev") == 1
-    assert "uv export --frozen --no-dev --no-emit-project" in workflow
-    assert "uv pip install --refresh" in workflow
+    assert "Prime locked runtime cache for offline install smoke" not in workflow
     assert "sandbox-contract" not in workflow
     assert "linux-capability-evidence" not in workflow
     assert "-W error::DeprecationWarning" in workflow

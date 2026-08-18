@@ -2,13 +2,19 @@ name: Windows verification
 
 on:
   workflow_call:
+    inputs:
+      full_gate:
+        description: Run the complete release-grade Windows verification
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   verify-windows:
-    name: Windows full gate (Python ${{ matrix.python-version }})
+    name: Windows verification (Python ${{ matrix.python-version }})
     runs-on: windows-2025
 
     strategy:
@@ -41,6 +47,7 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Prime locked runtime cache for offline install smoke
+        if: ${{ inputs.full_gate }}
         shell: pwsh
         run: |
           $requirements = Join-Path $env:RUNNER_TEMP "pony-runtime-requirements.txt"
@@ -56,9 +63,24 @@ jobs:
           uv run --frozen ruff check .
 
       - name: Run complete Windows verification as a standard user
+        if: ${{ inputs.full_gate }}
         run: >-
           scripts/windows/run_as_standard_user.ps1
           -Script scripts/windows/verify_full_runtime.ps1
+
+      - name: Run focused Windows tests
+        if: ${{ !inputs.full_gate }}
+        run: >-
+          uv run --frozen pytest -q -ra --durations=20
+          -p scripts.windows.pytest_skip_policy
+          tests/e2e/test_full_turn_roundtrip.py
+          tests/e2e/test_native_provider_roundtrip.py
+          tests/test_file_lock.py
+          tests/test_input_queue.py
+          tests/test_private_paths.py
+          tests/test_project_env_security.py
+          tests/test_safe_subprocess.py
+          tests/test_workspace_io_security.py
 
       - name: Probe native Windows capabilities
         if: ${{ !cancelled() }}

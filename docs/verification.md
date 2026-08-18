@@ -12,6 +12,8 @@
 该脚本要求起始 worktree clean，并依次验证 lock、单次 Ruff、单次全量 pytest（包含 offline live-harness assertions）、
 独立 deterministic core-functional evaluation、单次离线 sdist/wheel build、单次 archive/clean-install verifier，最后复验
 Git HEAD 未变化且 worktree 仍 clean。Evaluation 与构建产物都写入本轮临时目录并在退出时清理；任何一步失败都停止。
+普通 push/pull-request CI 不调用该完整门禁，只运行静态检查、核心合同聚焦测试和平台专项；完整门禁保留给本地
+发布收口与 `v*` Tag 发布流程。
 
 ## 门禁矩阵
 
@@ -34,7 +36,7 @@ G0-G6 与 G9 是 package 发布 mandatory gate。G8 需要用户拥有的账号�
 
 | 维度 | 1.0 声明 | 发布证据 |
 | --- | --- | --- |
-| Python | 3.11、3.12 | Linux 全量测试；macOS 3.12 安全与耐久性专项；Windows 3.11/3.12 完整门禁 |
+| Python | 3.11、3.12 | 普通 CI 运行 Linux/Windows 聚焦测试与 macOS 专项；Tag 发布运行 Linux 3.12 和 Windows 3.11/3.12 完整门禁 |
 | OS | macOS、Linux、Windows 11 x64 | CI 与发布门禁；Windows 原生边界见 [ADR-0050](adr/0050-windows-native-support.md) |
 | Anthropic Messages | 实现支持 | 离线 wire contract；每个账号/model 的 G8 单独验收 |
 | OpenAI Responses | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
@@ -47,7 +49,8 @@ G8 是否执行；不得把某一组合的 live 结果外推到其他组合。
 
 ### Windows 支持晋级门禁
 
-CI 的 Windows 3.11/3.12 capability job 分开运行 symbol probe 与安全语义 probe。后者在 hosted Windows runner 上验证
+普通 CI 的 Windows 3.11/3.12 聚焦 job 运行核心 E2E、input queue、文件安全测试与原生 capability/安全语义 probe，
+不执行全量 pytest、evaluation、build 或 distribution smoke。原生 probe 在 hosted Windows runner 上验证
 `NtCreateFile` root-handle-relative 逐层打开、reparse point 打开后识别、稳定 File ID、hardlink count；DACL probe 验证文件和
 目录的当前用户 owner、单一无继承 full-control ACE、protected DACL、handle/path 双重复验，以及 owner/DACL 漂移拒绝；
 raw atomic-write capability probe 仍验证同目录 durable temp、失败时保留旧内容以及 `ReplaceFileW` 的系统语义，但 production
@@ -69,14 +72,15 @@ Session、migration、memory 与 Git metadata 均有 Windows production-backend 
 - PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 80/111 列拒绝与 112/120 列完整大版回归通过；
 - Windows 专项不是由 WSL、Git Bash 或大面积 `skipif Windows` 获得绿色结果。
 
-普通 CI 与 `v*` Tag 发布共用 `.github/workflows/windows-verification.yml` 的 Windows 3.11/3.12 标准用户矩阵；
-`publish` job 必须等待该矩阵完成。完整 Windows pytest 通过显式 skip policy 拒绝未知 skip/xfail，并以 `-ra` 和
+普通 CI 与 `v*` Tag 发布共用 `.github/workflows/windows-verification.yml`：普通 CI 传入 `full_gate: false`，只运行
+聚焦测试与原生 probe；Tag 发布传入 `full_gate: true`，运行 Windows 3.11/3.12 标准用户完整门禁，且 `publish` job
+必须等待该矩阵完成。完整 Windows pytest 通过显式 skip policy 拒绝未知 skip/xfail，并以 `-ra` 和
 `--durations=50` 输出按原因统计与慢测试证据；末尾的 `windows_skip_audit=<JSON>` 是 schema v1 的机器可读汇总，包含
 每个原因的实际数量、未知原因和总审核结论。数量只用于比较同一 exact candidate SHA 的 3.11/3.12 clean-host 结果，
 不得把 dirty worktree 或不受信宿主的本地数量冻结成发布阈值。Windows classifier 与支持声明不替代证据；每个候选
 exact tag 仍须以实际结果和 Windows Terminal 实机验收完成 Phase 5。
 
-Windows workflow 在切换到受控标准用户前，先从 `uv.lock` 导出仅运行时依赖，并通过隔离 primer 环境把对应归档写入共享
+Windows full gate 在切换到受控标准用户前，先从 `uv.lock` 导出仅运行时依赖，并通过隔离 primer 环境把对应归档写入共享
 uv cache；标准用户只在取得该 cache 的显式 ACL 后以 `UV_OFFLINE=1` 执行 distribution clean-install smoke。普通
 `uv sync` 只证明开发环境可安装，不能替代“锁定依赖已预热且离线隔离安装成功”的发布证据。
 
@@ -602,8 +606,8 @@ HEAD 从头重跑门禁。
 ## Tag 发布
 
 `.github/workflows/release.yml` 只响应 `v*` tag，并要求 tag 精确等于 `v<project.version>`。工作流在全新 runner 中重复
-静态、功能、评估、临时构建和 clean-install 门禁；同时复用与普通 CI 相同的 Windows 3.11/3.12 标准用户完整门禁与
-原生攻击 probe。只有 Windows 矩阵全部通过后，`publish` job 才有意重建固定 `dist/`、再次验证实际待发布归档，再使用
+静态、功能、评估、临时构建和 clean-install 门禁；同时以 `full_gate: true` 启用普通 CI 不运行的 Windows 3.11/3.12
+标准用户完整门禁与原生攻击 probe。只有 Windows 矩阵全部通过后，`publish` job 才有意重建固定 `dist/`、再次验证实际待发布归档，再使用
 GitHub OIDC / PyPI Trusted Publishing 上传 wheel 与 sdist，生成 SHA-256 文件并创建 GitHub Release。
 
 发布前外部一次性配置：

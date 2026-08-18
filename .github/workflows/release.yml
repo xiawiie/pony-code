@@ -12,6 +12,8 @@ permissions:
 jobs:
   verify-windows:
     uses: ./.github/workflows/windows-verification.yml
+    with:
+      full_gate: true
 
   publish:
     name: Verify and publish tagged release
