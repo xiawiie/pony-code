@@ -68,19 +68,11 @@ jobs:
           scripts/windows/run_as_standard_user.ps1
           -Script scripts/windows/verify_full_runtime.ps1
 
-      - name: Run focused Windows tests
+      - name: Run focused Windows tests as a standard user
         if: ${{ !inputs.full_gate }}
         run: >-
-          uv run --frozen pytest -q -ra --durations=20
-          -p scripts.windows.pytest_skip_policy
-          tests/e2e/test_full_turn_roundtrip.py
-          tests/e2e/test_native_provider_roundtrip.py
-          tests/test_file_lock.py
-          tests/test_input_queue.py
-          tests/test_private_paths.py
-          tests/test_project_env_security.py
-          tests/test_safe_subprocess.py
-          tests/test_workspace_io_security.py
+          scripts/windows/run_as_standard_user.ps1
+          -Script scripts/windows/verify_focused_runtime.ps1
 
       - name: Probe native Windows capabilities
         if: ${{ !cancelled() }}

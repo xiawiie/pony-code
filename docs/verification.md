@@ -49,8 +49,8 @@ G8 是否执行；不得把某一组合的 live 结果外推到其他组合。
 
 ### Windows 支持晋级门禁
 
-普通 CI 的 Windows 3.11/3.12 聚焦 job 运行核心 E2E、input queue、文件安全测试与原生 capability/安全语义 probe，
-不执行全量 pytest、evaluation、build 或 distribution smoke。原生 probe 在 hosted Windows runner 上验证
+普通 CI 的 Windows 3.11/3.12 聚焦 job 在受控标准用户下运行核心 E2E、input queue、文件安全测试，并运行原生
+capability/安全语义 probe；不执行全量 pytest、evaluation、build 或 distribution smoke。原生 probe 在 hosted Windows runner 上验证
 `NtCreateFile` root-handle-relative 逐层打开、reparse point 打开后识别、稳定 File ID、hardlink count；DACL probe 验证文件和
 目录的当前用户 owner、单一无继承 full-control ACE、protected DACL、handle/path 双重复验，以及 owner/DACL 漂移拒绝；
 raw atomic-write capability probe 仍验证同目录 durable temp、失败时保留旧内容以及 `ReplaceFileW` 的系统语义，但 production

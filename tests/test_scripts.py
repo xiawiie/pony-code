@@ -157,7 +157,11 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "uv export --frozen --no-dev --no-emit-project" in windows
     assert 'uv venv --python .venv\\Scripts\\python.exe $primer' in windows
     assert "uv pip install --refresh --python $primerPython" in windows
-    assert "Run focused Windows tests" in windows
+    assert "Run focused Windows tests as a standard user" in windows
+    assert "-Script scripts/windows/verify_focused_runtime.ps1" in windows
+    focused_runtime = Path("scripts/windows/verify_focused_runtime.ps1").read_text(
+        encoding="utf-8"
+    )
     for path in (
         "tests/e2e/test_full_turn_roundtrip.py",
         "tests/e2e/test_native_provider_roundtrip.py",
@@ -166,7 +170,8 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
         "tests/test_private_paths.py",
         "tests/test_workspace_io_security.py",
     ):
-        assert path in windows
+        assert path in focused_runtime
+    assert "tests benchmarks/live_e2e/tests/test_assertions.py" not in focused_runtime
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
     assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
     assert "python scripts/windows/probe_private_files_backend.py" in windows
