@@ -52,15 +52,19 @@ RACY_WINDOW_NS = 2 * 1_000_000_000
 def snapshot_signature_is_racy(signature, started_ns, window_ns=RACY_WINDOW_NS):
     """Return whether any file row may still change without a stat change.
 
-    A row is racy when its mtime or ctime is at or after ``started_ns - window_ns``
-    (future timestamps included): a same-size rewrite within one coarse timestamp
-    tick could leave the signature unchanged, so such snapshots must not be cached.
+    A row is racy when its mtime (and on POSIX its ctime) is at or after
+    ``started_ns - window_ns`` (future timestamps included): a same-size rewrite
+    within one coarse timestamp tick could leave the signature unchanged, so such
+    snapshots must not be cached. Windows ``st_ctime`` is the creation time, not a
+    change time, so only mtime is meaningful there.
     """
     if signature is None:
         return False
     threshold = started_ns - window_ns
+    check_ctime = os.name != "nt"
     return any(
-        len(row) == 8 and (row[4] >= threshold or row[5] >= threshold)
+        len(row) == 8
+        and (row[4] >= threshold or (check_ctime and row[5] >= threshold))
         for row in signature
     )
 

@@ -423,7 +423,11 @@ class RepoMap:
         now = time.time_ns()
         try:
             if os.name == "nt":
-                data, opened = _read_bounded_regular(
+                # refresh_if_stale compares Path.stat(); the anchored reader reports a
+                # FILETIME/FileId view that never matches it, so fingerprint the same
+                # stat view, taken before the read so a concurrent write stays stale.
+                opened = real_path.stat(follow_symlinks=False)
+                data, _anchored = _read_bounded_regular(
                     real_path,
                     limit,
                     root=self.repo_root,
@@ -455,8 +459,6 @@ class RepoMap:
         for sym in symbols:
             symbols_by_name[sym.name].append(sym)
 
-        # Windows metadata carries a FILETIME (1601 epoch), so every file reads as
-        # racy there; its fingerprints never matched Path.stat() anyway.
         if opened.st_mtime_ns >= now - RACY_WINDOW_NS:
             fingerprints[rel_path] = _RACY_FINGERPRINT
         else:
