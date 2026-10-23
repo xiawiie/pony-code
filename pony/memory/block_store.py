@@ -46,6 +46,18 @@ MAX_MEMORY_INDEX_FILES = 512
 MAX_MEMORY_DIRECTORY_ENTRIES = 10_000
 MAX_MEMORY_FILE_BYTES = 128 * 1024
 MAX_MEMORY_INDEX_BYTES = 2 * 1024 * 1024
+RACY_WINDOW_NS = 2 * 1_000_000_000
+
+
+def snapshot_signature_is_racy(signature, started_ns, window_ns=RACY_WINDOW_NS):
+    """Return whether a file row may have a coarse, in-flight timestamp."""
+    if signature is None:
+        return False
+    threshold = started_ns - window_ns
+    return any(
+        len(row) == 8 and (row[4] >= threshold or row[5] >= threshold)
+        for row in signature
+    )
 
 
 def _is_agent_owned_path(rel_path):

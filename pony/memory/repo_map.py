@@ -14,6 +14,7 @@ import ast
 import os
 import re
 import stat
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,7 @@ IGNORED_DIRS = frozenset(
 MAX_FILE_SIZE = 500_000
 MAX_FILES = 10_000
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
+RACY_WINDOW_NS = 2 * 1_000_000_000
 
 
 LANGUAGE_BY_EXT = {
@@ -415,6 +417,7 @@ class RepoMap:
         if real_path is None:
             return 0, False
         limit = min(MAX_FILE_SIZE, remaining)
+        now = time.time_ns()
         try:
             if os.name == "nt":
                 data, opened = _read_bounded_regular(
@@ -449,7 +452,10 @@ class RepoMap:
         for sym in symbols:
             symbols_by_name[sym.name].append(sym)
 
-        fingerprints[rel_path] = self._fingerprint(opened)
+        if opened.st_mtime_ns >= now - RACY_WINDOW_NS:
+            fingerprints[rel_path] = (-1, -1, -1)
+        else:
+            fingerprints[rel_path] = self._fingerprint(opened)
         sizes[rel_path] = len(data)
         return len(data), False
 
