@@ -50,7 +50,12 @@ RACY_WINDOW_NS = 2 * 1_000_000_000
 
 
 def snapshot_signature_is_racy(signature, started_ns, window_ns=RACY_WINDOW_NS):
-    """Return whether a file row may have a coarse, in-flight timestamp."""
+    """Return whether any file row may still change without a stat change.
+
+    A row is racy when its mtime or ctime is at or after ``started_ns - window_ns``
+    (future timestamps included): a same-size rewrite within one coarse timestamp
+    tick could leave the signature unchanged, so such snapshots must not be cached.
+    """
     if signature is None:
         return False
     threshold = started_ns - window_ns

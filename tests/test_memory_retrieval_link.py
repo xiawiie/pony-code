@@ -7,7 +7,9 @@ Constraints: max_added=3 per query, decay=0.4, depth=1 (no recursion).
 
 
 import time
+from types import SimpleNamespace
 
+import pony.memory.retrieval as retrieval_module
 from pony.memory.block_store import BlockStore
 from pony.memory.retrieval import Retrieval
 
@@ -116,7 +118,9 @@ def test_next_query_sees_link_change(tmp_path):
     ]
 
 
-def test_same_signature_recent_timestamp_does_not_cache_link_change(tmp_path, monkeypatch):
+def test_same_signature_recent_timestamp_does_not_cache_link_change(
+    tmp_path, monkeypatch
+):
     ws = tmp_path / "ws"
     hub = ws / "notes" / "hub.md"
     _w(ws, "notes/hub.md", "---\nname: hub\ndescription: cache\n---\nsee [[a]]\n")
@@ -130,6 +134,9 @@ def test_same_signature_recent_timestamp_does_not_cache_link_change(tmp_path, mo
         for row in original_signature
     )
     monkeypatch.setattr(store, "snapshot_signature", lambda: fixed_signature)
+    monkeypatch.setattr(
+        retrieval_module, "time", SimpleNamespace(time_ns=lambda: recent)
+    )
     retrieval = Retrieval(store)
 
     assert [hit.path for hit in retrieval.search("cache", limit=1)] == [
@@ -158,6 +165,10 @@ def test_old_signature_is_cached(tmp_path, monkeypatch):
         for row in original_signature
     )
     monkeypatch.setattr(store, "snapshot_signature", lambda: old_signature)
+    clock_ns = old + 60 * 60 * 1_000_000_000
+    monkeypatch.setattr(
+        retrieval_module, "time", SimpleNamespace(time_ns=lambda: clock_ns)
+    )
     retrieval = Retrieval(store)
 
     first = retrieval.snapshot()

@@ -30,7 +30,9 @@ link expansion 共享同一份 raw documents 与 index，不会为每个 Context
 
 `Retrieval` 可以跨 turn 复用已解析 snapshot，但复用前会对两个 scope 做 bounded、no-follow inventory，比较
 root identity、path、device/inode、size、mtime、ctime、link count 与 file type。新增、修改、删除或替换文件会
-立即使 cache 失效；inventory 不安全或在加载期间变化时不缓存。cache 只减少重复读取与分词，不改变 canonical
+立即使 cache 失效；inventory 不安全或在加载期间变化时不缓存。任一文件的 mtime/ctime 落在加载开始前 2 秒内
+（含未来时间）时同样不缓存，避免粗粒度时间戳文件系统上同尺寸改写在同一 tick 内被漏检；repo map 对这类
+文件也会在下次 refresh 时重读。cache 只减少重复读取与分词，不改变 canonical
 Memory，也不放宽 symlink/hardlink/FIFO/越界/大小限制。
 
 自动扫描上限为 512 个文件、128 KiB/文件、2 MiB 总输入。一个不安全文件被跳过，不会把外部内容带入 index

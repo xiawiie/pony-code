@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable, Literal, Optional
 
+from pony.memory.block_store import RACY_WINDOW_NS
 from pony.security import private_files as securitylib
 from pony.security import workspace_files as workspace_files
 from pony.workspace.context import _safe_index_directory, _safe_index_file
@@ -50,7 +51,6 @@ IGNORED_DIRS = frozenset(
 MAX_FILE_SIZE = 500_000
 MAX_FILES = 10_000
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
-RACY_WINDOW_NS = 2 * 1_000_000_000
 
 
 LANGUAGE_BY_EXT = {
@@ -181,6 +181,9 @@ class Symbol:
 
 
 _FileFingerprint = tuple[int, int, int]
+# mtime 落在读取时刻前 RACY_WINDOW_NS 内 (含未来时间) 的文件记录一个不可能等于真实
+# stat 的 fingerprint, 保证下次 refresh 重读.
+_RACY_FINGERPRINT: _FileFingerprint = (-1, -1, -1)
 
 
 @dataclass(frozen=True)
@@ -453,7 +456,7 @@ class RepoMap:
             symbols_by_name[sym.name].append(sym)
 
         if opened.st_mtime_ns >= now - RACY_WINDOW_NS:
-            fingerprints[rel_path] = (-1, -1, -1)
+            fingerprints[rel_path] = _RACY_FINGERPRINT
         else:
             fingerprints[rel_path] = self._fingerprint(opened)
         sizes[rel_path] = len(data)

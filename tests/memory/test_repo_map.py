@@ -1,7 +1,9 @@
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import pony.memory.repo_map as repo_map_module
 from pony.memory.repo_map import RepoMap, tool_repo_lookup
 
 
@@ -183,9 +185,16 @@ def test_refresh_publishes_complete_snapshot_once(tmp_path, monkeypatch):
     assert rm.lookup("NewSecond")
 
 
-def test_refresh_detects_same_size_in_place_rewrite_with_restored_mtime(tmp_path):
+def test_refresh_detects_same_size_in_place_rewrite_with_restored_mtime(
+    tmp_path, monkeypatch
+):
     source = tmp_path / "source.py"
     source.write_text("class OldSymbol: pass\n", encoding="utf-8")
+    # Pin the scan clock to the file's own mtime so the read is always racy.
+    clock_ns = source.stat().st_mtime_ns
+    monkeypatch.setattr(
+        repo_map_module, "time", SimpleNamespace(time_ns=lambda: clock_ns)
+    )
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
     original = source.stat()
@@ -203,6 +212,10 @@ def test_refresh_does_not_read_unchanged_file_with_old_mtime(tmp_path, monkeypat
     source.write_text("class StableSymbol: pass\n", encoding="utf-8")
     old_ns = time.time_ns() - 60 * 60 * 1_000_000_000
     os.utime(source, ns=(old_ns, old_ns))
+    clock_ns = old_ns + 60 * 60 * 1_000_000_000
+    monkeypatch.setattr(
+        repo_map_module, "time", SimpleNamespace(time_ns=lambda: clock_ns)
+    )
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
 
