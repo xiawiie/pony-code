@@ -455,6 +455,8 @@ class RepoMap:
         for sym in symbols:
             symbols_by_name[sym.name].append(sym)
 
+        # Windows metadata carries a FILETIME (1601 epoch), so every file reads as
+        # racy there; its fingerprints never matched Path.stat() anyway.
         if opened.st_mtime_ns >= now - RACY_WINDOW_NS:
             fingerprints[rel_path] = _RACY_FINGERPRINT
         else:
