@@ -11,6 +11,12 @@ from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
 
+# Deadlock guard for thread handshakes, not a latency assertion: waits return as soon
+# as the peer signals. Locally the REPL reaches the model in ~70 ms, but hosted Windows
+# runners (private-file DACL setup, ~17x slower suite) exceeded the old 3 s bound.
+_SYNC_TIMEOUT = 30
+
+
 class _BlockingModelClient(FakeModelClient):
     def __init__(self, outputs):
         super().__init__(outputs)
@@ -20,7 +26,7 @@ class _BlockingModelClient(FakeModelClient):
     def complete(self, **request):
         index = len(self.requests)
         self.entered[index].set()
-        assert self.release[index].wait(timeout=3)
+        assert self.release[index].wait(timeout=_SYNC_TIMEOUT)
         return super().complete(**request)
 
 
@@ -39,7 +45,7 @@ def _start_plain_repl(agent, monkeypatch):
     outcome = []
     monkeypatch.setattr(
         "builtins.input",
-        lambda _prompt="": inputs.get(timeout=3),
+        lambda _prompt="": inputs.get(timeout=_SYNC_TIMEOUT),
     )
 
     def run():
@@ -61,12 +67,12 @@ def test_input_queue_is_bounded_and_clear_drops_only_pending_inputs():
     def process(text):
         processed.append(text)
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(timeout=_SYNC_TIMEOUT)
 
     input_queue = InputQueue(process)
 
     assert input_queue.submit("active").status == "started"
-    assert entered.wait(timeout=3)
+    assert entered.wait(timeout=_SYNC_TIMEOUT)
     for index in range(MAX_PENDING_INPUTS):
         result = input_queue.submit(f"pending-{index}")
         assert result.status == "queued"
@@ -101,14 +107,14 @@ def test_plain_repl_executes_queued_turns_in_canonical_order(
     inputs, outcome, thread = _start_plain_repl(agent, monkeypatch)
 
     inputs.put("first request")
-    assert model_client.entered[0].wait(timeout=3)
+    assert model_client.entered[0].wait(timeout=_SYNC_TIMEOUT)
     inputs.put("second request")
-    assert queued.wait(timeout=3)
+    assert queued.wait(timeout=_SYNC_TIMEOUT)
     model_client.release[0].set()
-    assert model_client.entered[1].wait(timeout=3)
+    assert model_client.entered[1].wait(timeout=_SYNC_TIMEOUT)
     inputs.put("/exit")
     model_client.release[1].set()
-    thread.join(timeout=3)
+    thread.join(timeout=_SYNC_TIMEOUT)
 
     assert not thread.is_alive()
     assert outcome == [0]
@@ -155,7 +161,7 @@ def test_terminal_wake_failure_does_not_replace_the_worker_outcome():
         on_wake=lambda: (_ for _ in ()).throw(RuntimeError("wake failed")),
     )
     input_queue.submit("active")
-    assert finished.wait(timeout=3)
+    assert finished.wait(timeout=_SYNC_TIMEOUT)
     input_queue.close()
 
     assert input_queue.terminal_outcome() == (True, 7, None)
@@ -192,13 +198,13 @@ def test_queue_commands_are_zero_write_and_clear_unstarted_turn(
     inputs, outcome, thread = _start_plain_repl(agent, monkeypatch)
 
     inputs.put("active request")
-    assert model_client.entered[0].wait(timeout=3)
+    assert model_client.entered[0].wait(timeout=_SYNC_TIMEOUT)
     inputs.put("never execute")
     inputs.put("/queue clear")
-    assert cleared.wait(timeout=3)
+    assert cleared.wait(timeout=_SYNC_TIMEOUT)
     model_client.release[0].set()
     inputs.put("/exit")
-    thread.join(timeout=3)
+    thread.join(timeout=_SYNC_TIMEOUT)
 
     assert outcome == [0]
     assert counts[0] == counts[1]
@@ -220,7 +226,7 @@ def test_confirmation_input_is_not_added_to_the_pending_queue():
 
     input_queue = InputQueue(process, on_wake=confirmation_ready.set)
     input_queue.submit("active")
-    assert confirmation_ready.wait(timeout=3)
+    assert confirmation_ready.wait(timeout=_SYNC_TIMEOUT)
     assert input_queue.answer_confirmation("yes") is True
     input_queue.close()
 
@@ -252,4 +258,4 @@ def test_input_from_a_stale_plain_prompt_cannot_answer_a_new_confirmation():
     assert input_queue.confirmation() is not None
     assert messages == ["approval required; re-enter the response"]
     assert input_queue.answer_confirmation("") is True
-    request.join(timeout=3)
+    request.join(timeout=_SYNC_TIMEOUT)

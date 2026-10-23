@@ -128,6 +128,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
   identity、permission 和 policy 不放宽的前提下选择真实可执行入口。
 - `pony session checkpoint|compact|rewind --summary` 重新使用 CLI assembly 构造 resumed runtime；短会话无法继续压缩时
   返回稳定的 `compaction_no_progress`，不再降级为泛化的 startup failure。
+- Memory retrieval cache 与 repo map 增量刷新改用 racy-clean 规则：mtime/ctime 距读取时刻不足 2 秒的文件不缓存、
+  下次刷新重读，修复粗粒度时间戳文件系统上同尺寸原地改写在同一 tick 内被漏检、返回旧 symbol/link 的问题。
 
 ### Removed
 

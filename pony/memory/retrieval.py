@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Iterable
 
-from pony.memory.block_store import BlockStore
+from pony.memory.block_store import BlockStore, snapshot_signature_is_racy
 from pony.memory.frontmatter import parse_frontmatter
 
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
@@ -131,6 +132,7 @@ class Retrieval:
         return hits
 
     def snapshot(self):
+        started = time.time_ns()
         signature = self.store.snapshot_signature()
         cached = self._snapshot_cache
         if (
@@ -149,7 +151,11 @@ class Retrieval:
             ),
         )
         final_signature = self.store.snapshot_signature()
-        if signature is not None and signature == final_signature:
+        if (
+            signature is not None
+            and signature == final_signature
+            and not snapshot_signature_is_racy(signature, started)
+        ):
             self._snapshot_cache = (final_signature, snapshot)
         else:
             self._snapshot_cache = None

@@ -6,6 +6,10 @@ Constraints: max_added=3 per query, decay=0.4, depth=1 (no recursion).
 """
 
 
+import time
+from types import SimpleNamespace
+
+import pony.memory.retrieval as retrieval_module
 from pony.memory.block_store import BlockStore
 from pony.memory.retrieval import Retrieval
 
@@ -112,6 +116,65 @@ def test_next_query_sees_link_change(tmp_path):
         "workspace/notes/hub.md",
         "workspace/notes/b.md",
     ]
+
+
+def test_same_signature_recent_timestamp_does_not_cache_link_change(
+    tmp_path, monkeypatch
+):
+    ws = tmp_path / "ws"
+    hub = ws / "notes" / "hub.md"
+    _w(ws, "notes/hub.md", "---\nname: hub\ndescription: cache\n---\nsee [[a]]\n")
+    _w(ws, "notes/a.md", "---\nname: a\ndescription: alpha\n---\na\n")
+    _w(ws, "notes/b.md", "---\nname: b\ndescription: beta\n---\nb\n")
+    store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
+    recent = time.time_ns()
+    original_signature = store.snapshot_signature()
+    fixed_signature = tuple(
+        (*row[:4], recent, recent, *row[6:]) if len(row) == 8 else row
+        for row in original_signature
+    )
+    monkeypatch.setattr(store, "snapshot_signature", lambda: fixed_signature)
+    monkeypatch.setattr(
+        retrieval_module, "time", SimpleNamespace(time_ns=lambda: recent)
+    )
+    retrieval = Retrieval(store)
+
+    assert [hit.path for hit in retrieval.search("cache", limit=1)] == [
+        "workspace/notes/hub.md",
+        "workspace/notes/a.md",
+    ]
+    hub.write_text(
+        "---\nname: hub\ndescription: cache\n---\nsee [[b]]\n",
+        encoding="utf-8",
+    )
+
+    assert [hit.path for hit in retrieval.search("cache", limit=1)] == [
+        "workspace/notes/hub.md",
+        "workspace/notes/b.md",
+    ]
+
+
+def test_old_signature_is_cached(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    _w(ws, "notes/a.md", "---\nname: a\ndescription: cache\n---\na\n")
+    store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
+    old = time.time_ns() - 60 * 60 * 1_000_000_000
+    original_signature = store.snapshot_signature()
+    old_signature = tuple(
+        (*row[:4], old, old, *row[6:]) if len(row) == 8 else row
+        for row in original_signature
+    )
+    monkeypatch.setattr(store, "snapshot_signature", lambda: old_signature)
+    clock_ns = old + 60 * 60 * 1_000_000_000
+    monkeypatch.setattr(
+        retrieval_module, "time", SimpleNamespace(time_ns=lambda: clock_ns)
+    )
+    retrieval = Retrieval(store)
+
+    first = retrieval.snapshot()
+    second = retrieval.snapshot()
+
+    assert second is first
 
 
 def test_duplicate_link_name_keeps_sorted_last_wins_ordering(tmp_path):
